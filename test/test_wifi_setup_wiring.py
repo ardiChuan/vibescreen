@@ -91,6 +91,25 @@ assert "tg_wifi_candidates(remembered, TG_WIFI_SLOTS, fixed, 2" in main_c, (
 )
 assert "TG_WIFI_SSID" in main_c and "TG_WIFI2_SSID" in main_c
 
+# --- The DMA gates ----------------------------------------------------------
+# The access point was the one surface whose memory cost had never been
+# measured on hardware, and its first physical run wedged the panel
+# (2026-08-17).  The gates must bracket the expensive step: refuse before
+# anything happens, abort after the APSTA switch, both against the flush's
+# contiguous-DMA floor.  A wedge-proof window is one that would rather stay
+# closed than freeze the glass.
+open_gate = setup_c.find("tg_wifi_setup_dma_ok_to_open")
+apsta = setup_c.find("esp_wifi_set_mode(WIFI_MODE_APSTA)")
+cont_gate = setup_c.find("tg_wifi_setup_dma_ok_to_continue")
+httpd_start_at = setup_c.find("server_start();")
+assert 0 < open_gate < apsta < cont_gate < httpd_start_at, (
+    "window_open must gate on DMA before the APSTA switch and again before "
+    "the HTTP server"
+)
+assert "flush_dma_bytes" in main_c, (
+    "main.c must hand the flush's DMA floor to the setup hooks"
+)
+
 # --- The lazy surface -------------------------------------------------------
 # The 2026-08-14 freeze lesson: a boot that never opens the window must not
 # pay for it.  The AP, the HTTP server and the DNS task all live in

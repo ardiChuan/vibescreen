@@ -161,16 +161,25 @@ Per `spec/hardware.md`'s rule about claiming hardware truth:
 | Capability | Silicon | Board | Firmware | Verified on `torget-home-01` |
 |---|---|---|---|---|
 | 2.4 GHz station mode | yes | yes | yes | yes (2026-08-06) |
-| SoftAP / APSTA | yes | yes | **yes (new)** | **not yet** |
+| SoftAP / APSTA | yes | yes | yes | **first run WEDGED the panel (2026-08-17)** |
 | NVS read/write | yes | yes | yes | yes (boot-health probe) |
 
-SoftAP shares the radio and antenna that `radio.wifi-24` already lists as
-`unit_verified: yes`, and the registry has carried "SoftAP maintenance" as
-an opportunity for that capability since the recon. Running the access
-point on the physical unit — and measuring what it costs the internal DMA
-heap while it is up — is the open item. Watch the existing heap telemetry
-(`heap: internt ... DMA största ...`, every 10 s) with a window open before
-calling it done.
+The warning this table used to carry — that the access point's cost to the
+internal DMA heap was unmeasured — was borne out the first time the window
+opened on the physical unit: the panel wedged twice (both after a KEY3
+hold-hold during a post-OTA maintenance window) and was rolled back over
+USB. Suspected mechanism: the AP + second HTTP server + DNS task starved
+the flush's contiguous DMA block — the exact 2026-08-16 freeze anatomy —
+but the serial log from the incident is the judge, not this guess.
+
+Since then `window_open()` is bracketed by two host-tested DMA gates
+(`tg_wifi_setup_dma_ok_to_open` / `_continue`): it refuses to open unless
+the largest free DMA block clears 4x the flush, aborts and tears down if
+the post-APSTA measurement falls under 2x, and logs the largest block at
+every stage so the next incident names the hungry step. **The gates are
+defensive, not a verification** — the setup window remains unproven on
+hardware until a supervised run (serial monitor attached, USB recovery at
+hand) passes with the DMA telemetry healthy.
 
 ## Files
 

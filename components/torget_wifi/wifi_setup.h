@@ -25,8 +25,13 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 
 typedef struct {
+  /* Panelflushens DMA-behov i byte (DISPLAY_FLUSH_ROWS x 480 x 2) — golvet
+   * DMA-grindarna mäter mot. 0 = grindarna vägrar öppna (hellre ett stängt
+   * fönster än en frusen panel). */
+  size_t flush_dma_bytes;
   /* Har STA:n en IP just nu? Vakten frågar var halvsekund. */
   bool (*have_ip)(void);
   /* En uppkoppling lyckades just. Anropas från VAKTENS task, inte från

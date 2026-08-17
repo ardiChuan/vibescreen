@@ -107,6 +107,25 @@ bool tg_wifi_setup_should_open(bool have_ip, int64_t now_us,
 bool tg_wifi_search_ui_visible(bool have_ip, int64_t now_us,
                                int64_t no_ip_since_us);
 
+/*
+ * DMA-grindarna för setupfönstret. Panelflushen behöver ETT sammanhängande
+ * DMA-block (flush_bytes); faller största fria blocket under det dör nästa
+ * flush i NO_MEM och hela ritpipen fastnar tyst — glaset fryser med levande
+ * system bakom (obducerat 2026-08-16, och huvudmisstänkt i kilningen
+ * 2026-08-17 när accesspunkten kördes första gången på riktig hårdvara).
+ *
+ * ÖPPNA kräver x4: AP-läget, httpd:n och DNS-tasken ska få plats UTAN att
+ * närma sig flushens tak. FORTSÄTT (mätt igen efter APSTA-bytet, den dyra
+ * biten) kräver x2 — under det river vi hellre fönstret än fryser glaset.
+ * Ett vägrat fönster är en loggrad och ett nytt försök senare; en fryst
+ * panel är en USB-räddning.
+ */
+#define TG_WIFI_SETUP_DMA_OPEN_FACTOR  4
+#define TG_WIFI_SETUP_DMA_ABORT_FACTOR 2
+
+bool tg_wifi_setup_dma_ok_to_open(size_t largest_dma, size_t flush_bytes);
+bool tg_wifi_setup_dma_ok_to_continue(size_t largest_dma, size_t flush_bytes);
+
 /* Ska ett öppet fönster stängas? Antingen har tiden runnit ut, eller så
  * har uppkopplingen lyckats och klienten fått sina LINGER-sekunder.
  * joined_ip_us: när IP:t kom under fönstret (0 = ingen uppkoppling än). */

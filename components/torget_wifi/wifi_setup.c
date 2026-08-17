@@ -10,6 +10,7 @@
 
 #include "lwip/sockets.h"
 
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -349,14 +350,37 @@ static void server_start(void) {
   httpd_register_uri_handler(s_server, &rest);
 }
 
+/* DMA-läget i loggen vid varje steg av öppningen: accesspunkten är den
+ * enda ytan i firmwaren vars minneskostnad aldrig mätts på hårdvara, och
+ * kilningen 2026-08-17 (första fysiska körningen) obducerades i blindo.
+ * Nästa incident ska peka ut exakt vilket steg som åt blocket. */
+static size_t dma_log(const char *stage) {
+  size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+  ESP_LOGI(TAG, "DMA största block %s: %u byte", stage, (unsigned)largest);
+  return largest;
+}
+
 static void window_open(void) {
+  /* GRIND 1, före allt: ryms accesspunkten utan att närma sig flushens
+   * DMA-tak? Ett vägrat fönster är en loggrad och ett nytt försök om en
+   * stund; en fryst panel är en USB-räddning. */
+  size_t largest = dma_log("före öppning");
+  if (!tg_wifi_setup_dma_ok_to_open(largest, s_hooks->flush_dma_bytes)) {
+    ESP_LOGW(TAG, "setupfönstret VÄGRAR öppna: DMA-blocket %u byte < "
+             "%d x flushens %u — hellre stängt än fryst glas",
+             (unsigned)largest, TG_WIFI_SETUP_DMA_OPEN_FACTOR,
+             (unsigned)s_hooks->flush_dma_bytes);
+    return;
+  }
+
   /* Port 80 kan bara ha en ägare. Ett OTA-fönster utan nät kan ändå inte
    * ta emot en uppladdning, så nätlagret vinner den konflikten — och
    * säger det i loggen i stället för att tyst misslyckas. */
   if (torget_ota_service_maintenance_open()) {
-    ESP_LOGI(TAG, "stänger OTA-fönstret: utan nät kan det inte leverera");
+    ESP_LOGI(TAG, "stänger OTA-fönstret: porten och minnet behövs här");
     torget_ota_service_close_maintenance();
     vTaskDelay(pdMS_TO_TICKS(1200)); /* låt OTA-vakten lämna tillbaka porten */
+    dma_log("efter OTA-stopp");
   }
 
   if (s_hooks->sta_pause) s_hooks->sta_pause(true);
@@ -365,6 +389,7 @@ static void window_open(void) {
 
   scan_networks();
   derive_ap_password();
+  dma_log("efter skanning");
 
   if (!s_ap_netif) s_ap_netif = esp_netif_create_default_wifi_ap();
 
@@ -380,6 +405,21 @@ static void window_open(void) {
   if (err == ESP_OK) err = esp_wifi_set_config(WIFI_IF_AP, &ap);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "accesspunkten kom inte upp: %s", esp_err_to_name(err));
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    if (s_hooks->sta_pause) s_hooks->sta_pause(false);
+    return;
+  }
+
+  /* GRIND 2, efter APSTA-bytet — den dyra biten. Föll blocket under x2 av
+   * flushen är NÄSTA flush i farozonen: riv hellre fönstret medan glaset
+   * fortfarande lever än fortsätt stapla httpd + DNS ovanpå. */
+  largest = dma_log("efter APSTA");
+  if (!tg_wifi_setup_dma_ok_to_continue(largest, s_hooks->flush_dma_bytes)) {
+    ESP_LOGE(TAG, "setupfönstret AVBRYTER: DMA-blocket %u byte < "
+             "%d x flushens %u efter AP-start — river innan glaset fryser",
+             (unsigned)largest, TG_WIFI_SETUP_DMA_ABORT_FACTOR,
+             (unsigned)s_hooks->flush_dma_bytes);
+    esp_wifi_set_mode(WIFI_MODE_STA);
     if (s_hooks->sta_pause) s_hooks->sta_pause(false);
     return;
   }
@@ -388,6 +428,7 @@ static void window_open(void) {
   if (xTaskCreate(dns_task, "tg-wifi-dns", 3072, NULL, 4, NULL) != pdPASS)
     ESP_LOGW(TAG, "DNS-lögnaren startade inte — portalen nås via " AP_ADDRESS);
   server_start();
+  dma_log("fönstret uppe");
 
   atomic_store(&s_open, true);
   /* Lösenordet står på glaset, inte i loggen: den som läser serieloggen

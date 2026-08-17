@@ -55,6 +55,16 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   before three seconds still just closes (the 2026-08-16 escape hatch is
   untouched); the port-80 handover between the two windows' HTTP servers is
   owned by the setup guard, so they never collide.
+
+  **Hardware status, honestly:** the first physical exercise of this path
+  wedged the panel twice (2026-08-17; rolled back to the previous release
+  over USB). Suspected DMA starvation by the access point — the exact
+  2026-08-16 freeze anatomy — pending the incident's serial log.
+  `window_open()` is now bracketed by two host-tested DMA gates (refuse
+  below 4x the flush's contiguous block, abort below 2x after the APSTA
+  switch) with per-stage DMA logging. The gates are defensive, not a
+  verification: the setup window stays unproven on hardware until a
+  supervised run passes.
 - The glass explains a missing network instead of showing dashes. After 60 s
   without an IP it names the network being hunted and translates the radio's
   own disconnect reason — "NOT SEEN - 2.4 GHZ ONLY", "WRONG PASSWORD". The

@@ -348,6 +348,9 @@ static void hook_ip_acquired(void) {
 }
 
 static const tg_wifi_setup_hooks s_setup_hooks = {
+  /* Flushens DMA-behov: golvet setupfönstrets grindar mäter mot —
+   * samma tal som heap-larmet i tick_cb vaktar. */
+  .flush_dma_bytes = (size_t)DISPLAY_FLUSH_ROWS * 480u * 2u,
   .have_ip = hook_have_ip,
   .ip_acquired = hook_ip_acquired,
   .sta_pause = hook_sta_pause,

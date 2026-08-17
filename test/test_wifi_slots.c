@@ -181,7 +181,34 @@ static void test_setup_window_closes(void) {
         tg_wifi_setup_should_close(306 * s, 100 * s, 300 * s));
 }
 
+static void test_dma_gates_protect_the_flush(void) {
+  const size_t flush = 12 * 480 * 2; /* 11 520 — panelflushens block */
+
+  /* Öppningen kräver x4: accesspunkten, httpd:n och DNS-tasken ska rymmas
+   * utan att närma sig flushens tak. Ett vägrat fönster är en loggrad;
+   * en fryst panel är en USB-räddning (kilningen 2026-08-17). */
+  check("plenty of DMA opens", tg_wifi_setup_dma_ok_to_open(200000, flush));
+  check("exactly 4x opens", tg_wifi_setup_dma_ok_to_open(4 * flush, flush));
+  check("below 4x refuses to open",
+        !tg_wifi_setup_dma_ok_to_open(4 * flush - 1, flush));
+
+  /* Fortsättningsgrinden efter APSTA-bytet: under x2 rivs fönstret hellre
+   * än att httpd + DNS staplas ovanpå ett block som redan är i farozonen. */
+  check("above 2x continues",
+        tg_wifi_setup_dma_ok_to_continue(2 * flush, flush));
+  check("below 2x aborts",
+        !tg_wifi_setup_dma_ok_to_continue(2 * flush - 1, flush));
+
+  /* Ett okonfigurerat flushvärde får aldrig göra grinden till en
+   * papperstiger — "vet inte" betyder nej. */
+  check("an unset flush size refuses to open",
+        !tg_wifi_setup_dma_ok_to_open(200000, 0));
+  check("an unset flush size refuses to continue",
+        !tg_wifi_setup_dma_ok_to_continue(200000, 0));
+}
+
 int main(void) {
+  test_dma_gates_protect_the_flush();
   test_validation();
   test_write_slot_updates_before_it_evicts();
   test_seq_next_saturates();

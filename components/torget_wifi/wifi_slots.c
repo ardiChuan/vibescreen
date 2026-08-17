@@ -119,6 +119,18 @@ bool tg_wifi_setup_should_open(bool have_ip, int64_t now_us,
   return true;
 }
 
+bool tg_wifi_setup_dma_ok_to_open(size_t largest_dma, size_t flush_bytes) {
+  /* flush_bytes == 0 vore en felkonfiguration som gjorde grinden till en
+   * papperstiger — behandla den som "vet inte" och vägra. */
+  if (flush_bytes == 0) return false;
+  return largest_dma / TG_WIFI_SETUP_DMA_OPEN_FACTOR >= flush_bytes;
+}
+
+bool tg_wifi_setup_dma_ok_to_continue(size_t largest_dma, size_t flush_bytes) {
+  if (flush_bytes == 0) return false;
+  return largest_dma / TG_WIFI_SETUP_DMA_ABORT_FACTOR >= flush_bytes;
+}
+
 bool tg_wifi_search_ui_visible(bool have_ip, int64_t now_us,
                                int64_t no_ip_since_us) {
   if (have_ip) return false;
