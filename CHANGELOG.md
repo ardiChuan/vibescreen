@@ -32,6 +32,13 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   never *activity* (agent status, Needs You, the device key's answer path
   — those stay on the LAN). The service-side publisher and the mailbox
   itself are not built yet; until they land the fallback is inert.
+- **Hold KEY3 twice to reach WiFi setup on a connected panel.** The setup
+  window used to open only when the panel had no network — you could not
+  pre-load the phone hotspot at home before a trip. Now a second full 3 s
+  hold while the update window is open switches to WIFI SETUP. Any release
+  before three seconds still just closes (the 2026-08-16 escape hatch is
+  untouched); the port-80 handover between the two windows' HTTP servers is
+  owned by the setup guard, so they never collide.
 - The glass explains a missing network instead of showing dashes. After 60 s
   without an IP it names the network being hunted and translates the radio's
   own disconnect reason — "NOT SEEN - 2.4 GHZ ONLY", "WRONG PASSWORD". The

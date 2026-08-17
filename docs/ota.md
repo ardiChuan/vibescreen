@@ -41,8 +41,11 @@ Nothing can write firmware to the screen without three independent factors:
    *the window that can actually help*: **with an IP** it opens this OTA
    window, exactly as always; **without an IP** it opens the WiFi setup
    window instead, because an OTA window with no network can never
-   receive an upload. The consent model is unchanged — both windows
-   open only from the device.
+   receive an upload. A **second full 3 s hold** while this window is
+   open switches to the WiFi setup window (hold–hold: update window,
+   then network window); any release before three seconds still just
+   closes. The consent model is unchanged — both windows open only from
+   the device.
 2. **Knowledge** — the upload must carry `Authorization: Bearer <token>`,
    64 lowercase hex from `secrets.h` (`TG_OTA_TOKEN`), never committed.
 3. **Time** — the window closes itself after ten minutes; a short KEY3

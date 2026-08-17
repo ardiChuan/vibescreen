@@ -60,6 +60,24 @@ assert re.search(
     main_c,
 ), "KEY3 must open the OTA window only when there is an IP, setup otherwise"
 
+# The double hold: a second full hold while the OTA window is open must
+# REQUEST the setup window, never close-and-open from the LVGL task — the
+# port-80 handover belongs to the setup guard's window_open().  Two request
+# sites total: the no-IP route and the switch route.
+assert main_c.count("torget_wifi_setup_request_open();") == 2, (
+    "expected exactly the no-IP route and the hold-again switch route"
+)
+maintenance_branch = main_c.split("torget_ota_service_maintenance_open()) {")[1]
+# Skär vid nästa YTTRE gren (appväxlaren) — den inre else-if-kedjan för
+# knapphändelserna hör till branchen och får inte klippa bort växlingsvägen.
+maintenance_branch = maintenance_branch.split("torget_app_next()")[0]
+assert "torget_wifi_setup_request_open();" in maintenance_branch, (
+    "the hold-again switch must live inside the maintenance-open branch"
+)
+assert "torget_ota_service_close_maintenance();\n      torget_wifi_setup_request_open" not in main_c, (
+    "the LVGL task must not close the OTA window itself when switching"
+)
+
 # The setup window may never become a firmware path.
 assert "esp_ota" not in setup_c and "ota_ops" not in setup_c, (
     "the WiFi setup window must never gain a firmware-writing surface"

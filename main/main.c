@@ -482,16 +482,28 @@ static void tick_cb(lv_timer_t *t) {
     if (key3_action == TG_BUTTON_NEXT_APP || key3_action == TG_BUTTON_PANIC)
       torget_wifi_setup_request_close();
   } else if (torget_ota_service_maintenance_open()) {
-    /* While the update window owns the glass, KEY3 has exactly one job: close
-     * it. ANY release does — a short tap or the panic-window hold — so the
-     * nödutgången never depends on out-tapping the panic threshold (a real
-     * trap found on hardware 2026-08-16: a ~2 s press panicked instead of
-     * closing, leaving the window stuck). Ten minutes without an escape once
-     * made a healthy device look hung. The 3 s hold that would open the
-     * window is a harmless no-op here — it is already open. No panic fires
-     * while the window is up. */
-    if (key3_action == TG_BUTTON_NEXT_APP || key3_action == TG_BUTTON_PANIC)
+    /* While the update window owns the glass, ANY release closes it — a
+     * short tap or the panic-window hold — so the nödutgången never depends
+     * on out-tapping the panic threshold (a real trap found on hardware
+     * 2026-08-16: a ~2 s press panicked instead of closing, leaving the
+     * window stuck). Ten minutes without an escape once made a healthy
+     * device look hung. No panic fires while the window is up.
+     *
+     * Ett NYTT fullt 3 s-håll byter fönster: OTA-fönstret stängs och
+     * setupfönstret öppnar. Det är vägen att nå WIFI SETUP på en panel som
+     * HAR nät (håll–håll: först uppdateringsfönstret, sen nätfönstret) —
+     * utan den kunde ett nytt nät bara läras ut när panelen redan var
+     * strandad. Nödutgången är intakt: varje släpp FÖRE tre sekunder
+     * stänger, bara ett medvetet fullbordat håll byter. */
+    if (key3_action == TG_BUTTON_NEXT_APP || key3_action == TG_BUTTON_PANIC) {
       torget_ota_service_close_maintenance();
+    } else if (key3_action == TG_BUTTON_OPEN_MAINTENANCE) {
+      /* Bara begäran härifrån: setupvaktens window_open äger överlämningen
+       * av port 80 (stänger OTA-fönstret och väntar ut dess httpd-stopp).
+       * Att stänga HÄR hade gjort portbytet till en kapplöpning mellan två
+       * vakter som pollar var 500:e ms. */
+      torget_wifi_setup_request_open();
+    }
   } else if (key3_action == TG_BUTTON_NEXT_APP) {
     torget_app_next();
   } else if (key3_action == TG_BUTTON_PANIC) {

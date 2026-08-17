@@ -374,6 +374,11 @@ stops being coy: it names the network it is hunting and what the radio
 actually answered ("NOT SEEN - 2.4 GHZ ONLY", "WRONG PASSWORD") instead of
 showing dashes and letting you guess.
 
+On a panel that already *has* a network, hold twice: the first 3-second
+hold opens the update window, a second full hold switches it to WIFI
+SETUP. That is how you pre-load the phone hotspot at home before a trip —
+no need to wait until the panel is stranded somewhere.
+
 Two things stay true by design. The networks in `secrets.h` remain an
 **immutable floor** — setup can add places, never remove your home network,
 so a bad entry can never cost you a USB rescue. And the setup window

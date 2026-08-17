@@ -101,8 +101,17 @@ A 3 s hold opens **the window that can actually help**:
 - **Without an IP** → the WiFi setup window. An OTA window with no network
   could never receive an upload anyway.
 
-While either window owns the glass, *any* KEY3 release closes it — the same
-escape hatch the OTA window grew after 2026-08-16.
+**Hold again to switch windows.** A second full 3 s hold while the update
+window is open closes it and opens WIFI SETUP instead. That is how you
+teach a panel that already *has* a network a new one — pre-loading the
+phone hotspot at home before a trip, for instance — without waiting for it
+to be stranded first. The port-80 handover is owned by the setup guard, so
+the two HTTP servers never collide.
+
+While either window owns the glass, *any* KEY3 release before three
+seconds closes it — the same escape hatch the OTA window grew after
+2026-08-16. Only a deliberate, completed hold switches; you cannot fail
+to close by pressing.
 
 ## Where the credentials live
 
