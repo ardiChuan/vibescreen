@@ -60,9 +60,10 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   wedged the panel twice (2026-08-17; rolled back to the previous release
   over USB). Suspected DMA starvation by the access point — the exact
   2026-08-16 freeze anatomy — pending the incident's serial log.
-  `window_open()` is now bracketed by two host-tested DMA gates (refuse
-  below 4x the flush's contiguous block, abort below 2x after the APSTA
-  switch) with per-stage DMA logging. The gates are defensive, not a
+  `window_open()` is now bracketed by two host-tested DMA gates (refuse below 3x
+  the flush's contiguous block — calibrated against v0.5.0's measured
+  40-47 kB healthy baseline, so a healthy panel is never refused — abort
+  below 2x after the APSTA switch) with per-stage DMA logging. The gates are defensive, not a
   verification: the setup window stays unproven on hardware until a
   supervised run passes.
 - The glass explains a missing network instead of showing dashes. After 60 s

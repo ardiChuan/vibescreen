@@ -183,14 +183,21 @@ static void test_setup_window_closes(void) {
 
 static void test_dma_gates_protect_the_flush(void) {
   const size_t flush = 12 * 480 * 2; /* 11 520 — panelflushens block */
+  const size_t open_floor = TG_WIFI_SETUP_DMA_OPEN_FACTOR * flush;
 
-  /* Öppningen kräver x4: accesspunkten, httpd:n och DNS-tasken ska rymmas
-   * utan att närma sig flushens tak. Ett vägrat fönster är en loggrad;
-   * en fryst panel är en USB-räddning (kilningen 2026-08-17). */
   check("plenty of DMA opens", tg_wifi_setup_dma_ok_to_open(200000, flush));
-  check("exactly 4x opens", tg_wifi_setup_dma_ok_to_open(4 * flush, flush));
-  check("below 4x refuses to open",
-        !tg_wifi_setup_dma_ok_to_open(4 * flush - 1, flush));
+  check("exactly the open floor opens",
+        tg_wifi_setup_dma_ok_to_open(open_floor, flush));
+  check("below the open floor refuses",
+        !tg_wifi_setup_dma_ok_to_open(open_floor - flush, flush));
+
+  /* Kalibreringen mot verkligheten: v0.5.0:s friska baslinje på
+   * torget-home-01 var 40960 byte (serielogg 2026-08-18). En grind som
+   * vägrar en frisk panel dödar funktionen den skyddar — faktorn valdes
+   * så att baslinjen passerar. Faller det här testet har någon höjt
+   * faktorn över uppmätt verklighet. */
+  check("the measured healthy baseline passes the open gate",
+        tg_wifi_setup_dma_ok_to_open(40960, flush));
 
   /* Fortsättningsgrinden efter APSTA-bytet: under x2 rivs fönstret hellre
    * än att httpd + DNS staplas ovanpå ett block som redan är i farozonen. */

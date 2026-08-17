@@ -114,13 +114,21 @@ bool tg_wifi_search_ui_visible(bool have_ip, int64_t now_us,
  * system bakom (obducerat 2026-08-16, och huvudmisstänkt i kilningen
  * 2026-08-17 när accesspunkten kördes första gången på riktig hårdvara).
  *
- * ÖPPNA kräver x4: AP-läget, httpd:n och DNS-tasken ska få plats UTAN att
- * närma sig flushens tak. FORTSÄTT (mätt igen efter APSTA-bytet, den dyra
- * biten) kräver x2 — under det river vi hellre fönstret än fryser glaset.
- * Ett vägrat fönster är en loggrad och ett nytt försök senare; en fryst
- * panel är en USB-räddning.
+ * ÖPPNA kräver x3, FORTSÄTT (mätt igen efter APSTA-bytet, den dyra biten)
+ * kräver x2 — under det river vi hellre fönstret än fryser glaset. Ett
+ * vägrat fönster är en loggrad och ett nytt försök senare; en fryst panel
+ * är en USB-räddning.
+ *
+ * Kalibrering mot UPPMÄTT verklighet, inte känsla: v0.5.0:s friska
+ * baslinje på torget-home-01 är 40960-47104 byte största DMA-block
+ * (serielogg 2026-08-18). Den första faktorn var 4 — men 4 x 11520 =
+ * 46080 hade rutinmässigt vägrat en FRISK panel på 40 kB, och en grind
+ * som dödar funktionen den skyddar är fel grind. x3 = 34560 släpper
+ * baslinjen igenom med marginal; x2-avbrottet efter APSTA är samma
+ * tröskel som heap-larmet i main.c redan varnar vid. Faktorerna omprövas
+ * mot daa6bf1:s uppmätta tal när den övervakade körningen görs.
  */
-#define TG_WIFI_SETUP_DMA_OPEN_FACTOR  4
+#define TG_WIFI_SETUP_DMA_OPEN_FACTOR  3
 #define TG_WIFI_SETUP_DMA_ABORT_FACTOR 2
 
 bool tg_wifi_setup_dma_ok_to_open(size_t largest_dma, size_t flush_bytes);

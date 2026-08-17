@@ -174,7 +174,7 @@ but the serial log from the incident is the judge, not this guess.
 
 Since then `window_open()` is bracketed by two host-tested DMA gates
 (`tg_wifi_setup_dma_ok_to_open` / `_continue`): it refuses to open unless
-the largest free DMA block clears 4x the flush, aborts and tears down if
+the largest free DMA block clears 3x the flush (calibrated against the measured healthy baseline of 40-47 kB on v0.5.0), aborts and tears down if
 the post-APSTA measurement falls under 2x, and logs the largest block at
 every stage so the next incident names the hungry step. **The gates are
 defensive, not a verification** — the setup window remains unproven on
