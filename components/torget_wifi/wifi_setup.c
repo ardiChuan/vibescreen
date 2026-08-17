@@ -472,9 +472,19 @@ static void guard_task(void *arg) {
     }
 
     /* Glaset: nätlagret syns bara när det finns något att säga. En panel
-     * med IP har inget ärende här — då äger apparna skärmen. */
+     * med IP har inget ärende här — då äger apparna skärmen.
+     *
+     * OTA-overlayn har alltid företräde: efter en OTA-omstart utan nät är
+     * BÅDE underhållsfönstret (återväpnat av PENDING_VERIFY-booten) och
+     * nätsökningen aktiva, och båda lagren flyttar sig främst vid varje
+     * uppdatering — utan den här spärren flimrar de om förgrunden en gång
+     * i sekunden. Ringen vinner; nätsidan väntar tills fönstret stängt.
+     * Setupfönstret är undantaget: window_open() stängde OTA-fönstret för
+     * port 80, så konflikten kan inte uppstå där. */
     const bool now_open = atomic_load(&s_open);
-    if (have_ip && !now_open) {
+    if (!now_open && torget_ota_service_maintenance_open()) {
+      torget_wifi_ui_set(TG_WIFI_UI_HIDDEN, NULL, NULL, NULL, 0);
+    } else if (have_ip && !now_open) {
       torget_wifi_ui_set(TG_WIFI_UI_HIDDEN, NULL, NULL, NULL, 0);
     } else if (now_open && atomic_load(&s_joined_at_us) != 0) {
       torget_wifi_ui_set(have_ip ? TG_WIFI_UI_JOINED : TG_WIFI_UI_JOINING,

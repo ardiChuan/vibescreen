@@ -21,6 +21,17 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   2026-08-14 freeze). The `secrets.h` networks stay as an immutable floor
   underneath, so no entry can ever cost a USB rescue, and the setup window
   can never write firmware. Full reference: `docs/wifi.md`.
+- The panel half of the **relay fallback**: fetches try the LAN service
+  first and fall back to a mailbox on the internet
+  (`TK_VIBEPULSE_RELAY_URL` in `secrets.h` — commented out by default, and
+  without it nothing changes). Born the same evening as the travel work:
+  a guest network's client isolation kept the panel from reaching the Mac
+  while internet worked fine, and no code on the panel could fix that. The
+  boundary is deliberate and test-enforced (`test/test_relay_boundary.py`):
+  the relay carries *numbers* (quota, burn rate, Max Tracker, GitHub),
+  never *activity* (agent status, Needs You, the device key's answer path
+  — those stay on the LAN). The service-side publisher and the mailbox
+  itself are not built yet; until they land the fallback is inert.
 - The glass explains a missing network instead of showing dashes. After 60 s
   without an IP it names the network being hunted and translates the radio's
   own disconnect reason — "NOT SEEN - 2.4 GHZ ONLY", "WRONG PASSWORD". The

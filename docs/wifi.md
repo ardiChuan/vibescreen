@@ -138,6 +138,13 @@ the phone hotspot (iPhone: *Maximize Compatibility*, or it broadcasts only
 5 GHz), put the Mac on it, and run `tools/wifi-here.sh` once. The panel
 remembers the hotspot from then on and rejoins it in every city.
 
+For the reachability half of these failure modes — the panel is *online*
+but cannot reach the service across a network boundary — the relay
+fallback exists (`TK_VIBEPULSE_RELAY_URL` in `secrets.h.example`): number
+fetches fall back to a mailbox on the internet when the LAN service does
+not answer. Panel-side only so far; inert until the service's publisher
+ships.
+
 ## Physical verification status
 
 Per `spec/hardware.md`'s rule about claiming hardware truth:

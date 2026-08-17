@@ -317,7 +317,9 @@ opens a ten-minute maintenance window (the glass shows an UPDATES ON ring
 with the lease draining clockwise), a **64-hex token** from `secrets.h`
 authenticates the upload, and the window **closes itself** — a short KEY3
 press closes it early. No button, no update; a script can never open the
-window for you.
+window for you. (The same hold on a panel *without* a network opens the
+WiFi setup window instead — the window that can actually help there. See
+[Take it with you](#take-it-with-you).)
 
 ```
 idf.py build
