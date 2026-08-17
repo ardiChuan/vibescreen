@@ -5,7 +5,35 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ## Unreleased
 
+### Added
+
+- **The panel travels.** It remembers six places in NVS and joins the one
+  that worked most recently; arriving somewhere new no longer means editing
+  `secrets.h`, rebuilding and flashing over USB — which OTA could never fix,
+  since OTA needs the network the panel cannot reach. Two ways to teach it a
+  place: `tools/wifi-here.sh` on the Mac hands over the network it is
+  already on (reading the password from the keychain, one prompt, nothing
+  typed), or the panel raises `VibePulse-setup` with the password on the
+  glass and serves a captive portal listing what its *own* radio can see.
+  The window opens by itself after 90 s without an IP, or on a 3 s KEY3
+  hold, and closes after ten minutes — the access point, HTTP server and DNS
+  responder do not exist outside it (the lazy-surface rule from the
+  2026-08-14 freeze). The `secrets.h` networks stay as an immutable floor
+  underneath, so no entry can ever cost a USB rescue, and the setup window
+  can never write firmware. Full reference: `docs/wifi.md`.
+- The glass explains a missing network instead of showing dashes. After 60 s
+  without an IP it names the network being hunted and translates the radio's
+  own disconnect reason — "NOT SEEN - 2.4 GHZ ONLY", "WRONG PASSWORD". The
+  reason codes were already in the serial log; a shelf gadget nobody has a
+  cable to could not show them.
+
 ### Fixed
+
+- Open networks were refused in silence. Every network was applied with
+  `threshold.authmode = WIFI_AUTH_WPA2_PSK`, so an open café or airport
+  network — the common case on the road — was rejected before it was tried,
+  with nothing in the log pointing at the threshold. The authmode now
+  follows each network: open where the password is blank.
 
 - The panel names all three GPT-5.6 variants. `gpt-5.6-sol` had a typeset
   screen label while its siblings `terra` and `luna` fell through to their

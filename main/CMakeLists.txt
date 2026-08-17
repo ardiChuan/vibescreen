@@ -6,7 +6,9 @@
 # utcheckade dras komponenten in och TORGET_HAVE_* grindar registerposten i
 # registry.c. En färsk klon utifrån bygger bara VibePulse.
 # torget_ota: bootens hälsogrind (boot_health.h) och KEY3:s underhållshåll.
-set(TORGET_MAIN_REQUIRES torget_app app_tokens torget_ota)
+# torget_wifi: nätverkslistan i NVS + setupfönstret som lägger till en ny
+# plats utan ombygge (docs/wifi.md).
+set(TORGET_MAIN_REQUIRES torget_app app_tokens torget_ota torget_wifi)
 # OBS $ENV{}: den här filen körs TVÅ gånger — en gång i ESP-IDF:s
 # early-expansion (då REQUIRES läses ut) och en gång i det riktiga bygget. I
 # expansionspasset syns INTE cache-/normalvariablerna som rot-CMakeLists.txt

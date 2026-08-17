@@ -164,6 +164,21 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
   -o /tmp/torget-boot-health-policy-test
 /tmp/torget-boot-health-policy-test
 
+cc -std=c11 -Wall -Wextra -Werror -O1 \
+  ../components/torget_wifi/wifi_slots.c \
+  test_wifi_slots.c \
+  -lm \
+  -o /tmp/torget-wifi-slots-test
+/tmp/torget-wifi-slots-test
+
+cc -std=c11 -Wall -Wextra -Werror -O1 \
+  ../components/torget_wifi/wifi_form.c \
+  ../components/torget_wifi/wifi_slots.c \
+  test_wifi_form.c \
+  -lm \
+  -o /tmp/torget-wifi-form-test
+/tmp/torget-wifi-form-test
+
 "$PYTHON_BIN" test_agent_demo_wiring.py
 "$PYTHON_BIN" test_agent_net_wiring.py
 "$PYTHON_BIN" test_github_wiring.py
@@ -176,6 +191,7 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 "$PYTHON_BIN" test_ota_partition.py
 "$PYTHON_BIN" test_ota_reopen_wiring.py
 "$PYTHON_BIN" test_ota_sender_gates.py
+"$PYTHON_BIN" test_wifi_setup_wiring.py
 
 cd ..
 "$PYTHON_BIN" -m unittest tools.agent_assets.test_build_agent_images -v

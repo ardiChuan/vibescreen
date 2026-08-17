@@ -1,0 +1,5 @@
+## Nätlagret ritar med samma LVGL-serie som resten av plattformen (9.5 via
+## BSP:n; sim pinnar exakt samma, P20).
+dependencies:
+  idf: ">=5.5"
+  lvgl/lvgl: "9.*"

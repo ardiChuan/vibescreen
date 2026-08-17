@@ -21,6 +21,42 @@ point at the backlog item.
 
 ---
 
+## 2026-08-17 · A global auth threshold refused every open network
+
+**What happened:** on the road the panel would never join a café or
+airport network. The serial log showed the SSID being tried and a
+disconnect, with nothing pointing at why. **Root cause:**
+`wifi_apply()` set `cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK`
+for *every* network. The threshold means "refuse anything weaker", and
+open (`WIFI_AUTH_OPEN`) is weaker — so an open network was rejected
+before it was ever attempted. The line was written when there were
+exactly two networks, both WPA2; it silently became a policy about all
+future networks. **The rule:** a per-connection setting derived from
+one network's properties must move with the network, not sit as a
+global. Here the threshold now follows each candidate: WPA2 where there
+is a password, open where there is not. **Guards:**
+`wifi_apply_current()` in `main/main.c` derives it per slot;
+`tg_wifi_pass_valid` treats an empty password as a valid open network
+(`test/test_wifi_slots.c`). **Watch for:** any other `cfg.sta.*` field
+set once at boot that describes *a* network rather than *the* radio.
+
+## 2026-08-17 · The escape hatch needed the network it was escaping
+
+**What happened:** designing WiFi provisioning, the first instinct was
+to deliver it over the air like everything else. **Root cause:** OTA
+needs the network the panel cannot reach — a fix for "no network" can
+never arrive through the network, so the feature had to be recoverable
+from the device alone. **The rule now:** the compiled-in `secrets.h`
+networks stay an **immutable floor** that stored credentials can only be
+added on top of, never replace. No entry written at a hotel can strand
+the panel, so the worst case is "it does not join here", never "it needs
+a USB flash to come home". **Guards:**
+`tg_wifi_candidates()` always appends the fixed networks
+(`test/test_wifi_slots.c` has an explicit empty-store case);
+`test/test_wifi_setup_wiring.py` asserts the floor stays in the
+candidate build. **Watch for:** any future store that *replaces* a
+compiled-in fallback instead of layering over it.
+
 ## 2026-08-16 · LVGL's pool starved the flush's DMA and the glass froze
 
 **What happened:** the Needs You build froze the panel intermittently on

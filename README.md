@@ -6,7 +6,8 @@
 
 **A little always-on screen for your shelf that shows what your AI coding
 agents are doing — taps you on the shoulder when one is stuck waiting for
-you, and (if you want) lets you answer it with a tap on the glass.**
+you, and (if you want) lets you answer it with a tap on the glass. It packs
+too: one command moves it onto whatever WiFi you are on today.**
 
 Claude Code and Codex usage, live agent activity, and a full-screen
 **NEEDS YOU** alert you can answer with a tap. A ~$30 ESP32-S3 panel plus a
@@ -344,6 +345,45 @@ where `partitions.csv` still has a single `factory` partition. The OTA
 foundation replaced that table (A/B slots + `otadata`) — check the branch
 you are on before concluding anything, and never assume the flash layout
 without reading `partitions.csv` in the checkout you are actually building.
+
+## Take it with you
+
+The panel remembers up to six places. Arrive somewhere new and it needs the
+network once; every visit after that it joins by itself.
+
+```
+tools/wifi-here.sh                 # on the Mac. That is the whole thing.
+```
+
+The script reads the network your Mac is already on, takes that password
+out of your keychain (macOS asks you — that prompt is the consent), hands
+it to the panel over its own access point, and gives your WiFi back. About
+twenty seconds offline, nothing typed.
+
+No Mac at hand? The panel raises **VibePulse-setup** and puts the password
+on the glass. Join it from your phone, the captive portal opens by itself,
+and you pick from what the *panel's* radio can see — which is the list that
+matters, since the ESP32-S3 cannot hear 5 GHz no matter how many bars your
+phone shows.
+
+The setup window opens on its own after 90 seconds without a network, or
+immediately on a 3-second KEY3 hold. Before that, at 60 seconds, the glass
+stops being coy: it names the network it is hunting and what the radio
+actually answered ("NOT SEEN - 2.4 GHZ ONLY", "WRONG PASSWORD") instead of
+showing dashes and letting you guess.
+
+Two things stay true by design. The networks in `secrets.h` remain an
+**immutable floor** — setup can add places, never remove your home network,
+so a bad entry can never cost you a USB rescue. And the setup window
+**cannot write firmware**: it touches the network list and nothing else,
+while OTA keeps its own token and its own gate.
+
+Honest limits: captive portals (the panel cannot click "I agree"), guest
+networks with client isolation, and WPA2-Enterprise are all still out of
+reach. The network that always works on the road is the one you bring —
+your phone's hotspot, with *Maximize Compatibility* on. Teach the panel
+that one once and it follows you everywhere. Full reference:
+[docs/wifi.md](docs/wifi.md).
 
 ## No hardware? Run the simulator
 
