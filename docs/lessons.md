@@ -21,6 +21,30 @@ point at the backlog item.
 
 ---
 
+## 2026-08-17 · The compiled-in IP address pointed at a network that no longer existed
+
+**What happened:** away from home, VibePulse showed dashes while
+Solelkollen on the same glass fetched happily. Hours of network
+debugging followed — IoT VLANs, client isolation, router admin — before
+the actual cause surfaced. **Root cause:** `TK_VIBEPULSE_BASE_URL` in
+`secrets.h` was a raw DHCP address (`http://192.168.1.50:8737`) from a
+network the Mac was no longer on. The runbook
+(`docs/agent-setup.md` step 1) had said to use the Bonjour name all
+along — "so the same binary works at home and on a phone hotspot" — but
+nothing *enforced* it, and an IP typed in once during setup worked for
+weeks before silently going stale. **The rule:** an address compiled
+into the firmware must be a *name*, never a number; a number is a
+snapshot of a DHCP lease. More generally: every compiled-in endpoint is
+the next travel failure — WiFi credentials were made data
+(`components/torget_wifi`), and the service address got a relay fallback
+(`net_source_policy`) for the reachability class no rename can fix.
+**Guards:** the runbook rule already existed; the relay fallback
+(`test_relay_boundary.py`) covers the cross-network case; no automated
+guard rejects a raw IP in `secrets.h` yet — a verify step in
+`docs/agent-setup.md` could `grep` for `http://[0-9]` and warn.
+**Watch for:** companion-app endpoints (`SG_GLANCE_URL` and friends)
+and any future `TK_*_URL` configured as an IP "just for now".
+
 ## 2026-08-17 · A global auth threshold refused every open network
 
 **What happened:** on the road the panel would never join a café or
