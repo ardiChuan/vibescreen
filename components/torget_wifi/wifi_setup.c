@@ -117,18 +117,22 @@ static void scan_networks(void) {
 
   /* Starkast först. Nätet man står bredvid ska ligga överst i listan, inte
    * på plats nio bland grannarnas — och det är panelens signalstyrka som
-   * gäller, inte telefonens. Insättningssortering på högst 16 poster. */
+   * gäller, inte telefonens. Insättningssortering på högst 16 poster.
+   *
+   * memcpy, inte snprintf: raderna är fasta och åtskilda, men båda bor i
+   * s_scan och GCC:s restrict-analys avvisar (med rätta) en strängkopiering
+   * där käll- och målobjekt är samma. En radflytt är en blockkopia. */
   for (int i = 1; i < s_scan.n; i++) {
     char ssid[TG_WIFI_SSID_CAP];
-    snprintf(ssid, sizeof ssid, "%s", s_scan.ssid[i]);
+    memcpy(ssid, s_scan.ssid[i], TG_WIFI_SSID_CAP);
     int8_t rssi = s_scan.rssi[i];
     int j = i - 1;
     while (j >= 0 && s_scan.rssi[j] < rssi) {
-      snprintf(s_scan.ssid[j + 1], TG_WIFI_SSID_CAP, "%s", s_scan.ssid[j]);
+      memmove(s_scan.ssid[j + 1], s_scan.ssid[j], TG_WIFI_SSID_CAP);
       s_scan.rssi[j + 1] = s_scan.rssi[j];
       j--;
     }
-    snprintf(s_scan.ssid[j + 1], TG_WIFI_SSID_CAP, "%s", ssid);
+    memcpy(s_scan.ssid[j + 1], ssid, TG_WIFI_SSID_CAP);
     s_scan.rssi[j + 1] = rssi;
   }
   ESP_LOGI(TAG, "setupfönstret ser %d nät", s_scan.n);
