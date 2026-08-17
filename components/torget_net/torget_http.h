@@ -23,4 +23,17 @@
  */
 bool torget_http_get(const char *url, char *buf, size_t cap, size_t *len_out);
 
+/*
+ * Samma hämtning, men med en reservadress: tjänsten på LAN:et först, reläet
+ * på internet om LAN inte svarar. relay_url får vara NULL — då är det här
+ * exakt torget_http_get.
+ *
+ * Vilken som provas först, och hur länge den får ta på sig, avgörs av
+ * net_source_policy (värdtestad). Tillståndet delas av alla anropare: har
+ * en hämtning redan konstaterat att LAN är borta ska nästa inte betala
+ * samma timeout om igen.
+ */
+bool torget_http_get_failover(const char *lan_url, const char *relay_url,
+                              char *buf, size_t cap, size_t *len_out);
+
 #endif
