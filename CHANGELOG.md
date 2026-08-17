@@ -21,17 +21,33 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   2026-08-14 freeze). The `secrets.h` networks stay as an immutable floor
   underneath, so no entry can ever cost a USB rescue, and the setup window
   can never write firmware. Full reference: `docs/wifi.md`.
-- The panel half of the **relay fallback**: fetches try the LAN service
-  first and fall back to a mailbox on the internet
-  (`TK_VIBEPULSE_RELAY_URL` in `secrets.h` — commented out by default, and
-  without it nothing changes). Born the same evening as the travel work:
-  a guest network's client isolation kept the panel from reaching the Mac
-  while internet worked fine, and no code on the panel could fix that. The
-  boundary is deliberate and test-enforced (`test/test_relay_boundary.py`):
-  the relay carries *numbers* (quota, burn rate, Max Tracker, GitHub),
-  never *activity* (agent status, Needs You, the device key's answer path
-  — those stay on the LAN). The service-side publisher and the mailbox
-  itself are not built yet; until they land the fallback is inert.
+- The **relay**, end to end: the panel can now get its numbers from
+  anywhere with internet, instead of only from the same LAN as the
+  service. Born the same evening as the travel work: a guest network's
+  client isolation kept the panel from reaching the Mac while internet
+  worked fine, and no code on the panel could fix that. Three parts, one
+  boundary:
+  - *Panel*: fetches try the LAN first and fall back to the mailbox
+    (`TK_VIBEPULSE_RELAY_URL` in `secrets.h` — commented out by default;
+    without it nothing changes).
+  - *Service*: `--publish <url>` POSTs the same three payloads the LAN
+    endpoints serve — send-on-change plus a 5-minute heartbeat, staying
+    inside Cloudflare KV's 1 000 free writes/day by design. Several
+    machines may publish to one mailbox; every send names its publisher.
+  - *Mailbox*: a ~150-line Cloudflare Worker (`tools/relay/`) that merges
+    freshest-per-pool on read using the observation stamps the staleness
+    logic already carries — Claude from whichever machine asked Anthropic
+    last, Codex from whichever machine ran Codex last.
+  The boundary is enforced from three directions
+  (`test/test_relay_boundary.py`, `test_publisher.py`, the Worker's path
+  allowlist): the relay carries *numbers* (quota, burn rate, Max Tracker,
+  GitHub), never *activity* (agent status, Needs You, the device key's
+  answer path — those stay on the LAN). Full design: `docs/relay.md`.
+- **Windows autostart** for the tokenserver
+  (`tools/tokenserver/install-windows-task.ps1`): a scheduled task running
+  as the logged-in user (never SYSTEM — the credential file lives in the
+  user profile), restarting on failure, logs in `%LOCALAPPDATA%\VibePulse\`.
+  Closes the gap in issue #3.
 - **Hold KEY3 twice to reach WiFi setup on a connected panel.** The setup
   window used to open only when the panel had no network — you could not
   pre-load the phone hotspot at home before a trip. Now a second full 3 s

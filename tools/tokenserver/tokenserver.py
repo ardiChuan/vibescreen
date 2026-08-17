@@ -70,6 +70,7 @@ if __package__:
     from .github_monitor import GitHubMonitor, disabled_snapshot, normalize_repo
     from .interactions import InteractionStore
     from .max_tracker import MaxTrackerStore
+    from .publisher import Publisher
     from .quota_cache import CachedQuota, QuotaCache
     from .usage_history import Forecast, UsageHistory
     from . import codex_usage, interactions, value_meter
@@ -79,6 +80,7 @@ else:  # direktkörning: python3 tools/tokenserver/tokenserver.py
     from github_monitor import GitHubMonitor, disabled_snapshot, normalize_repo
     from interactions import InteractionStore
     from max_tracker import MaxTrackerStore
+    from publisher import Publisher
     from quota_cache import CachedQuota, QuotaCache
     from usage_history import Forecast, UsageHistory
     import codex_usage
@@ -2290,6 +2292,19 @@ def _build_arg_parser():
         help="Frivilligt publikt GitHub-repo som owner/repository. "
              "Kan också sättas med VIBEPULSE_GITHUB_REPO.")
     ap.add_argument(
+        "--publish", metavar="RELAY_URL", default=None,
+        help="also POST the numbers endpoints (/api/tokens, /api/max-tracker,"
+             " /api/github) to a relay mailbox on the internet, so a panel"
+             " that cannot reach this LAN still gets them (docs/relay.md)."
+             " The URL is the mailbox address INCLUDING its secret path."
+             " Agent status and Needs You are never published -- the relay"
+             " carries numbers, not activity")
+    ap.add_argument(
+        "--publish-name", default=None,
+        help="publisher name sent with every relay POST (default: this"
+             " machine's hostname). Several machines may publish to the same"
+             " mailbox; the mailbox merges freshest-per-source by name")
+    ap.add_argument(
         "--interactions", action="store_true",
         help="accept Claude Code hooks on loopback and let a paired device "
              "answer them ('Needs You'). Off by default. Needs a device key "
@@ -2489,6 +2504,42 @@ def main():
                         "TK_VIBEPULSE_DEVICE_KEY i secrets.h (samma värde "
                         "som skärmen bygger med) för att kunna svara.")
 
+    relay_publisher = None
+    if args.publish:
+        # Producenterna ÄR handlarnas: reläet kan aldrig glida ifrån det
+        # LAN-endpointsen serverar. Agentstatus och Needs You publiceras
+        # medvetet inte — reläet bär siffror, aldrig aktivitet (samma gräns
+        # som firmwarens test/test_relay_boundary.py håller).
+        def _tokens_payload():
+            return get_snapshot(Handler.projects_dir,
+                                max_tracker_store=Handler.max_tracker_store)
+
+        def _tracker_payload():
+            quota_snapshot = get_snapshot(
+                Handler.projects_dir,
+                max_tracker_store=Handler.max_tracker_store)
+            today = datetime.now().astimezone().date().isoformat()
+            payload = Handler.max_tracker_store.snapshot(today, Handler.plans)
+            payload["stale"] = bool(
+                quota_snapshot.get("claudeWeekStale") or
+                quota_snapshot.get("codexWeekStale"))
+            return payload
+
+        def _github_payload():
+            return (github_monitor.snapshot() if github_monitor is not None
+                    else disabled_snapshot())
+
+        machine = args.publish_name or socket.gethostname().split(".")[0]
+        relay_publisher = Publisher(args.publish, machine, {
+            "/api/tokens": _tokens_payload,
+            "/api/max-tracker": _tracker_payload,
+            "/api/github": _github_payload,
+        })
+        relay_publisher.start()
+        log.info("publicerar siffror till reläet som \"%s\" (ändringar + "
+                 "hjärtslag var 5:e minut; agentstatus och Needs You "
+                 "publiceras ALDRIG)", machine)
+
     backfill_stop = threading.Event()
     backfill_thread = threading.Thread(
         target=_run_max_tracker_backfill,
@@ -2508,6 +2559,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        if relay_publisher is not None:
+            relay_publisher.stop()
         if github_monitor is not None:
             github_monitor.stop()
         backfill_stop.set()

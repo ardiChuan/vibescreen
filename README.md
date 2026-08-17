@@ -392,6 +392,16 @@ your phone's hotspot, with *Maximize Compatibility* on. Teach the panel
 that one once and it follows you everywhere. Full reference:
 [docs/wifi.md](docs/wifi.md).
 
+And for the networks that *do* connect but wall the panel off from your
+machine (client isolation, IoT VLANs): the optional **relay** puts the
+numbers in a tiny mailbox on the internet — a ~150-line Cloudflare Worker
+on your own account — and the panel falls back to it whenever the LAN
+does not answer. Quota, burn rate, Max Tracker and the GitHub pulse
+follow you anywhere with WiFi; agent activity and Needs You deliberately
+never leave your LAN. Several machines can feed the same mailbox
+(a Mac that sleeps, an always-on PC) and the freshest source wins per
+number. Setup and the full privacy boundary: [docs/relay.md](docs/relay.md).
+
 ## No hardware? Run the simulator
 
 ```

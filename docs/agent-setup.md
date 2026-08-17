@@ -89,10 +89,15 @@ scutil --get LocalHostName     # e.g. "Niclas-MacBook" -> Niclas-MacBook.local
 
 ```sh
 grep -q 'DIN-MAC' secrets.h && echo "PLACEHOLDER STILL THERE" || echo "hostname set"
+grep -nE 'http://[0-9]' secrets.h && echo "WARNING: raw IP in a URL" || echo "no raw IPs"
 ```
 
-prints `hostname set`. If it still says the placeholder is there, the board
-will look for a host that does not exist and every page will stay on dashes.
+prints `hostname set` and `no raw IPs`. If the placeholder is still there,
+the board will look for a host that does not exist and every page will stay
+on dashes. If the second line finds a raw IP: that is a snapshot of a DHCP
+lease, and it *will* go stale — it cost an entire evening of network
+debugging in the wrong direction before anyone read what the URL actually
+contained (`docs/lessons.md` 2026-08-17). Use the Bonjour name.
 
 Ask the user for the WiFi password. Do not guess it, and do not commit
 `secrets.h` — it is gitignored, keep it that way.

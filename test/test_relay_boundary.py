@@ -66,4 +66,17 @@ assert "/* #define TK_VIBEPULSE_RELAY_URL" in example, (
     "the relay must ship commented out — a fresh clone stays LAN-only"
 )
 
+# --- The same boundary, from the service side ---------------------------
+# The publisher must have no way to send the activity endpoints, and the
+# Worker must not accept them.  Three directions, one rule.
+publisher = read("tools/tokenserver/publisher.py")
+worker = read("tools/relay/worker.js")
+for source, name in ((publisher, "publisher.py"), (worker, "worker.js")):
+    assert "agent-status" not in source and "interaction" not in source, (
+        f"{name} must never touch the activity endpoints"
+    )
+assert '"/api/tokens", "/api/max-tracker", "/api/github"' in worker, (
+    "the Worker's endpoint allowlist must stay exactly the three number paths"
+)
+
 print("OK: the relay carries numbers, and activity stays on the LAN")

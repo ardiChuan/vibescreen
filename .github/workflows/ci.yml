@@ -29,7 +29,7 @@ jobs:
           python-version: "3.12"
       - name: Run tokenserver unit tests
         run: |
-          # Same eleven modules as test/run.sh, same order. The lists
+          # Same twelve modules as test/run.sh, same order. The lists
           # drifting apart is how a green CI hid a runtime NameError in
           # PR #11 (test_interactions was missing) — keep them in sync.
           python -m unittest \
@@ -43,7 +43,10 @@ jobs:
             tools.tokenserver.test_update_prices \
             tools.tokenserver.test_codex_usage \
             tools.tokenserver.test_interactions \
+            tools.tokenserver.test_publisher \
             tools.tokenserver.test_smoke -v
+      - name: Run relay mailbox merge tests
+        run: node --test tools/relay/test.mjs
 
   firmware:
     name: ESP32-S3 firmware build

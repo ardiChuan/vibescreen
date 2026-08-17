@@ -223,4 +223,13 @@ cd ..
   tools.tokenserver.test_update_prices \
   tools.tokenserver.test_codex_usage \
   tools.tokenserver.test_interactions \
+  tools.tokenserver.test_publisher \
   tools.tokenserver.test_smoke -v
+
+# Brevlådans sammanslagning (tools/relay) är ren JS och hålls av node.
+# Saknas node hoppas den ÄRLIGT över med en rad — CI kör den alltid.
+if command -v node >/dev/null 2>&1; then
+  node --test tools/relay/test.mjs
+else
+  echo "OBS: node saknas — tools/relay/test.mjs hoppas över (CI kör den)"
+fi

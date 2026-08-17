@@ -39,9 +39,8 @@ the next travel failure — WiFi credentials were made data
 (`components/torget_wifi`), and the service address got a relay fallback
 (`net_source_policy`) for the reachability class no rename can fix.
 **Guards:** the runbook rule already existed; the relay fallback
-(`test_relay_boundary.py`) covers the cross-network case; no automated
-guard rejects a raw IP in `secrets.h` yet — a verify step in
-`docs/agent-setup.md` could `grep` for `http://[0-9]` and warn.
+(`test_relay_boundary.py`) covers the cross-network case; the verify step
+in `docs/agent-setup.md` step 1 now greps for `http://[0-9]` and warns.
 **Watch for:** companion-app endpoints (`SG_GLANCE_URL` and friends)
 and any future `TK_*_URL` configured as an IP "just for now".
 
