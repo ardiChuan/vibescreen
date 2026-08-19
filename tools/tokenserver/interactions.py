@@ -30,19 +30,26 @@ enough to leak a prompt to anyone who can see the shelf.
 
 from __future__ import annotations
 
+import base64
+import copy
 import hashlib
 import hmac
 import json
+import math
 import re
+import secrets
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional, Tuple
+from types import MappingProxyType
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 if __package__:
     from .agent_status import sanitize_project
+    from .interaction_types import InteractionProvider, InteractionResult
 else:  # direct execution, same convention as tokenserver.py
     from agent_status import sanitize_project
+    from interaction_types import InteractionProvider, InteractionResult
 
 
 KINDS = ("question", "approval")
@@ -66,7 +73,10 @@ ALIVE_POLL_S = 2.0
 # drops it entirely rather than risk the existing contract. See
 # response_fits().
 PENDING_BUDGET_BYTES = 640
-RESPONSE_CEILING_BYTES = 3072
+# The firmware rejects a body whose length reaches its 4096-byte array size.
+# Keep a 512-byte transport margin while the standalone capacity test holds
+# the field-wise worst case below 80 % of the full firmware envelope.
+RESPONSE_CEILING_BYTES = 3584
 
 # Per-field display bounds, chosen to be readable at 480x480 rather than to be
 # generous. Anything longer is a thing you should read at your desk.
@@ -99,6 +109,15 @@ _APPROVABLE_COMMAND = re.compile(
 _COMMAND_CHAINING = re.compile(r"[;&|><`$\n]")
 
 _APPROVABLE_TOOLS = frozenset({"read", "glob", "grep", "notebookread"})
+
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+_QUESTION_VIEW_FIELDS = frozenset({
+    "kind", "options_total", "marked", "prompt", "title", "subtitle",
+    "can_approve",
+})
+_APPROVAL_VIEW_FIELDS = frozenset({
+    "kind", "tool", "title", "subtitle", "can_approve",
+})
 
 
 def _clean_text(value: Any, limit: int) -> Optional[str]:
@@ -308,6 +327,30 @@ def hook_response(kind: str, verdict: str, event: Dict[str, Any],
     return None
 
 
+def view_bytes(view: Mapping[str, Any]) -> bytes:
+    """Canonical bytes for the stable decision screen.
+
+    The countdown is transport state rather than part of what the person saw
+    and approved.  The digest itself is likewise excluded so a published view
+    can be fed back into this helper and reproduce its stored digest exactly.
+    Every other field remains bound.
+    """
+    if not isinstance(view, Mapping):
+        raise TypeError("view must be a mapping")
+    stable = {
+        key: value for key, value in view.items()
+        if key not in ("expires_in_ms", "view_sha256")
+    }
+    return json.dumps(
+        stable, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def view_digest(view: Mapping[str, Any]) -> str:
+    """SHA-256 of the exact stable decision-screen payload."""
+    return hashlib.sha256(view_bytes(view)).hexdigest()
+
+
 def sign_answer(secret: str, request_id: str, verdict: str,
                 ts: int) -> str:
     """HMAC a device answer. Same helper the fake CLI device uses."""
@@ -330,6 +373,69 @@ def verify_answer(secret: str, request_id: str, verdict: str, ts: Any,
     return hmac.compare_digest(expected, mac)
 
 
+def _provider(value: Any) -> Optional[InteractionProvider]:
+    if isinstance(value, InteractionProvider):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return InteractionProvider(value)
+    except ValueError:
+        return None
+
+
+def _v2_stamp(value: Any) -> Optional[int]:
+    # JSON booleans are ints in Python, and floats would be silently truncated
+    # by int().  Neither is an acceptable timestamp on a signed boundary.
+    if type(value) is not int or not 0 <= value <= 0x7FFFFFFFFFFFFFFF:
+        return None
+    return value
+
+
+def _v2_fields(provider: Any, request_id: Any, digest: Any,
+               verdict: Any, ts: Any) -> Optional[Tuple[str, int]]:
+    parsed_provider = _provider(provider)
+    stamp = _v2_stamp(ts)
+    if parsed_provider is None or not isinstance(request_id, str) or \
+            not request_id or not isinstance(digest, str) or \
+            _SHA256_HEX.fullmatch(digest) is None or verdict not in VERDICTS or \
+            stamp is None:
+        return None
+    return parsed_provider.value, stamp
+
+
+def sign_answer_v2(secret: str, provider: Any, request_id: str,
+                   digest: str, verdict: str, ts: int) -> str:
+    """Sign a verdict bound to its provider and exact published view."""
+    fields = _v2_fields(provider, request_id, digest, verdict, ts)
+    if not isinstance(secret, str) or not secret or fields is None:
+        raise ValueError("invalid v2 answer")
+    provider_value, stamp = fields
+    message = (
+        f"v2|{provider_value}|{request_id}|{digest}|{verdict}|{int(stamp)}"
+    ).encode("utf-8")
+    return hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+
+
+def verify_answer_v2(secret: str, provider: Any, request_id: Any,
+                     digest: Any, verdict: Any, ts: Any, mac: Any,
+                     now_wall: float) -> bool:
+    """Strict, constant-time v2 verification inside the replay window."""
+    fields = _v2_fields(provider, request_id, digest, verdict, ts)
+    if not isinstance(secret, str) or not secret or fields is None or \
+            not isinstance(mac, str) or _SHA256_HEX.fullmatch(mac) is None or \
+            isinstance(now_wall, bool) or \
+            not isinstance(now_wall, (int, float)) or \
+            not math.isfinite(float(now_wall)):
+        return False
+    _, stamp = fields
+    if abs(float(now_wall) - stamp) > FRESHNESS_S:
+        return False
+    expected = sign_answer_v2(
+        secret, provider, request_id, digest, verdict, stamp)
+    return hmac.compare_digest(expected, mac)
+
+
 def response_fits(payload: Dict[str, Any]) -> bool:
     """Would this /api/agent-status body still parse on the device?
 
@@ -344,15 +450,112 @@ def response_fits(payload: Dict[str, Any]) -> bool:
     return len(encoded) <= RESPONSE_CEILING_BYTES
 
 
+def _normalized_view(kind: str, raw: Any) -> Optional[Mapping[str, Any]]:
+    """Validate and freeze the small provider-neutral display boundary."""
+    if not isinstance(raw, dict):
+        return None
+    allowed = _QUESTION_VIEW_FIELDS if kind == "question" else \
+        _APPROVAL_VIEW_FIELDS
+    if set(raw) - allowed or raw.get("kind") != kind or \
+            type(raw.get("can_approve")) is not bool:
+        return None
+
+    view = {key: value for key, value in raw.items() if value is not None}
+    text_limits = {
+        "prompt": PROMPT_MAX, "title": TITLE_MAX,
+        "subtitle": SUBTITLE_MAX, "tool": 24,
+    }
+    for field_name, limit in text_limits.items():
+        if field_name in view and (
+                not isinstance(view[field_name], str) or
+                not view[field_name] or len(view[field_name]) > limit):
+            return None
+
+    if kind == "question":
+        if type(view.get("options_total")) is not int or \
+                view["options_total"] < 1 or \
+                type(view.get("marked")) is not bool:
+            return None
+        if view["can_approve"] and (
+                not view["marked"] or not view.get("title")):
+            return None
+    elif view["can_approve"] and not view.get("title"):
+        return None
+    return MappingProxyType(view)
+
+
+def _codex_question_is_normalized(normalized: Dict[str, Any],
+                                  view: Mapping[str, Any],
+                                  recommended: Optional[int]) -> bool:
+    expected_fields = {
+        "provider", "kind", "project", "session_id", "turn_id", "options",
+        "recommended_index", "view",
+    }
+    if set(normalized) != expected_fields:
+        return False
+    options = normalized.get("options")
+    if not isinstance(options, list) or len(options) not in (2, 3) or \
+            view.get("options_total") != len(options):
+        return False
+    marked = []
+    for index, option in enumerate(options):
+        if not isinstance(option, dict) or "label" not in option or \
+                set(option) - {"label", "description", "recommended"} or \
+                not isinstance(option["label"], str) or not option["label"]:
+            return False
+        if "description" in option and (
+                not isinstance(option["description"], str) or
+                not option["description"]):
+            return False
+        if "recommended" in option and \
+                type(option["recommended"]) is not bool:
+            return False
+        if option.get("recommended") is True:
+            marked.append(index)
+    expected_recommended = marked[0] if len(marked) == 1 else None
+    if len(marked) > 1 or recommended != expected_recommended or \
+            view.get("marked") != (recommended is not None) or \
+            view.get("can_approve") != (recommended is not None):
+        return False
+    if recommended is not None:
+        selected = options[recommended]
+        if view.get("title") != selected["label"] or \
+                view.get("subtitle") != selected.get("description"):
+            return False
+    return True
+
+
+def _codex_approval_is_normalized(normalized: Dict[str, Any],
+                                  recommended: Optional[int]) -> bool:
+    expected_fields = {
+        "provider", "kind", "project", "session_id", "turn_id", "event",
+        "recommended_index", "view",
+    }
+    event = normalized.get("event")
+    if set(normalized) != expected_fields or recommended is not None or \
+            not isinstance(event, dict) or \
+            event.get("hook_event_name") != "PermissionRequest" or \
+            event.get("session_id") != normalized.get("session_id") or \
+            event.get("turn_id") != normalized.get("turn_id") or \
+            not isinstance(event.get("cwd"), str) or \
+            not isinstance(event.get("tool_name"), str) or \
+            not isinstance(event.get("tool_input"), dict):
+        return False
+    return sanitize_project(event["cwd"]) == normalized.get("project")
+
+
 @dataclass
 class _Pending:
     request_id: str
+    provider: InteractionProvider
     kind: str
-    event: Dict[str, Any]
-    view: Dict[str, Any]
-    option_index: int
+    event: Optional[Dict[str, Any]]
+    view: Mapping[str, Any]
+    recommended_index: Optional[int]
+    view_sha256: str
     project: Optional[str]
     session_key: Optional[str]
+    hold_ms: int
     created_at: float
     expires_at: float
     done: threading.Event = field(default_factory=threading.Event)
@@ -369,27 +572,47 @@ class InteractionStore:
     def __init__(self, secret: str = "", reveal_detail: bool = False,
                  now: Callable[[], float] = time.monotonic,
                  wall: Callable[[], float] = time.time,
-                 audit: Optional[Callable[[str, Dict[str, Any]], None]] = None):
+                 audit: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+                 random_bytes: Callable[[int], bytes] = secrets.token_bytes):
         self._secret = secret
         self._reveal = bool(reveal_detail)
         self._now = now
         self._wall = wall
         self._audit = audit
+        self._random_bytes = random_bytes
         self._lock = threading.Lock()
         self._pending: Dict[str, _Pending] = {}
-        self._counter = 0
+        self._issued_ids = set()
 
     # -- creation ---------------------------------------------------------
 
-    def _mint_id(self) -> str:
-        self._counter += 1
-        raw = f"{self._wall():.6f}|{self._counter}|{id(self):x}"
-        return hashlib.sha256(raw.encode()).hexdigest()[:32]
+    def _mint_id_locked(self) -> Optional[str]:
+        # Sixteen random bytes are 128 bits; unpadded base64url is always 22
+        # characters and fits both the current and legacy 33-byte firmware
+        # request-id buffers.  Retaining issued IDs also makes an injected
+        # collision unable to revive an old double-tap target.
+        for _ in range(32):
+            try:
+                raw = self._random_bytes(16)
+            except Exception:
+                return None
+            if not isinstance(raw, bytes) or len(raw) != 16:
+                return None
+            request_id = base64.urlsafe_b64encode(raw).decode(
+                "ascii").rstrip("=")
+            if request_id not in self._issued_ids:
+                self._issued_ids.add(request_id)
+                return request_id
+        return None
 
     def park(self, kind: str, event: Dict[str, Any],
-             timeout_s: float) -> Optional[_Pending]:
+             hold_s: float) -> Optional[_Pending]:
         """Register an interaction. None means "we cannot show this" — the
-        caller returns no decision and the terminal handles it."""
+        caller returns no decision and the terminal handles it.
+
+        This is the legacy Claude boundary.  New adapters hand their validated
+        provider-neutral boundary to ``park_normalized`` instead.
+        """
         if kind not in KINDS or not isinstance(event, dict):
             return None
         tool_input = event.get("tool_input")
@@ -401,32 +624,130 @@ class InteractionStore:
         else:
             view = approval_view(event.get("tool_name"), tool_input,
                                  self._reveal)
-            option_index = 0
+            option_index = None
+        return self.park_normalized({
+            "provider": InteractionProvider.CLAUDE.value,
+            "kind": kind,
+            "project": sanitize_project(event.get("cwd")),
+            "event": event,
+            "recommended_index": option_index,
+            "view": view,
+        }, hold_s)
 
+    def park_normalized(self, normalized: Any,
+                        hold_s: float) -> Optional[_Pending]:
+        """Park a validated Claude/Codex boundary without publishing raw data."""
+        if not isinstance(normalized, dict):
+            return None
+        provider = _provider(normalized.get("provider"))
+        kind = normalized.get("kind")
+        if provider is None or kind not in KINDS:
+            return None
+        view = _normalized_view(kind, normalized.get("view"))
+        project = normalized.get("project")
+        if view is None or (project is not None and (
+                not isinstance(project, str) or
+                sanitize_project(project) != project)):
+            return None
+        recommended = normalized.get("recommended_index")
+        if recommended is not None and (
+                type(recommended) is not int or recommended < 0):
+            return None
+        if kind == "question" and recommended is not None and \
+                recommended >= view["options_total"]:
+            return None
+        if kind == "approval" and recommended is not None:
+            return None
+
+        event: Optional[Dict[str, Any]] = None
+        session_id: Any = None
+        if provider is InteractionProvider.CLAUDE:
+            if set(normalized) != {
+                    "provider", "kind", "project", "event",
+                    "recommended_index", "view"}:
+                return None
+            raw_event = normalized.get("event")
+            if not isinstance(raw_event, dict) or \
+                    sanitize_project(raw_event.get("cwd")) != project:
+                return None
+            tool_input = raw_event.get("tool_input")
+            if kind == "question":
+                question = first_question(tool_input)
+                if question is None:
+                    return None
+                expected_view, expected_index = question_view(
+                    question, self._reveal)
+            else:
+                expected_view = approval_view(
+                    raw_event.get("tool_name"), tool_input, self._reveal)
+                expected_index = None
+            frozen_expected = _normalized_view(kind, expected_view)
+            if frozen_expected is None or \
+                    dict(view) != dict(frozen_expected) or \
+                    recommended != expected_index:
+                return None
+            event = copy.deepcopy(raw_event)
+            session_id = raw_event.get("session_id")
+        else:
+            if not isinstance(normalized.get("session_id"), str) or \
+                    not normalized["session_id"] or \
+                    not isinstance(normalized.get("turn_id"), str) or \
+                    not normalized["turn_id"]:
+                return None
+            if kind == "question":
+                if not _codex_question_is_normalized(
+                        normalized, view, recommended):
+                    return None
+            elif not _codex_approval_is_normalized(normalized, recommended):
+                return None
+            session_id = normalized["session_id"]
+
+        try:
+            duration = max(1.0, float(hold_s))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(duration):
+            return None
         now = self._now()
-        entry = _Pending(
-            request_id=self._mint_id(),
-            kind=kind,
-            event=event,
-            view=view,
-            option_index=option_index,
-            project=sanitize_project(event.get("cwd")),
-            session_key=_session_key(event.get("session_id")),
-            created_at=now,
-            expires_at=now + max(1.0, float(timeout_s)),
-        )
+        hold_ms = max(1, int(duration * 1000))
         with self._lock:
             self._sweep_locked(now)
             if len(self._pending) >= MAX_PENDING:
                 return None
+            request_id = self._mint_id_locked()
+            if request_id is None:
+                return None
+            stable = {
+                "provider": provider.value,
+                "request_id": request_id,
+                "project": project,
+                "hold_ms": hold_ms,
+            }
+            stable.update(view)
+            stable = {key: value for key, value in stable.items()
+                      if value is not None}
+            entry = _Pending(
+                request_id=request_id,
+                provider=provider,
+                kind=kind,
+                event=event,
+                view=view,
+                recommended_index=recommended,
+                view_sha256=view_digest(stable),
+                project=project,
+                session_key=_session_key(session_id),
+                hold_ms=hold_ms,
+                created_at=now,
+                expires_at=now + duration,
+            )
             self._pending[entry.request_id] = entry
         self._log("parked", entry, None)
         return entry
 
-    def await_verdict(self, entry: _Pending,
-                      is_alive: Optional[Callable[[], bool]] = None
-                      ) -> Optional[Dict[str, Any]]:
-        """Block until answered, abandoned or expired; return the hook body.
+    def await_result(self, entry: _Pending,
+                     is_alive: Optional[Callable[[], bool]] = None
+                     ) -> Optional[InteractionResult]:
+        """Block until answered, abandoned or expired; return a neutral result.
 
         ``is_alive`` lets the caller say whether the session that asked is
         still there. Without it a hook whose client has gone — Ctrl-C, a
@@ -452,24 +773,71 @@ class InteractionStore:
                     return None
         with self._lock:
             self._pending.pop(entry.request_id, None)
-        verdict = entry.verdict or "leave_it"
         if entry.verdict is None:
             self._log("timeout", entry, None)
-        return hook_response(entry.kind, verdict, entry.event,
-                             entry.option_index)
+            return None
+        option_index = entry.recommended_index \
+            if entry.verdict == "approve" else None
+        return InteractionResult(entry.verdict, option_index)
+
+    def await_verdict(self, entry: _Pending,
+                      is_alive: Optional[Callable[[], bool]] = None
+                      ) -> Optional[Dict[str, Any]]:
+        """Claude-only compatibility wrapper returning its exact hook body."""
+        if entry.provider is not InteractionProvider.CLAUDE:
+            # A wrong adapter must never turn a Codex result into Claude hook
+            # authority. Reap a still-live mistake so it cannot shadow the
+            # queue as a ghost.
+            with self._lock:
+                self._pending.pop(entry.request_id, None)
+            entry.done.set()
+            self._log("provider-mismatch", entry, None)
+            return None
+        result = self.await_result(entry, is_alive=is_alive)
+        if result is None or entry.event is None:
+            return None
+        return hook_response(
+            entry.kind, result.verdict, entry.event,
+            result.option_index if result.option_index is not None else 0,
+        )
 
     # -- answering --------------------------------------------------------
 
     def resolve(self, request_id: Any, verdict: Any, ts: Any,
-                mac: Any) -> Tuple[bool, str]:
+                mac: Any, provider: Any = None,
+                view_sha256: Any = None) -> Tuple[bool, str]:
         """Apply one signed answer. Returns (ok, reason)."""
         if not isinstance(request_id, str) or verdict not in VERDICTS:
             return False, "bad request"
         if not self._secret:
             return False, "device answers are not configured"
-        if not verify_answer(self._secret, request_id, verdict, ts, mac,
-                             self._wall()):
-            return False, "signature rejected"
+
+        with self._lock:
+            self._sweep_locked(self._now())
+            entry = self._pending.get(request_id)
+        uses_v2 = provider is not None or view_sha256 is not None
+        if entry is not None and \
+                entry.provider is InteractionProvider.CODEX and \
+                (provider is None or view_sha256 is None):
+            return False, "v2 verdict required"
+        if uses_v2:
+            if not verify_answer_v2(
+                    self._secret, provider, request_id, view_sha256, verdict,
+                    ts, mac, self._wall()):
+                return False, "signature rejected"
+            if entry is not None and (
+                    _provider(provider) is not entry.provider or
+                    not hmac.compare_digest(view_sha256,
+                                            entry.view_sha256)):
+                return False, "interaction binding rejected"
+        else:
+            if entry is not None and \
+                    entry.provider is not InteractionProvider.CLAUDE:
+                return False, "v2 verdict required"
+            if not verify_answer(self._secret, request_id, verdict, ts, mac,
+                                 self._wall()):
+                return False, "signature rejected"
+
         with self._lock:
             self._sweep_locked(self._now())
             entry = self._pending.get(request_id)
@@ -526,16 +894,17 @@ class InteractionStore:
             entry = min(self._pending.values(),
                         key=lambda item: (item.created_at, item.request_id))
             payload = {
+                "provider": entry.provider.value,
                 "request_id": entry.request_id,
                 "project": entry.project,
                 "expires_in_ms": max(
                     0, int((entry.expires_at - now) * 1000)),
                 # The original hold, so the panel's countdown ring maps to the
                 # REAL terminal-fallback time rather than guessing a duration.
-                "hold_ms": max(1, int((entry.expires_at - entry.created_at)
-                                      * 1000)),
+                "hold_ms": entry.hold_ms,
             }
             payload.update(entry.view)
+            payload["view_sha256"] = entry.view_sha256
         payload = {key: value for key, value in payload.items()
                    if value is not None}
         encoded = len(json.dumps(payload).encode())
@@ -560,8 +929,10 @@ class InteractionStore:
         try:
             self._audit(action, {
                 "request_id": entry.request_id,
+                "provider": entry.provider.value,
                 "kind": entry.kind,
-                "tool": entry.event.get("tool_name"),
+                "tool": entry.event.get("tool_name")
+                if entry.event is not None else entry.view.get("tool"),
                 "project": entry.project,
                 "session": entry.session_key,
                 "verdict": verdict,

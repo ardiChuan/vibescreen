@@ -1,6 +1,8 @@
 import dataclasses
+import json
 import unittest
 
+from tools.tokenserver import interactions
 from tools.tokenserver.interaction_types import (
     InteractionProvider,
     InteractionResult,
@@ -349,3 +351,182 @@ class CodexNormalizationTests(unittest.TestCase):
         self.assertEqual(codex_question_result("approve", unmarked), {
             "status": "computer", "reason": "approve",
         })
+
+
+class Clock:
+    def __init__(self, value=1000.0):
+        self.value = value
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += seconds
+
+
+class CodexInteractionStoreTests(unittest.TestCase):
+    SECRET = "a" * 64
+
+    def setUp(self):
+        self.clock = Clock()
+        self.wall = Clock(50_000.0)
+        self.store = interactions.InteractionStore(
+            secret=self.SECRET, reveal_detail=True, now=self.clock,
+            wall=self.wall)
+
+    def normalized_question(self):
+        return normalize_codex_question(
+            codex_question(), cwd="/Users/niclas/vibepulse",
+            session_id="session-123", turn_id="turn-456")
+
+    def answer_v2(self, entry, verdict="approve", *, provider=None,
+                  digest=None, stamp=None, mac=None):
+        provider = provider if provider is not None else entry.provider.value
+        digest = digest if digest is not None else entry.view_sha256
+        stamp = int(self.wall()) if stamp is None else stamp
+        if mac is None:
+            mac = interactions.sign_answer_v2(
+                self.SECRET, provider, entry.request_id, digest, verdict,
+                stamp)
+        return self.store.resolve(
+            entry.request_id, verdict, stamp, mac, provider=provider,
+            view_sha256=digest)
+
+    def test_codex_public_view_is_provider_bound_private_free_and_immutable(self):
+        normalized = self.normalized_question()
+        entry = self.store.park_normalized(normalized, 120)
+        normalized["view"]["title"] = "tampered after park"
+        public = self.store.pending_public()
+
+        self.assertEqual(public["provider"], "codex")
+        self.assertEqual(public["title"], "New auth layer")
+        self.assertEqual(public["view_sha256"],
+                         interactions.view_digest(public))
+        serialized = json.dumps(public)
+        for private in ("session-123", "turn-456", "session_id", "turn_id",
+                        "event"):
+            self.assertNotIn(private, serialized)
+        with self.assertRaises(TypeError):
+            entry.view["title"] = "mutate stored view"
+
+    def test_v1_cannot_resolve_codex_and_does_not_consume_it(self):
+        entry = self.store.park_normalized(self.normalized_question(), 120)
+        stamp = int(self.wall())
+        mac = interactions.sign_answer(
+            self.SECRET, entry.request_id, "approve", stamp)
+
+        ok, reason = self.store.resolve(
+            entry.request_id, "approve", stamp, mac)
+
+        self.assertEqual((ok, reason), (False, "v2 verdict required"))
+        self.assertEqual(self.store.pending_public()["request_id"],
+                         entry.request_id)
+        for provider, digest in (("codex", None),
+                                 (None, entry.view_sha256)):
+            with self.subTest(provider=provider, digest=digest):
+                ok, reason = self.store.resolve(
+                    entry.request_id, "approve", stamp, "0" * 64,
+                    provider=provider, view_sha256=digest)
+                self.assertEqual((ok, reason),
+                                 (False, "v2 verdict required"))
+                self.assertEqual(self.store.pending_public()["request_id"],
+                                 entry.request_id)
+
+    def test_v2_exact_binding_returns_codex_recommended_option(self):
+        entry = self.store.park_normalized(self.normalized_question(), 120)
+
+        self.assertEqual(self.answer_v2(entry), (True, "ok"))
+        result = self.store.await_result(entry)
+
+        self.assertEqual(result, InteractionResult(
+            verdict="approve", option_index=1))
+
+    def test_codex_permission_keeps_raw_event_private_and_has_no_option(self):
+        normalized = normalize_codex_permission(
+            codex_permission(), reveal=True)
+        entry = self.store.park_normalized(normalized, 120)
+        public = self.store.pending_public()
+
+        self.assertEqual(public["provider"], "codex")
+        self.assertEqual(public["kind"], "approval")
+        self.assertNotIn("session-123", json.dumps(public))
+        self.assertNotIn("turn-456", json.dumps(public))
+        self.assertEqual(self.answer_v2(entry), (True, "ok"))
+        self.assertEqual(self.store.await_result(entry), InteractionResult(
+            verdict="approve", option_index=None))
+
+    def test_wrong_v2_bindings_and_bad_signatures_never_consume(self):
+        entry = self.store.park_normalized(self.normalized_question(), 600)
+        stamp = int(self.wall())
+        wrong_digest = "0" * 64
+        attempts = [
+            ("claude", entry.view_sha256, stamp,
+             interactions.sign_answer_v2(
+                 self.SECRET, "claude", entry.request_id,
+                 entry.view_sha256, "approve", stamp)),
+            ("codex", wrong_digest, stamp,
+             interactions.sign_answer_v2(
+                 self.SECRET, "codex", entry.request_id, wrong_digest,
+                 "approve", stamp)),
+            ("CODEX", entry.view_sha256, stamp, "0" * 64),
+            ("codex", "short", stamp, "0" * 64),
+            ("codex", entry.view_sha256, stamp, "0" * 64),
+        ]
+        for provider, digest, attempted_stamp, mac in attempts:
+            with self.subTest(provider=provider, digest=digest, mac=mac):
+                ok, _ = self.store.resolve(
+                    entry.request_id, "approve", attempted_stamp, mac,
+                    provider=provider, view_sha256=digest)
+                self.assertFalse(ok)
+                self.assertEqual(self.store.pending_public()["request_id"],
+                                 entry.request_id)
+
+        stale_mac = interactions.sign_answer_v2(
+            self.SECRET, "codex", entry.request_id, entry.view_sha256,
+            "approve", stamp)
+        self.wall.advance(interactions.FRESHNESS_S + 1)
+        ok, _ = self.store.resolve(
+            entry.request_id, "approve", stamp, stale_mac,
+            provider="codex", view_sha256=entry.view_sha256)
+        self.assertFalse(ok)
+        self.assertEqual(self.store.pending_public()["request_id"],
+                         entry.request_id)
+
+        self.assertEqual(self.answer_v2(entry), (True, "ok"))
+
+    def test_codex_approve_still_requires_can_approve(self):
+        normalized = normalize_codex_question(
+            codex_question(options=[
+                {"label": "first"}, {"label": "second"},
+            ]), cwd="/Users/niclas/vibepulse",
+            session_id="session-123", turn_id="turn-456")
+        entry = self.store.park_normalized(normalized, 120)
+
+        ok, reason = self.answer_v2(entry)
+
+        self.assertFalse(ok)
+        self.assertIn("terminal", reason)
+        self.assertIsNotNone(self.store.pending_public())
+
+    def test_await_verdict_refuses_codex_without_hook_output(self):
+        entry = self.store.park_normalized(self.normalized_question(), 120)
+        self.assertEqual(self.answer_v2(entry), (True, "ok"))
+
+        self.assertIsNone(self.store.await_verdict(entry))
+
+    def test_normalized_boundary_rejects_unvalidated_or_private_view_fields(self):
+        valid = self.normalized_question()
+        cases = [
+            None,
+            {**valid, "provider": "other"},
+            {**valid, "recommended_index": 99},
+            {**valid, "view": {**valid["view"],
+                                "session_id": "must-not-publish"}},
+            {**valid, "view": {**valid["view"], "event": {"raw": True}}},
+        ]
+
+        for normalized in cases:
+            with self.subTest(normalized=normalized):
+                self.assertIsNone(self.store.park_normalized(normalized, 120))
+
+        self.assertIsNone(self.store.pending_public())

@@ -214,6 +214,51 @@ class SignatureTests(unittest.TestCase):
         self.assertFalse(verify_answer("", "abc", "approve", 1000, "z",
                                        1000.0))
 
+    def test_v2_round_trip_binds_provider_request_view_verdict_and_time(self):
+        digest = "1" * 64
+        mac = interactions.sign_answer_v2(
+            SECRET, "claude", "request", digest, "approve", 1000)
+
+        self.assertTrue(interactions.verify_answer_v2(
+            SECRET, "claude", "request", digest, "approve", 1000, mac,
+            1000.0))
+        for provider, request_id, changed_digest, verdict, stamp in (
+                ("codex", "request", digest, "approve", 1000),
+                ("claude", "different", digest, "approve", 1000),
+                ("claude", "request", "2" * 64, "approve", 1000),
+                ("claude", "request", digest, "deny", 1000),
+                ("claude", "request", digest, "approve", 1001)):
+            with self.subTest(field=(provider, request_id, changed_digest,
+                                     verdict, stamp)):
+                self.assertFalse(interactions.verify_answer_v2(
+                    SECRET, provider, request_id, changed_digest, verdict,
+                    stamp, mac, 1000.0))
+
+    def test_v2_validation_is_strict_and_fresh(self):
+        digest = "1" * 64
+        mac = interactions.sign_answer_v2(
+            SECRET, "codex", "request", digest, "deny", 1000)
+
+        invalid = (
+            ("CODEX", digest, "deny", 1000, mac),
+            ("codex", "A" * 64, "deny", 1000, mac),
+            ("codex", "short", "deny", 1000, mac),
+            ("codex", digest, "maybe", 1000, mac),
+            ("codex", digest, "deny", 1000.5, mac),
+            ("codex", digest, "deny", True, mac),
+            ("codex", digest, "deny", 10 ** 1000, "0" * 64),
+            ("codex", digest, "deny", 1000, "not-hex"),
+        )
+        for provider, changed_digest, verdict, stamp, changed_mac in invalid:
+            with self.subTest(value=(provider, changed_digest, verdict,
+                                     stamp, changed_mac)):
+                self.assertFalse(interactions.verify_answer_v2(
+                    SECRET, provider, "request", changed_digest, verdict,
+                    stamp, changed_mac, 1000.0))
+        self.assertFalse(interactions.verify_answer_v2(
+            SECRET, "codex", "request", digest, "deny", 1000, mac,
+            1000.0 + interactions.FRESHNESS_S + 1))
+
 
 class StoreTests(unittest.TestCase):
     def setUp(self):
@@ -235,6 +280,9 @@ class StoreTests(unittest.TestCase):
         entry = self.store.park("question", question_event(), 120)
         public = self.store.pending_public()
         self.assertEqual(public["request_id"], entry.request_id)
+        self.assertEqual(public["provider"], "claude")
+        self.assertEqual(public["view_sha256"],
+                         interactions.view_digest(public))
         self.assertEqual(public["title"], "New auth layer")
         self.assertEqual(public["subtitle"], "Cleaner architecture")
         self.assertEqual(public["project"], "vibepulse")
@@ -250,6 +298,62 @@ class StoreTests(unittest.TestCase):
             body["hookSpecificOutput"]["updatedInput"]["answers"],
             {"Which auth approach?": "New auth layer (Recommended)"})
         self.assertIsNone(self.store.pending_public())
+
+    def test_view_digest_ignores_only_countdown_and_self_digest(self):
+        self.store.park("question", question_event(), 90)
+        public = self.store.pending_public()
+        digest = public["view_sha256"]
+        canonical = interactions.view_bytes(public)
+
+        self.clock.advance(30)
+        later = self.store.pending_public()
+        self.assertNotEqual(later["expires_in_ms"], public["expires_in_ms"])
+        self.assertEqual(later["view_sha256"], digest)
+        self.assertEqual(interactions.view_digest(later), digest)
+        self.assertEqual(interactions.view_bytes(later), canonical)
+        changed = dict(later)
+        changed["hold_ms"] += 1
+        self.assertNotEqual(interactions.view_digest(changed), digest)
+
+    def test_fractional_hold_uses_one_stored_value_in_view_and_digest(self):
+        entry = self.store.park("approval", approval_event(), 90.001)
+        public = self.store.pending_public()
+
+        self.assertEqual(public["hold_ms"], 90001)
+        self.assertEqual(public["view_sha256"], entry.view_sha256)
+        self.assertEqual(interactions.view_digest(public), entry.view_sha256)
+
+    def test_view_bytes_use_the_specified_canonical_json_encoding(self):
+        view = {"provider": "claude", "title": "Fråga"}
+        expected = json.dumps(
+            view, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+        self.assertEqual(interactions.view_bytes(view), expected)
+
+    def test_new_ids_are_unique_canonical_128_bit_base64url(self):
+        random_values = iter((bytes(range(16)), bytes(range(1, 17))))
+        store = InteractionStore(
+            secret=SECRET, reveal_detail=True, now=self.clock,
+            wall=self.wall, random_bytes=lambda size: next(random_values))
+
+        first = store.park("approval", approval_event(), 120)
+        second = store.park("approval", approval_event(), 120)
+
+        self.assertEqual(first.request_id, "AAECAwQFBgcICQoLDA0ODw")
+        self.assertEqual(len(first.request_id), 22)
+        self.assertRegex(first.request_id, r"^[A-Za-z0-9_-]{22}$")
+        self.assertEqual(len(second.request_id), 22)
+        self.assertNotEqual(first.request_id, second.request_id)
+
+    def test_v1_claude_compatibility_returns_the_exact_hook_shape(self):
+        event = approval_event()
+        entry = self.store.park("approval", event, 120)
+
+        ok, reason = self.answer(entry.request_id, "approve")
+
+        self.assertEqual((ok, reason), (True, "ok"))
+        self.assertEqual(self.store.await_verdict(entry),
+                         hook_response("approval", "approve", event))
 
     def test_hold_ms_is_the_original_duration_for_the_ring(self):
         # The countdown ring needs the original hold, not just the remaining
