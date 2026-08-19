@@ -8,6 +8,7 @@ separates private adapter data from the bounded panel ``view``.
 from __future__ import annotations
 
 import shlex
+import re
 import unicodedata
 from typing import Any, Dict, Optional
 
@@ -21,22 +22,15 @@ else:  # direct execution, same convention as tokenserver.py
 
 _QUESTION_FIELDS = frozenset({"question", "header", "options"})
 _OPTION_FIELDS = frozenset({"label", "description", "recommended"})
-_REMOTE_DENIED_WORDS = frozenset({
-    "install", "deploy", "publish", "push", "delete", "clean",
-    "uninstall", "clone", "pull", "curl", "wget", "fetch", "ssh", "scp", "sftp",
-    "ftp", "rsync", "nc", "netcat", "tee", "dd", "rm", "mv", "cp",
-    "touch", "truncate", "chmod", "chown", "ln", "write", "edit",
-})
-_REMOTE_DENIED_OPTIONS = frozenset({"-t", "--touch", "--clean-first"})
-_PACKAGE_MANAGERS = frozenset({
-    "npm", "yarn", "pnpm", "pip", "pip3", "pipx", "poetry", "uv",
-    "brew", "apt", "apt-get", "yum", "dnf", "pacman", "gem", "composer",
-})
-_PACKAGE_INSTALL_ACTIONS = frozenset({
-    "install", "ci", "add", "i", "update", "upgrade", "reinstall",
-    "exec", "dlx", "create", "run",
-})
-_PACKAGE_DIRECT_EXECUTORS = frozenset({"npx", "bunx"})
+_SAFE_BUILD_TARGETS = frozenset({"all", "build", "test", "check"})
+_SAFE_NPM_FLAGS = frozenset({"--silent", "--if-present", "--ignore-scripts"})
+_SAFE_GIT_STATUS_FLAGS = frozenset({"--short", "-s", "--branch", "-b",
+                                    "--porcelain"})
+_SAFE_GIT_LOG_SHOW_FLAGS = frozenset({"--oneline", "--decorate", "--graph",
+                                      "--stat", "--patch", "--no-color"})
+_SAFE_GIT_DIFF_FLAGS = frozenset({"--stat", "--name-only", "--name-status",
+                                  "--check", "--no-color", "--cached", "--staged"})
+_VARIABLE_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 
 
 def _is_control_free(value: str) -> bool:
@@ -58,8 +52,100 @@ def _text_is_valid(value: Any, maximum_bytes: Optional[int] = None) -> bool:
     return maximum_bytes is None or len(encoded) <= maximum_bytes
 
 
+def _plain_arguments(arguments: list[str]) -> bool:
+    return all(not argument.startswith("-") for argument in arguments)
+
+
+def _make_or_ninja_is_safe(arguments: list[str]) -> bool:
+    for argument in arguments:
+        if _VARIABLE_ASSIGNMENT.fullmatch(argument):
+            continue
+        if argument.casefold() not in _SAFE_BUILD_TARGETS:
+            return False
+    return True
+
+
+def _cmake_build_is_safe(arguments: list[str]) -> bool:
+    if len(arguments) < 2 or arguments[0].casefold() != "--build" or \
+            arguments[1].startswith("-"):
+        return False
+    index = 2
+    while index < len(arguments):
+        argument = arguments[index].casefold()
+        if argument == "--verbose":
+            index += 1
+        elif argument in {"--parallel", "-j"}:
+            index += 1
+            if index < len(arguments) and not arguments[index].startswith("-"):
+                if not arguments[index].isdigit():
+                    return False
+                index += 1
+        elif argument == "--config":
+            index += 1
+            if index >= len(arguments) or arguments[index].startswith("-"):
+                return False
+            index += 1
+        elif argument == "--target":
+            index += 1
+            targets = 0
+            while index < len(arguments) and not arguments[index].startswith("-"):
+                if arguments[index].casefold() not in _SAFE_BUILD_TARGETS:
+                    return False
+                targets += 1
+                index += 1
+            if not targets:
+                return False
+        elif argument.startswith("--target="):
+            if argument.partition("=")[2] not in _SAFE_BUILD_TARGETS:
+                return False
+            index += 1
+        else:
+            return False
+    return True
+
+
+def _npm_is_safe(arguments: list[str]) -> bool:
+    if not arguments:
+        return False
+    if arguments[0].casefold() == "test":
+        flags = arguments[1:]
+    elif len(arguments) >= 2 and arguments[0].casefold() == "run" and \
+            arguments[1].casefold() in {"test", "build"}:
+        flags = arguments[2:]
+    else:
+        return False
+    return all(flag.casefold() in _SAFE_NPM_FLAGS for flag in flags)
+
+
+def _git_is_safe(arguments: list[str]) -> bool:
+    if not arguments:
+        return False
+    subcommand = arguments[0].casefold()
+    tail = arguments[1:]
+    if subcommand == "status":
+        return all(flag.casefold() in _SAFE_GIT_STATUS_FLAGS for flag in tail)
+    if subcommand == "branch":
+        return not tail or tail == ["--show-current"]
+    if subcommand in {"log", "show"}:
+        return all(not argument.startswith("-") or
+                   argument.casefold() in _SAFE_GIT_LOG_SHOW_FLAGS
+                   for argument in tail)
+    if subcommand != "diff":
+        return False
+    paths_only = False
+    for argument in tail:
+        if paths_only:
+            continue
+        if argument == "--":
+            paths_only = True
+        elif argument.startswith("-") and \
+                argument.casefold() not in _SAFE_GIT_DIFF_FLAGS:
+            return False
+    return True
+
+
 def _codex_shell_command_is_safe(command: Any) -> bool:
-    """Reject risky build targets that the broad base classifier allows."""
+    """Permit only small, read-only shapes within the coarse base allowlist."""
     if not isinstance(command, str):
         return False
     try:
@@ -68,26 +154,34 @@ def _codex_shell_command_is_safe(command: Any) -> bool:
         return False
     if not tokens:
         return False
-    folded_tokens = tuple(token.casefold() for token in tokens)
-    family = folded_tokens[0]
-    if family not in {"make", "ninja", "cmake"} or \
-            family == "cmake" and "--build" not in folded_tokens:
-        return True
-    semantic_values = set()
-    for lowered in folded_tokens[1:]:
-        values = {lowered, lowered.lstrip("-")}
-        if "=" in lowered:
-            option_value = lowered.rsplit("=", 1)[1]
-            values.add(option_value)
-            semantic_values.add(option_value)
-        elif not lowered.startswith("-"):
-            semantic_values.add(lowered)
-        if values & _REMOTE_DENIED_WORDS or \
-                lowered in _REMOTE_DENIED_OPTIONS:
-            return False
-    return not (semantic_values & _PACKAGE_DIRECT_EXECUTORS or
-                semantic_values & _PACKAGE_MANAGERS and
-                semantic_values & _PACKAGE_INSTALL_ACTIONS)
+    family = tokens[0].casefold()
+    arguments = tokens[1:]
+    if family in {"make", "ninja"}:
+        return _make_or_ninja_is_safe(arguments)
+    if family == "cmake":
+        return _cmake_build_is_safe(arguments)
+    if family == "npm":
+        return _npm_is_safe(arguments)
+    if family == "git":
+        return _git_is_safe(arguments)
+    if family in {"ls", "cat", "head", "tail", "wc", "grep", "rg"}:
+        return _plain_arguments(arguments)
+    if family == "pytest":
+        return _plain_arguments(arguments)
+    if family in {"python", "python3"}:
+        return len(arguments) >= 2 and arguments[:2] == ["-m", "unittest"] \
+            and _plain_arguments(arguments[2:])
+    if family == "cargo":
+        return len(arguments) >= 1 and arguments[0].casefold() in {"test", "build"} \
+            and _plain_arguments(arguments[1:])
+    if family == "go":
+        return len(arguments) >= 1 and arguments[0].casefold() == "test" and \
+            _plain_arguments(arguments[1:])
+    if family in {"ctest", "./test/run.sh"}:
+        return _plain_arguments(arguments)
+    if family == "idf.py":
+        return len(arguments) == 1 and arguments[0].casefold() == "build"
+    return False
 
 
 def _identity(cwd: Any, session_id: Any,

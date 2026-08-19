@@ -209,35 +209,31 @@ class CodexNormalizationTests(unittest.TestCase):
                                      tool_input={"command": command}), reveal=True)
                 self.assertFalse(normalized["view"]["can_approve"])
 
-    def test_build_prefixes_cannot_smuggle_dangerous_actions(self):
+    def test_shell_command_families_are_strictly_positive(self):
         safe_commands = (
-            "make", "make -j4", "make installer", "ninja -C build",
+            "make", "make all", "make test", "make MODE=release all",
+            "ninja", "ninja all", "ninja test",
             "cmake --build build", "cmake --build build --parallel 4",
-            "pytest", "pytest install", "git show install", "cat install",
+            "cmake --build build --target all", "npm test", "npm run test",
+            "npm run build", "npm run build --silent", "pytest",
+            "python -m unittest", "cargo test", "cargo build", "go test",
+            "ctest", "idf.py build", "git status", "git log",
+            "git show install", "git branch", "git branch --show-current",
+            "git diff", "git diff --stat", "ls", "cat installer-notes.txt",
+            "head README", "tail README", "wc README", "grep value README",
+            "rg value README",
         )
         unsafe_commands = (
-            "make install", "make deploy", "make publish", "make push",
-            "make delete", "make clean", "make uninstall", "MAKE INSTALL",
-            "ninja install", "ninja deploy", "ninja publish", "ninja push",
-            "ninja delete", "ninja clean", "ninja uninstall",
-            "cmake --build build --target install",
-            "cmake --build build --target deploy",
-            "cmake --build build --target publish",
-            "cmake --build build --target push",
-            "cmake --build build --target delete",
-            "cmake --build build --target clean",
-            "cmake --build build --target uninstall",
-            "CMAKE --BUILD build --target install",
-            "cmake --BUILD build --target INSTALL",
-            "make --target=install", "ninja --target=deploy",
-            "cmake --build build --target=publish", "make --install",
-            "make npm install", "ninja pip install package",
-            "make npm ci", "ninja npm ci", "make yarn add package",
-            "ninja pnpm add package", "make --target=npm --mode=ci",
-            "make git clone https://example.test/repo", "ninja git pull",
-            "make npx package", "ninja npm exec package",
-            "make curl", "ninja wget", "make --target=rm",
-            "cmake --build build --target tee",
+            "npm run build -- --deploy", "npm run build -- --install",
+            "npm run build -- --delete", "git branch new-feature",
+            "git branch -D old-feature", "git diff --output=result.patch",
+            "make install-strip", "make clean-all", "make deploy-prod",
+            "ninja install/strip", "cmake --build b --target install/strip",
+            "make npm up package", "make npm x package", "make uvx package",
+            "make installer", "make -j4", "ninja -C build",
+            "cmake --build build --output=result.patch", "npm install",
+            "npm run deploy", "git diff --ext-diff", "git -c x=y status",
+            "idf.py build flash",
         )
 
         for command in safe_commands:
