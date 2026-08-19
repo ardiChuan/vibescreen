@@ -150,6 +150,8 @@ def _codex_shell_command_is_safe(command: Any) -> bool:
         return False
     if not tokens:
         return False
+    if tokens[0] == "./test/run.sh":
+        return len(tokens) == 1
     family = tokens[0].casefold()
     arguments = tokens[1:]
     if family in {"make", "ninja"}:
@@ -173,7 +175,7 @@ def _codex_shell_command_is_safe(command: Any) -> bool:
     if family == "go":
         return len(arguments) >= 1 and arguments[0].casefold() == "test" and \
             _plain_arguments(arguments[1:])
-    if family in {"ctest", "./test/run.sh"}:
+    if family == "ctest":
         return _plain_arguments(arguments)
     if family == "idf.py":
         return len(arguments) == 1 and arguments[0].casefold() == "build"
