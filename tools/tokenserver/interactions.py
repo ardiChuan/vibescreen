@@ -342,7 +342,7 @@ def view_bytes(view: Mapping[str, Any]) -> bytes:
         if key not in ("expires_in_ms", "view_sha256")
     }
     return json.dumps(
-        stable, sort_keys=True, separators=(",", ":"),
+        stable, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode("utf-8")
 
 
@@ -526,7 +526,8 @@ def _codex_question_is_normalized(normalized: Dict[str, Any],
 
 
 def _codex_approval_is_normalized(normalized: Dict[str, Any],
-                                  recommended: Optional[int]) -> bool:
+                                  recommended: Optional[int],
+                                  reveal: bool) -> bool:
     expected_fields = {
         "provider", "kind", "project", "session_id", "turn_id", "event",
         "recommended_index", "view",
@@ -541,7 +542,17 @@ def _codex_approval_is_normalized(normalized: Dict[str, Any],
             not isinstance(event.get("tool_name"), str) or \
             not isinstance(event.get("tool_input"), dict):
         return False
-    return sanitize_project(event["cwd"]) == normalized.get("project")
+    if sanitize_project(event["cwd"]) != normalized.get("project"):
+        return False
+    try:
+        if __package__:
+            from .codex_interactions import normalize_codex_permission
+        else:  # direct execution, same convention as tokenserver.py
+            from codex_interactions import normalize_codex_permission
+        canonical = normalize_codex_permission(event, reveal=reveal)
+    except Exception:
+        return False
+    return canonical == normalized
 
 
 @dataclass
@@ -698,7 +709,8 @@ class InteractionStore:
                 if not _codex_question_is_normalized(
                         normalized, view, recommended):
                     return None
-            elif not _codex_approval_is_normalized(normalized, recommended):
+            elif not _codex_approval_is_normalized(
+                    normalized, recommended, self._reveal):
                 return None
             session_id = normalized["session_id"]
 

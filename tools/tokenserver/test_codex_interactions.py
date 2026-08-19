@@ -455,6 +455,21 @@ class CodexInteractionStoreTests(unittest.TestCase):
         self.assertEqual(self.store.await_result(entry), InteractionResult(
             verdict="approve", option_index=None))
 
+    def test_dangerous_codex_event_cannot_borrow_an_approvable_read_view(self):
+        dangerous = normalize_codex_permission(
+            codex_permission(
+                tool_name="Bash", tool_input={"command": "rm -rf build"}),
+            reveal=True)
+        safe = normalize_codex_permission(codex_permission(), reveal=True)
+        self.assertFalse(dangerous["view"]["can_approve"])
+        self.assertTrue(safe["view"]["can_approve"])
+        forged = {**dangerous, "view": dict(safe["view"])}
+
+        entry = self.store.park_normalized(forged, 120)
+
+        self.assertIsNone(entry)
+        self.assertIsNone(self.store.pending_public())
+
     def test_wrong_v2_bindings_and_bad_signatures_never_consume(self):
         entry = self.store.park_normalized(self.normalized_question(), 600)
         stamp = int(self.wall())

@@ -325,10 +325,13 @@ class StoreTests(unittest.TestCase):
 
     def test_view_bytes_use_the_specified_canonical_json_encoding(self):
         view = {"provider": "claude", "title": "Fråga"}
-        expected = json.dumps(
-            view, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        expected = b'{"provider":"claude","title":"Fr\xc3\xa5ga"}'
 
         self.assertEqual(interactions.view_bytes(view), expected)
+        self.assertEqual(
+            interactions.view_digest(view),
+            "c7767b91a147d7b07a6b174b4b26544905c1419678e8c6a8f05dc3e83d06e2b2",
+        )
 
     def test_new_ids_are_unique_canonical_128_bit_base64url(self):
         random_values = iter((bytes(range(16)), bytes(range(1, 17))))
