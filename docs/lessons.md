@@ -21,6 +21,22 @@ point at the backlog item.
 
 ---
 
+## 2026-08-19 · `sdkconfig.defaults` did not migrate the existing LVGL pool
+
+**What happened:** v0.6 froze on any full redraw while the LVGL task held
+the adapter lock. JTAG caught the exact failure rendering `61%` with
+`plex_num_164`: LVGL rounded the 144×119 A4 glyph to a 144×128, 18,432-byte
+temporary buffer, its allocator returned NULL, and LVGL's default malloc
+assert entered `while(1)`. **Root cause:** the checked-in default had already
+moved the PSRAM-backed LVGL pool to 256 KiB, but the existing generated
+`sdkconfig` was still 96 KiB; defaults seed new configs and do not migrate old
+ones. The always-created v0.6 WiFi overlay made that stale budget fail.
+**The rule:** treat critical Kconfig values as build invariants, not defaults.
+**Guards:** root CMake now rejects LVGL pools below 256 KiB and
+`test_lvgl_memory_config.py` covers both sides. Verify the effective value in
+`build/config/sdkconfig.h`. **Watch for:** changing `sdkconfig.defaults`
+without regenerating or explicitly updating every existing build config.
+
 ## 2026-08-17 · The compiled-in IP address pointed at a network that no longer existed
 
 **What happened:** away from home, VibePulse showed dashes while
