@@ -209,6 +209,50 @@ class CodexNormalizationTests(unittest.TestCase):
                                      tool_input={"command": command}), reveal=True)
                 self.assertFalse(normalized["view"]["can_approve"])
 
+    def test_build_prefixes_cannot_smuggle_dangerous_actions(self):
+        safe_commands = (
+            "make", "make -j4", "make installer", "ninja -C build",
+            "cmake --build build", "cmake --build build --parallel 4",
+            "pytest", "pytest install", "git show install", "cat install",
+        )
+        unsafe_commands = (
+            "make install", "make deploy", "make publish", "make push",
+            "make delete", "make clean", "make uninstall", "MAKE INSTALL",
+            "ninja install", "ninja deploy", "ninja publish", "ninja push",
+            "ninja delete", "ninja clean", "ninja uninstall",
+            "cmake --build build --target install",
+            "cmake --build build --target deploy",
+            "cmake --build build --target publish",
+            "cmake --build build --target push",
+            "cmake --build build --target delete",
+            "cmake --build build --target clean",
+            "cmake --build build --target uninstall",
+            "CMAKE --BUILD build --target install",
+            "cmake --BUILD build --target INSTALL",
+            "make --target=install", "ninja --target=deploy",
+            "cmake --build build --target=publish", "make --install",
+            "make npm install", "ninja pip install package",
+            "make npm ci", "ninja npm ci", "make yarn add package",
+            "ninja pnpm add package", "make --target=npm --mode=ci",
+            "make git clone https://example.test/repo", "ninja git pull",
+            "make npx package", "ninja npm exec package",
+            "make curl", "ninja wget", "make --target=rm",
+            "cmake --build build --target tee",
+        )
+
+        for command in safe_commands:
+            with self.subTest(safe=command):
+                normalized = normalize_codex_permission(
+                    codex_permission(tool_name="Shell",
+                                     tool_input={"command": command}), reveal=True)
+                self.assertTrue(normalized["view"]["can_approve"])
+        for command in unsafe_commands:
+            with self.subTest(unsafe=command):
+                normalized = normalize_codex_permission(
+                    codex_permission(tool_name="Shell",
+                                     tool_input={"command": command}), reveal=True)
+                self.assertFalse(normalized["view"]["can_approve"])
+
     def test_question_result_only_answers_the_explicit_recommendation(self):
         normalized = self.normalize_question()
 

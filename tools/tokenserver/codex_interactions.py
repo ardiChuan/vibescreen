@@ -7,6 +7,7 @@ separates private adapter data from the bounded panel ``view``.
 
 from __future__ import annotations
 
+import shlex
 import unicodedata
 from typing import Any, Dict, Optional
 
@@ -20,6 +21,22 @@ else:  # direct execution, same convention as tokenserver.py
 
 _QUESTION_FIELDS = frozenset({"question", "header", "options"})
 _OPTION_FIELDS = frozenset({"label", "description", "recommended"})
+_REMOTE_DENIED_WORDS = frozenset({
+    "install", "deploy", "publish", "push", "delete", "clean",
+    "uninstall", "clone", "pull", "curl", "wget", "fetch", "ssh", "scp", "sftp",
+    "ftp", "rsync", "nc", "netcat", "tee", "dd", "rm", "mv", "cp",
+    "touch", "truncate", "chmod", "chown", "ln", "write", "edit",
+})
+_REMOTE_DENIED_OPTIONS = frozenset({"-t", "--touch", "--clean-first"})
+_PACKAGE_MANAGERS = frozenset({
+    "npm", "yarn", "pnpm", "pip", "pip3", "pipx", "poetry", "uv",
+    "brew", "apt", "apt-get", "yum", "dnf", "pacman", "gem", "composer",
+})
+_PACKAGE_INSTALL_ACTIONS = frozenset({
+    "install", "ci", "add", "i", "update", "upgrade", "reinstall",
+    "exec", "dlx", "create", "run",
+})
+_PACKAGE_DIRECT_EXECUTORS = frozenset({"npx", "bunx"})
 
 
 def _is_control_free(value: str) -> bool:
@@ -39,6 +56,38 @@ def _text_is_valid(value: Any, maximum_bytes: Optional[int] = None) -> bool:
         return False
     encoded = value.encode("utf-8")
     return maximum_bytes is None or len(encoded) <= maximum_bytes
+
+
+def _codex_shell_command_is_safe(command: Any) -> bool:
+    """Reject risky build targets that the broad base classifier allows."""
+    if not isinstance(command, str):
+        return False
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    folded_tokens = tuple(token.casefold() for token in tokens)
+    family = folded_tokens[0]
+    if family not in {"make", "ninja", "cmake"} or \
+            family == "cmake" and "--build" not in folded_tokens:
+        return True
+    semantic_values = set()
+    for lowered in folded_tokens[1:]:
+        values = {lowered, lowered.lstrip("-")}
+        if "=" in lowered:
+            option_value = lowered.rsplit("=", 1)[1]
+            values.add(option_value)
+            semantic_values.add(option_value)
+        elif not lowered.startswith("-"):
+            semantic_values.add(lowered)
+        if values & _REMOTE_DENIED_WORDS or \
+                lowered in _REMOTE_DENIED_OPTIONS:
+            return False
+    return not (semantic_values & _PACKAGE_DIRECT_EXECUTORS or
+                semantic_values & _PACKAGE_MANAGERS and
+                semantic_values & _PACKAGE_INSTALL_ACTIONS)
 
 
 def _identity(cwd: Any, session_id: Any,
@@ -143,8 +192,11 @@ def normalize_codex_permission(event: dict, *, reveal: bool) -> Optional[dict]:
     # Keep this explicit even though approval_view currently performs the same
     # check: the adapter boundary must not make a future view change an allow
     # path for a tool outside the established narrow classifier.
-    view["can_approve"] = bool(view.get("can_approve")) and \
-        approvable_tool(tool_name, tool_input)
+    can_approve = approvable_tool(tool_name, tool_input)
+    if tool_name.strip().casefold() in {"bash", "shell"}:
+        can_approve = can_approve and _codex_shell_command_is_safe(
+            tool_input.get("command"))
+    view["can_approve"] = bool(view.get("can_approve")) and can_approve
     normalized_event = {
         "hook_event_name": "PermissionRequest",
         "session_id": event["session_id"],
