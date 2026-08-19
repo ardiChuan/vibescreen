@@ -481,6 +481,26 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(self.store.park("nonsense", question_event(), 120))
         self.assertIsNone(self.store.pending_public())
 
+    def test_legacy_park_rejects_lone_surrogates_without_raising(self):
+        invalid_project = approval_event()
+        invalid_project["cwd"] = "/tmp/bad\ud800"
+        events = (
+            question_event(question="bad\ud800"),
+            approval_event("bad\udc00"),
+            invalid_project,
+        )
+        for event in events:
+            with self.subTest(event=event["hook_event_name"]):
+                try:
+                    entry = self.store.park(
+                        "question" if event["hook_event_name"] == "PreToolUse"
+                        else "approval",
+                        event, 120)
+                except UnicodeEncodeError as exc:
+                    self.fail(f"park leaked UnicodeEncodeError: {exc}")
+                self.assertIsNone(entry)
+        self.assertIsNone(self.store.pending_public())
+
     def test_queue_is_bounded(self):
         parked = [self.store.park("approval", approval_event(), 300)
                   for _ in range(interactions.MAX_PENDING)]

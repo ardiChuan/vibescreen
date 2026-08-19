@@ -120,6 +120,16 @@ _APPROVAL_VIEW_FIELDS = frozenset({
 })
 
 
+def _is_utf8(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _clean_text(value: Any, limit: int) -> Optional[str]:
     """Control-free, length-bounded display text, or None."""
     if not isinstance(value, str):
@@ -467,7 +477,7 @@ def _normalized_view(kind: str, raw: Any) -> Optional[Mapping[str, Any]]:
     }
     for field_name, limit in text_limits.items():
         if field_name in view and (
-                not isinstance(view[field_name], str) or
+                not _is_utf8(view[field_name]) or
                 not view[field_name] or len(view[field_name]) > limit):
             return None
 
@@ -542,7 +552,8 @@ def _codex_approval_is_normalized(normalized: Dict[str, Any],
             not isinstance(event.get("tool_name"), str) or \
             not isinstance(event.get("tool_input"), dict):
         return False
-    if sanitize_project(event["cwd"]) != normalized.get("project"):
+    if not _is_utf8(event["cwd"]) or \
+            sanitize_project(event["cwd"]) != normalized.get("project"):
         return False
     try:
         if __package__:
@@ -626,6 +637,9 @@ class InteractionStore:
         """
         if kind not in KINDS or not isinstance(event, dict):
             return None
+        cwd = event.get("cwd")
+        if isinstance(cwd, str) and not _is_utf8(cwd):
+            return None
         tool_input = event.get("tool_input")
         if kind == "question":
             question = first_question(tool_input)
@@ -639,7 +653,7 @@ class InteractionStore:
         return self.park_normalized({
             "provider": InteractionProvider.CLAUDE.value,
             "kind": kind,
-            "project": sanitize_project(event.get("cwd")),
+            "project": sanitize_project(cwd),
             "event": event,
             "recommended_index": option_index,
             "view": view,
@@ -657,7 +671,7 @@ class InteractionStore:
         view = _normalized_view(kind, normalized.get("view"))
         project = normalized.get("project")
         if view is None or (project is not None and (
-                not isinstance(project, str) or
+                not _is_utf8(project) or
                 sanitize_project(project) != project)):
             return None
         recommended = normalized.get("recommended_index")
@@ -678,8 +692,11 @@ class InteractionStore:
                     "recommended_index", "view"}:
                 return None
             raw_event = normalized.get("event")
+            raw_cwd = raw_event.get("cwd") if isinstance(raw_event, dict) \
+                else None
             if not isinstance(raw_event, dict) or \
-                    sanitize_project(raw_event.get("cwd")) != project:
+                    (isinstance(raw_cwd, str) and not _is_utf8(raw_cwd)) or \
+                    sanitize_project(raw_cwd) != project:
                 return None
             tool_input = raw_event.get("tool_input")
             if kind == "question":

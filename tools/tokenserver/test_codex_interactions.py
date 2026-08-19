@@ -545,3 +545,23 @@ class CodexInteractionStoreTests(unittest.TestCase):
                 self.assertIsNone(self.store.park_normalized(normalized, 120))
 
         self.assertIsNone(self.store.pending_public())
+
+    def test_normalized_view_rejects_lone_surrogates_without_raising(self):
+        cases = []
+        for surrogate in ("\ud800", "\udc00"):
+            invalid_view = self.normalized_question()
+            invalid_view["view"]["prompt"] = f"bad{surrogate}"
+            cases.append(("prompt", invalid_view))
+        invalid_project = self.normalized_question()
+        invalid_project["project"] = "bad\ud800"
+        cases.append(("project", invalid_project))
+
+        for field, normalized in cases:
+            with self.subTest(field=field):
+                try:
+                    entry = self.store.park_normalized(normalized, 120)
+                except UnicodeEncodeError as exc:
+                    self.fail(
+                        f"park_normalized leaked UnicodeEncodeError: {exc}")
+                self.assertIsNone(entry)
+        self.assertIsNone(self.store.pending_public())
