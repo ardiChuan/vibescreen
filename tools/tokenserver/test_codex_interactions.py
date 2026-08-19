@@ -64,7 +64,8 @@ def codex_permission(**overrides):
 class CodexNormalizationTests(unittest.TestCase):
     def normalize_question(self, payload=None):
         return normalize_codex_question(
-            payload or codex_question(), cwd="/Users/niclas/vibepulse",
+            payload if payload is not None else codex_question(),
+            cwd="/Users/niclas/vibepulse",
             session_id="session-123", turn_id="turn-456")
 
     def test_explicit_recommendation_has_a_safe_approvable_view(self):
@@ -106,6 +107,79 @@ class CodexNormalizationTests(unittest.TestCase):
 
         self.assertEqual(normalized["view"]["title"], "New auth layer")
         self.assertIsNone(normalized["view"]["subtitle"])
+
+    def test_three_options_allow_one_explicit_recommendation(self):
+        normalized = self.normalize_question(codex_question(options=[
+            {"label": "first"},
+            {"label": "second", "recommended": True},
+            {"label": "third"},
+        ]))
+
+        self.assertEqual(normalized["recommended_index"], 1)
+        self.assertEqual(normalized["view"]["options_total"], 3)
+        self.assertTrue(normalized["view"]["can_approve"])
+
+    def test_question_requires_question_and_options_separately(self):
+        missing_question = codex_question()
+        missing_question.pop("question")
+        missing_options = codex_question()
+        missing_options.pop("options")
+
+        self.assertIsNone(self.normalize_question(missing_question))
+        self.assertIsNone(self.normalize_question(missing_options))
+
+    def test_optional_header_is_bounded_clean_text_when_present(self):
+        self.assertIsNotNone(self.normalize_question(codex_question(header="Auth")))
+        for header in (3, "Auth\x00", "x" * 65):
+            with self.subTest(header=header):
+                self.assertIsNone(self.normalize_question(
+                    codex_question(header=header)))
+
+    def test_options_reject_malformed_objects_labels_and_descriptions(self):
+        invalid_options = (
+            ["not an option", {"label": "b"}],
+            [{}, {"label": "b"}],
+            [{"label": 3}, {"label": "b"}],
+            [{"label": "a", "description": 3}, {"label": "b"}],
+            [{"label": "a", "description": "bad\x00"}, {"label": "b"}],
+        )
+
+        for options in invalid_options:
+            with self.subTest(options=options):
+                self.assertIsNone(self.normalize_question(
+                    codex_question(options=options)))
+
+    def test_display_text_uses_utf8_byte_boundaries_without_truncation(self):
+        prompt_exact = "é" * 48
+        prompt_over = prompt_exact + "a"
+        label_exact = "é" * 32
+        label_over = label_exact + "a"
+        description_exact = "é" * 32
+        description_over = description_exact + "a"
+        exact_payloads = (
+            codex_question(question=prompt_exact),
+            codex_question(options=[{"label": label_exact}, {"label": "b"}]),
+            codex_question(options=[
+                {"label": "a", "description": description_exact}, {"label": "b"},
+            ]),
+        )
+        over_payloads = (
+            codex_question(question=prompt_over),
+            codex_question(options=[{"label": label_over}, {"label": "b"}]),
+            codex_question(options=[
+                {"label": "a", "description": description_over}, {"label": "b"},
+            ]),
+        )
+
+        for payload in exact_payloads:
+            with self.subTest(exact=payload):
+                self.assertIsNotNone(self.normalize_question(payload))
+        for payload in over_payloads:
+            with self.subTest(over=payload):
+                self.assertIsNone(self.normalize_question(payload))
+
+    def test_question_rejects_non_dict_payload(self):
+        self.assertIsNone(self.normalize_question([]))
 
     def test_question_rejects_structural_and_option_shape_errors(self):
         cases = [
@@ -211,7 +285,7 @@ class CodexNormalizationTests(unittest.TestCase):
 
     def test_shell_command_families_are_strictly_positive(self):
         safe_commands = (
-            "make", "make all", "make test", "make MODE=release all",
+            "make", "make all", "make test",
             "ninja", "ninja all", "ninja test",
             "cmake --build build", "cmake --build build --parallel 4",
             "cmake --build build --target all", "npm test", "npm run test",
@@ -234,6 +308,11 @@ class CodexNormalizationTests(unittest.TestCase):
             "cmake --build build --output=result.patch", "npm install",
             "npm run deploy", "git diff --ext-diff", "git -c x=y status",
             "idf.py build flash",
+            "make CC='touch /tmp/pwn' all",
+            "make CC='rm -f /tmp/pwn' build",
+            "make FETCH='curl https://example.test' test",
+            "make ACTION=deploy all", "make TARGET=install build",
+            "ninja CC='touch /tmp/pwn' all",
         )
 
         for command in safe_commands:

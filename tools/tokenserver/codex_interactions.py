@@ -8,7 +8,6 @@ separates private adapter data from the bounded panel ``view``.
 from __future__ import annotations
 
 import shlex
-import re
 import unicodedata
 from typing import Any, Dict, Optional
 
@@ -30,7 +29,6 @@ _SAFE_GIT_LOG_SHOW_FLAGS = frozenset({"--oneline", "--decorate", "--graph",
                                       "--stat", "--patch", "--no-color"})
 _SAFE_GIT_DIFF_FLAGS = frozenset({"--stat", "--name-only", "--name-status",
                                   "--check", "--no-color", "--cached", "--staged"})
-_VARIABLE_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 
 
 def _is_control_free(value: str) -> bool:
@@ -58,8 +56,6 @@ def _plain_arguments(arguments: list[str]) -> bool:
 
 def _make_or_ninja_is_safe(arguments: list[str]) -> bool:
     for argument in arguments:
-        if _VARIABLE_ASSIGNMENT.fullmatch(argument):
-            continue
         if argument.casefold() not in _SAFE_BUILD_TARGETS:
             return False
     return True
@@ -209,7 +205,7 @@ def normalize_codex_question(payload: dict, *, cwd: str,
     prompt = payload["question"]
     if not _text_is_valid(prompt, 96):
         return None
-    if "header" in payload and not _text_is_valid(payload["header"]):
+    if "header" in payload and not _text_is_valid(payload["header"], 64):
         return None
     raw_options = payload["options"]
     if not isinstance(raw_options, list) or len(raw_options) not in (2, 3):
