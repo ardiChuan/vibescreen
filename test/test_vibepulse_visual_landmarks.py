@@ -1079,6 +1079,16 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                           for y in range(244, 340)]
         self.assertGreaterEqual(self._longest_run(approve_column), 90)
 
+        # Pin the first Codex decision frame, not a later variant: the lower
+        # outlined control must contain actual LEAVE IT glyph ink. Geometry
+        # alone would allow a blank but correctly sized button to pass.
+        leave_label = question.crop((100, 370, 380, 420))
+        light_ink = sum(
+            1 for pixel in leave_label.get_flattened_data()
+            if min(pixel) >= 100
+        )
+        self.assertGreater(light_ink, 500)
+
     def test_codex_long_copy_stays_out_of_card_and_wifi_lane(self):
         image = self._ny("codex-question-long")
         card_gap = image.crop((24, 126, 456, 138))
