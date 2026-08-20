@@ -18,11 +18,11 @@
 
 ## Optional panel interactions (English quickstart)
 
-The computer must be on and this service must be running for fresh local data
+The computer must be awake and the tokenserver must be running for fresh data
 or answers. Direct LAN works only when the panel can reach the computer. The
-numbers relay is separate and still publishes numbers only. A future encrypted
-interaction relay for isolated WiFi is off by default and is not enabled by the
-Codex plugin.
+numbers relay is separate and still publishes numbers only. The optional
+encrypted interaction relay lets both sides use unrelated Wi-Fi with outbound
+HTTPS; it is off by default and is not enabled by the Codex plugin.
 
 From the repository root, use the guided setup:
 
@@ -63,6 +63,27 @@ Both autostart launchers start `tokenserver.py` without provider/detail flags.
 The service reads its saved config at startup; changing a choice does not
 require editing a launchd plist or Task Scheduler command. Restart the service
 after changing saved choices if it is already running.
+
+For decisions across isolated Wi-Fi, read
+[`docs/interaction-relay.md`](../../docs/interaction-relay.md), then use the
+separate lifecycle:
+
+```sh
+python3 tools/vibepulse_setup.py relay install --url HTTPS_ORIGIN --yes-e2e-cloud
+python3 tools/vibepulse_setup.py relay status
+python3 tools/vibepulse_setup.py relay doctor
+python3 tools/vibepulse_setup.py relay disable
+python3 tools/vibepulse_setup.py relay uninstall --keep-worker
+python3 tools/vibepulse_setup.py relay uninstall --delete-worker
+```
+
+Installing the Codex plugin does not enable the encrypted interaction relay.
+The tokenserver's `--publish` option remains numbers-only. Its separate
+`--interaction-relay HTTPS_ORIGIN` option carries bounded E2E ciphertext;
+question, command, project, and verdict content is encrypted locally before
+it reaches the user-owned mailbox. Prefer `tools/vibepulse_setup.py`, which
+stores these choices without putting secrets or feature flags in a service
+command line.
 
 Serverar Claude- och Codex-användningen som platt JSON enligt glance-
 mönstret (kontrakt v2). Skärmen hämtar `/api/tokens` över LAN var 30:e

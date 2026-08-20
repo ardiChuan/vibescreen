@@ -249,6 +249,8 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 "$PYTHON_BIN" test_ota_sender_gates.py
 "$PYTHON_BIN" test_wifi_setup_wiring.py
 "$PYTHON_BIN" test_relay_boundary.py
+"$PYTHON_BIN" test_interaction_relay_boundary.py
+"$PYTHON_BIN" test_interaction_relay_docs.py
 "$PYTHON_BIN" test_interaction_relay_build.py
 "$PYTHON_BIN" test_interaction_relay_net_source.py
 "$PYTHON_BIN" test_vibepulse_codex_plugin.py
@@ -283,10 +285,14 @@ cd ..
   tools.tokenserver.test_publisher \
   tools.tokenserver.test_smoke -v
 
-# Brevlådans sammanslagning (tools/relay) är ren JS och hålls av node.
-# Saknas node hoppas den ÄRLIGT över med en rad — CI kör den alltid.
-if command -v node >/dev/null 2>&1; then
+# Båda molntjänsterna hålls av Node. CI måste ha Node 22; en lokal
+# firmwareutvecklare utan Node får ett ärligt hopp i stället för falskt grönt.
+if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
   node --test tools/relay/test.mjs
+  (cd tools/interaction-relay && npm ci && npm test && npm run typecheck)
+elif [ -n "${CI:-}" ]; then
+  echo "ERROR: CI requires Node.js 22 + npm for both relay security services" >&2
+  exit 1
 else
-  echo "OBS: node saknas — tools/relay/test.mjs hoppas över (CI kör den)"
+  echo "OBS: node/npm saknas — relayernas JS-tester hoppas över lokalt (CI kör dem)"
 fi

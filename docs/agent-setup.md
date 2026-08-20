@@ -195,13 +195,13 @@ confirm with the user that real numbers replaced the dashes.
 
 This turns the panel from a monitor into an input device. It is all off by
 default. Installing the Codex plugin does not enable Codex interactions, and
-enabling one provider does not enable the other, the numbers relay, the future
-interaction relay, or GitHub.
+enabling one provider does not enable the other, the numbers relay, the
+encrypted interaction relay, or GitHub.
 
-The computer must be on and running the tokenserver. The current answer path is
-direct LAN only, so panel and computer must also be allowed to reach each other.
-A future encrypted interaction relay will be a separate default-off option for
-isolated WiFi; it is not enabled by these steps.
+The computer must be awake and running the tokenserver. Direct answers use the
+LAN. The separate encrypted interaction relay can work across unrelated
+internet Wi-Fi using outbound HTTPS only; it remains default-off and is not
+enabled by these steps or by installing the Codex plugin.
 
 ### 1. Pair the panel
 
@@ -246,6 +246,37 @@ python3 tools/vibepulse_setup.py uninstall codex
 Codex plugin/MCP and disables Codex; it preserves Claude, relay, GitHub,
 device-key, and unrelated Codex settings. It does not delete the repository or
 the shared device key.
+
+To opt in to encrypted decisions across isolated Wi-Fi, first read the exact
+privacy boundary in [interaction-relay.md](interaction-relay.md). Enable at
+least one provider and detail above, install the pinned Worker dependencies,
+then run:
+
+```sh
+cd tools/interaction-relay && npm ci && npx wrangler login && cd ../..
+python3 tools/vibepulse_setup.py relay install \
+  --url https://vibepulse-interaction-relay.YOUR-SUBDOMAIN.workers.dev \
+  --yes-e2e-cloud
+python3 tools/vibepulse_setup.py relay status
+python3 tools/vibepulse_setup.py relay doctor
+```
+
+The installer generates the mailbox and role credentials; it does not print
+them or flash the board. Enable `TK_VIBEPULSE_INTERACTION_RELAY` separately in
+`idf.py menuconfig`, rebuild, and ask before flashing. Restart a running
+tokenserver after changing saved choices.
+
+Disable traffic without deleting credentials, or remove only this relay:
+
+```sh
+python3 tools/vibepulse_setup.py relay disable
+python3 tools/vibepulse_setup.py relay uninstall --keep-worker
+python3 tools/vibepulse_setup.py relay uninstall --delete-worker
+```
+
+These commands preserve Claude/Codex provider choices, the Codex package,
+GitHub, numbers relay, repository, and shared device key. Captive portals,
+offline networks, and blocked Worker domains still fall back to the computer.
 
 The service command remains plain:
 

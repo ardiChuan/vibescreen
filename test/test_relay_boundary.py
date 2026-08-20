@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The existing numbers relay carries numbers, never activity.
+"""This existing numbers transport never carries activity.
 
 The separate interaction transport is explicit opt-in and end-to-end
 encrypted. This file protects the old public numbers Worker/publisher and the
@@ -51,8 +51,8 @@ assert "tk_interaction_relay_queue_verdict" in needs_you, (
     "the only cloud handoff here is the separately encrypted transport"
 )
 
-# The device key answers only the LAN service.  A verdict posted into a
-# mailbox would be a signed instruction sitting in public storage.
+# The direct verdict route stays on LAN; remote delivery belongs only to the
+# separate encrypted client and must not enter the numbers failover helper.
 assert "TK_VIBEPULSE_BASE_URL" in needs_you, (
     "the Needs You verdict must post to the LAN base URL"
 )
@@ -119,7 +119,7 @@ for source, name in ((mac_service, "macOS launchd template"),
 
 for guide, name in ((agent_setup, "agent setup"),
                     (tokenserver_readme, "tokenserver README")):
-    assert "computer must be on" in guide.lower(), (
+    assert "computer must be awake" in guide.lower(), (
         f"{name} must state the computer-on requirement plainly"
     )
 

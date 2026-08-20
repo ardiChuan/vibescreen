@@ -13,8 +13,9 @@ Claude Code and Codex usage, live agent activity, and a full-screen
 **NEEDS YOU** alert you can answer with a tap. A ~$30 ESP32-S3 panel plus a
 pure-stdlib Python service on your Mac or Windows PC. Local mode needs no
 VibePulse account and keeps agent activity on your LAN. The optional
-numbers-only relay can carry quota data across isolated WiFi; an encrypted
-interaction relay is a separate, later option and is off by default.
+numbers-only relay can carry quota data across isolated WiFi; a separate,
+default-off encrypted interaction relay can carry supported Needs You
+decisions without requiring the panel and computer to share a LAN.
 
 ## The problem
 
@@ -116,10 +117,12 @@ accent colour:
 The panel becomes an *input device*. With the opt-in Needs You bridge, when
 Claude Code or Codex blocks on a supported question or permission, the
 takeover appears and **a tap answers it in the same live session** — no window
-to switch to. The computer must be on and running the tokenserver. Today the
-panel must also be able to reach that computer over the LAN; the planned
-encrypted interaction relay removes that LAN requirement without exposing
-question or command text to the mailbox provider.
+to switch to. The computer must be awake and the tokenserver must be running.
+Direct mode uses the LAN. The separate encrypted interaction relay works when
+the panel and computer use unrelated ordinary internet Wi-Fi: both sides make
+outbound HTTPS connections, so there is no router reconfiguration, inbound
+port, public Mac, or VPN. Cloudflare handles only fixed-size ciphertext; see
+the [privacy and setup guide](docs/interaction-relay.md).
 
 <table>
 <tr>
@@ -154,7 +157,7 @@ starts off:
 | **Claude interactions** | Lets Claude Code questions and permissions reach the panel | Off |
 | **Codex interactions** | Lets supported Codex questions and permissions reach the panel | Off |
 | **Numbers relay** | Publishes only quota, reset, Max Tracker, and optional public GitHub numbers | Off |
-| **Interaction relay** | Future end-to-end encrypted question/verdict mailbox for isolated WiFi | Off / not enabled yet |
+| **Interaction relay** | End-to-end encrypted question/verdict mailbox for unrelated WiFi | Off |
 | **GitHub** | Shows one public repository's page and/or star notification | Off |
 
 Installing the Codex plugin does not enable Codex interactions. Setup asks
@@ -162,7 +165,8 @@ whether to enable Claude, Codex, both, or neither, and whether bounded detail
 may reach the panel. The old `--interactions` is a legacy alias for Claude only;
 use the explicit setup command for new installations. The numbers relay and
 interaction relay are different privacy choices and neither is enabled by the
-plugin.
+plugin. Installing the Codex plugin does not enable the encrypted interaction
+relay.
 
 ### Optional GitHub project pulse
 
@@ -286,7 +290,9 @@ to the panel; captive portals and 5 GHz-only networks are not.
 - **[Waveshare ESP32-S3-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-s3-touch-amoled-2.16.htm)**
   (~$30). No soldering, just a USB-C cable. It's the same board Clawdmeter
   uses, so if you already own one you're 10 minutes away.
-- **A Mac** on the same WiFi (the log-reading service is macOS-only for now)
+- **A Mac or PC** running the tokenserver. Direct LAN mode needs the panel to
+  reach that computer; the optional relays remove the same-WiFi requirement.
+  Claude quota log reading remains macOS-only for now.
 - **Claude Code and/or Codex.** Either alone is fine.
 - **2.4 GHz WiFi.** The ESP32-S3 can't see 5 GHz networks.
 
@@ -433,12 +439,14 @@ machine (client isolation, IoT VLANs): the optional **relay** puts the
 numbers in a tiny mailbox on the internet — a ~150-line Cloudflare Worker
 on your own account — and the panel falls back to it whenever the LAN
 does not answer. Quota, burn rate, Max Tracker and the GitHub pulse
-follow you anywhere with WiFi; agent activity and Needs You deliberately
-never leave your LAN in the current release. A separate encrypted interaction
-relay is planned, off by default, so question text can be end-to-end encrypted
-between computer and panel instead of being readable by the mailbox. Several machines can feed the numbers mailbox
+follow you anywhere with WiFi. Agent activity stays local unless you separately
+opt in to the encrypted interaction relay; then only a bounded panel view and
+verdict cross its user-owned mailbox as fixed-size end-to-end ciphertext.
+Cloudflare never receives question, command, project, or verdict content in
+plaintext. Several machines can feed the numbers mailbox
 (a Mac that sleeps, an always-on PC) and the freshest source wins per
-number. Setup and the full privacy boundary: [docs/relay.md](docs/relay.md).
+number. Numbers setup: [docs/relay.md](docs/relay.md). Encrypted decisions:
+[docs/interaction-relay.md](docs/interaction-relay.md).
 
 ## No hardware? Run the simulator
 

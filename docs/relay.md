@@ -1,12 +1,14 @@
-# The relay — numbers from anywhere, activity never
+# The numbers relay — numbers from anywhere
 
 The panel could only fetch from the tokenserver when both sat on the same
 LAN. One evening away from home proved how brittle that is: client
 isolation, an IoT VLAN and a drifted IP each blanked the glass while
 internet worked fine (`docs/lessons.md`, 2026-08-17 — three entries from
-the same evening). The relay removes the *same-LAN* requirement without
-touching what made the system trustworthy: no key ever leaves your
-machines, and nothing that names your work goes online.
+the same evening). The numbers relay removes the *same-LAN* requirement
+without widening its own trust boundary: no key leaves your machines and this
+numbers transport never carries activity. Encrypted Needs You is a different
+default-off service with different credentials; see
+[docs/interaction-relay.md](interaction-relay.md).
 
 ## The shape
 
@@ -30,13 +32,13 @@ mailbox only when the LAN does not answer (`net_source_policy`, host-
 tested). At home nothing crosses the internet; the moment the LAN dies —
 travel, a sleeping Mac, a VLAN boundary — the numbers keep flowing.
 
-## The boundary: numbers, never activity
+## The boundary of this transport: numbers only
 
 Held from three directions — firmware (`test/test_relay_boundary.py`),
 service (`publisher.py` has no producers for the activity endpoints), and
 the Worker (it only accepts the three number paths):
 
-| Over the relay | LAN only, forever |
+| Over this numbers relay | Not in this transport |
 |---|---|
 | `/api/tokens` — quota, burn rate | `/api/agent-status` — project names |
 | `/api/max-tracker` — history | Needs You — question text, commands |
@@ -44,9 +46,10 @@ the Worker (it only accepts the three number paths):
 
 The reason is the mailbox's trust model: access control is a secret URL —
 the same level as a private share link. Right for percentages; wrong for
-anything that names what you are working on. And a signed verdict in
-public storage would be an instruction, not a number — so the panel can
-answer a prompt at home, never through a mailbox.
+anything that names what you are working on. It therefore never gains an
+activity producer or route. Users who explicitly choose remote decisions use
+the separate Worker, which accepts only end-to-end encrypted fixed-size
+envelopes and never reuses this secret URL.
 
 ## Multi-publisher: freshest wins per pool
 
@@ -66,8 +69,9 @@ Honest limits:
 - **Max Tracker history is per machine** — the newest publisher's document
   wins whole. Day-by-day merging across machines would invent data no
   machine has seen.
-- **A dark LAN means a quiet agent row.** Agent status never crosses, so
-  away from home the panel is a numbers display. By design, not by gap.
+- **A dark LAN means a quiet agent row.** Agent status never crosses either
+  relay. A Needs You takeover can still arrive if its separate encrypted
+  interaction relay is explicitly enabled.
 
 ## Setup
 
@@ -88,7 +92,8 @@ Then:
 | Burn rate, value multiple, Max Tracker | live |
 | GitHub pulse | live |
 | Codex quota | live while a publishing machine runs Codex |
-| Agent row, NEEDS YOU | dark — activity never crosses the relay |
+| Agent row | dark — activity is not a numbers payload |
+| NEEDS YOU | dark unless the separate encrypted interaction relay is enabled |
 
 ## Decisions worth remembering
 
