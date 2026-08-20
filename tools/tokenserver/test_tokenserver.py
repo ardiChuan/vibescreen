@@ -3338,6 +3338,13 @@ class InteractionRelayConfigTests(unittest.TestCase):
             self.stopped = True
 
     def setUp(self):
+        self.test_home = tempfile.TemporaryDirectory(
+            prefix="vibepulse-relay-config-test-")
+        self.addCleanup(self.test_home.cleanup)
+        home_patch = mock.patch.object(
+            tokenserver.Path, "home", return_value=Path(self.test_home.name))
+        home_patch.start()
+        self.addCleanup(home_patch.stop)
         self.saved = (
             tokenserver.Handler.interaction_store,
             getattr(tokenserver.Handler, "interaction_relay_status", "off"),
