@@ -33,6 +33,27 @@ class SavedConfigTests(unittest.TestCase):
         with self.assertRaises(dataclasses.FrozenInstanceError):
             config.codex_interactions = True
 
+    def test_direct_construction_rejects_every_non_boolean_field(self):
+        for field in (
+                "claude_interactions", "codex_interactions",
+                "interaction_detail"):
+            for value in (0, 1, "yes", None):
+                values = {field: value}
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(ConfigError):
+                        VibePulseConfig(**values)
+
+    def test_save_revalidates_even_a_forged_frozen_instance(self):
+        forged = object.__new__(VibePulseConfig)
+        object.__setattr__(forged, "claude_interactions", False)
+        object.__setattr__(forged, "codex_interactions", 1)
+        object.__setattr__(forged, "interaction_detail", False)
+
+        with self.assertRaises(ConfigError):
+            save_config(self.path, forged)
+
+        self.assertFalse(self.path.exists())
+
     def test_valid_partial_and_complete_files_load_strict_booleans(self):
         self.path.parent.mkdir()
         self.path.write_text(

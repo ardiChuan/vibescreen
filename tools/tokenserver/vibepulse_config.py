@@ -28,6 +28,14 @@ class VibePulseConfig:
     codex_interactions: bool = False
     interaction_detail: bool = False
 
+    def __post_init__(self) -> None:
+        for field_name in (
+                "claude_interactions", "codex_interactions",
+                "interaction_detail"):
+            if type(getattr(self, field_name)) is not bool:
+                raise ConfigError(
+                    f"{field_name} must be a boolean")
+
 
 def _strict_object(pairs: Iterable[Tuple[str, object]]) -> dict:
     result = {}
@@ -72,6 +80,7 @@ def save_config(path: Path, config: VibePulseConfig) -> None:
     """Atomically write the public feature switches with private modes."""
     if not isinstance(config, VibePulseConfig):
         raise ConfigError("config must be VibePulseConfig")
+    config.__post_init__()
     path = Path(path)
     directory = path.parent
     temporary = None

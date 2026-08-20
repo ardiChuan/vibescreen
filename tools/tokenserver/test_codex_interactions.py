@@ -727,6 +727,44 @@ class CodexRouteTests(unittest.TestCase):
             "status": "computer", "reason": "deny",
         })
 
+    def test_question_detail_off_publishes_no_question_or_option_text(self):
+        secret_values = (
+            "SECRET QUESTION 91d12a",
+            "SECRET APPROVAL 57b0b9",
+            "SECRET DESCRIPTION 61fc04",
+            "SECRET FALLBACK b2a40e",
+        )
+        self.handler.interaction_detail = False
+        payload = codex_question_event(
+            question=secret_values[0],
+            options=[
+                {"label": secret_values[1],
+                 "description": secret_values[2],
+                 "recommended": True},
+                {"label": secret_values[3]},
+            ])
+        thread, result = self.post_in_thread("/api/codex/question", payload)
+
+        shown = self.wait_for_pending()
+        serialized = json.dumps(shown)
+        for secret in secret_values:
+            self.assertNotIn(secret, serialized)
+        self.assertFalse(shown["can_approve"])
+        self.assertFalse(shown["marked"])
+        self.assertNotIn("prompt", shown)
+        self.assertNotIn("title", shown)
+        self.assertNotIn("subtitle", shown)
+
+        status, raw = self.answer_v2(shown, "approve")
+        self.assertEqual(status, 409)
+        self.assertFalse(json.loads(raw)["ok"])
+        self.answer_v2(shown, "leave_it")
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(json.loads(result["raw"]), {
+            "status": "computer", "reason": "leave_it",
+        })
+
     def test_unmarked_question_cannot_accidentally_approve(self):
         payload = codex_question_event(options=[
             {"label": "Use the trusted hook"},
@@ -768,6 +806,28 @@ class CodexRouteTests(unittest.TestCase):
         shown = self.wait_for_pending()
         self.answer_v2(shown, "leave_it")
         thread.join(timeout=10)
+        self.assertEqual((result["status"], result["raw"]), (200, b""))
+
+    def test_permission_detail_off_hides_command_and_cannot_approve(self):
+        self.store.deny_all()
+        self.store = interactions.InteractionStore(
+            secret=SECRET, reveal_detail=False)
+        self.handler.interaction_store = self.store
+        self.handler.interaction_detail = False
+        event = codex_permission(
+            tool_input={"command": "cat SECRET_PERMISSION_43fca1"})
+        thread, result = self.post_in_thread(
+            "/api/codex/permission", event)
+
+        shown = self.wait_for_pending()
+        self.assertNotIn("SECRET_PERMISSION_43fca1", json.dumps(shown))
+        self.assertFalse(shown["can_approve"])
+        self.assertNotIn("title", shown)
+        status, _ = self.answer_v2(shown, "approve")
+        self.assertEqual(status, 409)
+        self.answer_v2(shown, "leave_it")
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
         self.assertEqual((result["status"], result["raw"]), (200, b""))
 
     def test_invalid_flat_question_envelopes_fail_closed_without_parking(self):
@@ -825,6 +885,17 @@ class CodexRouteTests(unittest.TestCase):
                 handler._send.assert_called_once_with(
                     404, {"error": "interactions are not enabled"})
                 handler._read_json_body.assert_not_called()
+
+    def test_injected_store_does_not_enable_claude_when_flag_is_off(self):
+        self.handler.claude_interactions = False
+        handler = self.direct_handler(
+            "/api/hook/question", host="127.0.0.1")
+
+        handler.do_POST()
+
+        handler._send.assert_called_once_with(
+            404, {"error": "interactions are not enabled"})
+        handler._read_json_body.assert_not_called()
 
     def test_all_hook_and_codex_ingress_routes_reject_non_loopback_before_parsing(self):
         self.handler.claude_interactions = True

@@ -20,6 +20,7 @@ from tools.tokenserver.usage_history import Forecast, UsageHistory
 from tools.tokenserver.vibepulse_config import (
     VibePulseConfig,
     load_config,
+    save_config,
 )
 
 
@@ -2761,9 +2762,9 @@ class ArgumentParsingTests(unittest.TestCase):
         parser = tokenserver._build_arg_parser()
         defaults = parser.parse_args([])
         self.assertFalse(defaults.interactions)
-        self.assertFalse(defaults.claude_interactions)
-        self.assertFalse(defaults.codex_interactions)
-        self.assertFalse(defaults.interaction_detail)
+        self.assertIsNone(defaults.claude_interactions)
+        self.assertIsNone(defaults.codex_interactions)
+        self.assertIsNone(defaults.interaction_detail)
 
         claude = parser.parse_args(["--claude-interactions"])
         codex = parser.parse_args(["--codex-interactions"])
@@ -2773,7 +2774,59 @@ class ArgumentParsingTests(unittest.TestCase):
         self.assertTrue(codex.codex_interactions)
         self.assertFalse(codex.claude_interactions)
         self.assertTrue(legacy.interactions)
-        self.assertFalse(legacy.codex_interactions)
+        self.assertIsNone(legacy.codex_interactions)
+
+    def test_saved_true_switches_can_be_disabled_and_persisted(self):
+        parser = tokenserver._build_arg_parser()
+        all_on = VibePulseConfig(
+            claude_interactions=True,
+            codex_interactions=True,
+            interaction_detail=True,
+        )
+        with tempfile.TemporaryDirectory(prefix="interaction-optout-") as tmp:
+            path = Path(tmp) / "config.json"
+            save_config(path, all_on)
+
+            codex_off = tokenserver._resolve_interaction_config(
+                parser.parse_args(["--no-codex-interactions"]), path=path)
+            self.assertEqual(codex_off, VibePulseConfig(
+                claude_interactions=True,
+                codex_interactions=False,
+                interaction_detail=True,
+            ))
+            self.assertEqual(load_config(path), codex_off)
+
+            save_config(path, all_on)
+            all_off = tokenserver._resolve_interaction_config(
+                parser.parse_args([
+                    "--no-claude-interactions",
+                    "--no-codex-interactions",
+                    "--no-interaction-detail",
+                ]), path=path)
+            self.assertEqual(all_off, VibePulseConfig())
+            self.assertEqual(load_config(path), all_off)
+
+    def test_legacy_alias_conflicts_clearly_with_explicit_claude_opt_out(self):
+        parser = tokenserver._build_arg_parser()
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+            parser.parse_args([
+                "--interactions", "--no-claude-interactions"])
+        self.assertIn("not allowed with argument", stderr.getvalue())
+
+    def test_interaction_help_explains_saved_state_and_opt_outs(self):
+        help_text = tokenserver._build_arg_parser().format_help()
+
+        for flag in (
+                "--no-claude-interactions", "--no-codex-interactions",
+                "--no-interaction-detail"):
+            self.assertIn(flag, help_text)
+        self.assertIn("saved", help_text.lower())
+        self.assertIn("disable", help_text.lower())
+
+    def test_handler_provider_defaults_are_strictly_off(self):
+        self.assertIs(tokenserver.Handler.claude_interactions, False)
+        self.assertIs(tokenserver.Handler.codex_interactions, False)
 
     def test_saved_choices_persist_and_legacy_alias_enables_only_claude(self):
         parser = tokenserver._build_arg_parser()
@@ -2852,6 +2905,17 @@ class ArgumentParsingTests(unittest.TestCase):
                                      config.codex_interactions)
                     self.assertEqual(handler.interaction_detail,
                                      config.interaction_detail)
+
+
+class RepositoryRunnerTests(unittest.TestCase):
+    def test_default_runner_includes_config_and_codex_route_suites_once(self):
+        runner = (Path(__file__).resolve().parents[2] / "test" / "run.sh")
+        contents = runner.read_text(encoding="utf-8")
+
+        self.assertEqual(
+            contents.count("tools.tokenserver.test_vibepulse_config"), 1)
+        self.assertEqual(
+            contents.count("tools.tokenserver.test_codex_interactions"), 1)
 
 
 class ValueMultipleIntegrationTests(unittest.TestCase):

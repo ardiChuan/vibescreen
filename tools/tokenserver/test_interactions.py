@@ -855,11 +855,13 @@ class HttpEndToEndTests(unittest.TestCase):
             "store": self.handler.interaction_store,
             "timeout": self.handler.interaction_timeout_s,
             "agent_status": self.handler.agent_status,
+            "claude": self.handler.claude_interactions,
         }
         self.store = InteractionStore(secret=SECRET, reveal_detail=True)
         self.handler.interaction_store = self.store
         self.handler.interaction_timeout_s = 30.0
         self.handler.agent_status = StubAgentStatus()
+        self.handler.claude_interactions = True
         self.server = server_module.ThreadingHTTPServer(
             ("127.0.0.1", 0), self.handler)
         self.port = self.server.server_address[1]
@@ -874,6 +876,7 @@ class HttpEndToEndTests(unittest.TestCase):
         self.handler.interaction_store = self._saved["store"]
         self.handler.interaction_timeout_s = self._saved["timeout"]
         self.handler.agent_status = self._saved["agent_status"]
+        self.handler.claude_interactions = self._saved["claude"]
 
     def request(self, method, path, payload=None):
         import http.client

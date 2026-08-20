@@ -2009,9 +2009,7 @@ class Handler(BaseHTTPRequestHandler):
     plans = {"claude": None, "codex": None}  # sätts i main från --*-plan
     interaction_store = None  # "Needs You", av som standard; sätts i main
     interaction_timeout_s = 120.0  # sätts i main från --interaction-timeout
-    # ``None`` preserves legacy tests/tools that inject only a store. Real
-    # startup always replaces it with the explicit saved boolean.
-    claude_interactions = None
+    claude_interactions = False
     codex_interactions = False
     interaction_detail = False
 
@@ -2202,6 +2200,25 @@ class Handler(BaseHTTPRequestHandler):
         if normalized is None:
             self._send_codex_question_fallback("invalid")
             return
+        if not self.interaction_detail:
+            # Labels remain private adapter state so the normalized schema is
+            # intact, but every recommendation marker and every public text
+            # field is removed before the store validates and freezes it.
+            normalized = {
+                **normalized,
+                "options": [
+                    {key: value for key, value in option.items()
+                     if key != "recommended"}
+                    for option in normalized["options"]
+                ],
+                "recommended_index": None,
+                "view": {
+                    "kind": "question",
+                    "options_total": len(normalized["options"]),
+                    "marked": False,
+                    "can_approve": False,
+                },
+            }
         entry = self.interaction_store.park_normalized(
             normalized, self.interaction_timeout_s)
         if entry is None:
@@ -2292,7 +2309,7 @@ class Handler(BaseHTTPRequestHandler):
         codex_route = self.path in (
             "/api/codex/question", "/api/codex/permission")
         if claude_route and (self.interaction_store is None or
-                             self.claude_interactions is False):
+                             not self.claude_interactions):
             self._send(404, {"error": "interactions are not enabled"})
             return
         if codex_route and (self.interaction_store is None or
@@ -2430,23 +2447,32 @@ def _build_arg_parser():
         help="publisher name sent with every relay POST (default: this"
              " machine's hostname). Several machines may publish to the same"
              " mailbox; the mailbox merges freshest-per-source by name")
-    ap.add_argument(
+    claude_interactions = ap.add_mutually_exclusive_group()
+    claude_interactions.add_argument(
         "--interactions", action="store_true",
         help="deprecated alias for --claude-interactions; accept Claude Code "
              "hooks on loopback and let a paired device "
-             "answer them ('Needs You'). Off by default. Needs a device key "
+             "answer them ('Needs You'). Enables Claude only and saves that "
+             "choice. Needs a device key "
              "(VIBEPULSE_DEVICE_KEY, ~/.vibepulse-device-key, or "
              "TK_VIBEPULSE_DEVICE_KEY in secrets.h) before the device can "
              "answer anything")
+    claude_interactions.add_argument(
+        "--claude-interactions", action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable or disable Claude Code interaction hooks on loopback; "
+             "the explicit choice is saved (use --no-claude-interactions "
+             "to disable a saved opt-in)")
     ap.add_argument(
-        "--claude-interactions", action="store_true",
-        help="accept Claude Code interaction hooks on loopback")
+        "--codex-interactions", action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable or disable Codex question and permission interactions "
+             "on loopback; the explicit choice is saved")
     ap.add_argument(
-        "--codex-interactions", action="store_true",
-        help="accept Codex question and permission interactions on loopback")
-    ap.add_argument(
-        "--interaction-detail", action="store_true",
-        help="also send the question text and the command to the panel. A "
+        "--interaction-detail", action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable or disable sending question text and commands to the "
+             "panel; the explicit choice is saved. Enabling is a "
              "DELIBERATE widening of the privacy contract — without it the "
              "screen learns only that something is waiting, and in which "
              "project, and can only deny or defer to the terminal")
@@ -2460,7 +2486,7 @@ def _build_arg_parser():
 
 
 def _resolve_interaction_config(args, path=None):
-    """Merge positive CLI opt-ins over strict saved switches and persist."""
+    """Apply explicit tri-state CLI choices over saved switches and persist."""
     config_path = (Path(path) if path is not None else
                    _state_dir() / "config.json")
     invalid_saved = False
@@ -2471,17 +2497,22 @@ def _resolve_interaction_config(args, path=None):
                   "interaktioner stängs av", config_path, exc_info=True)
         saved = VibePulseConfig()
         invalid_saved = True
+    claude_override = True if args.interactions else args.claude_interactions
+
+    def chosen(saved_value, override):
+        return saved_value if override is None else override
+
     resolved = VibePulseConfig(
-        claude_interactions=(saved.claude_interactions or
-                             args.claude_interactions or
-                             args.interactions),
-        codex_interactions=(saved.codex_interactions or
-                            args.codex_interactions),
-        interaction_detail=(saved.interaction_detail or
-                            args.interaction_detail),
+        claude_interactions=chosen(
+            saved.claude_interactions, claude_override),
+        codex_interactions=chosen(
+            saved.codex_interactions, args.codex_interactions),
+        interaction_detail=chosen(
+            saved.interaction_detail, args.interaction_detail),
     )
-    explicit = (args.claude_interactions or args.codex_interactions or
-                args.interactions or args.interaction_detail)
+    explicit = (claude_override is not None or
+                args.codex_interactions is not None or
+                args.interaction_detail is not None)
     if explicit:
         # An explicit, valid command-line choice may repair a bad saved file;
         # without one the bad file is left untouched and safely disabled.
