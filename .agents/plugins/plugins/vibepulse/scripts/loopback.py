@@ -7,6 +7,9 @@ import http.client
 import ipaddress
 import json
 import re
+import socket
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -88,26 +91,87 @@ def _has_json_content_type(headers) -> bool:
     return _JSON_CONTENT_TYPE.fullmatch(value) is not None
 
 
+class _ResponseDeadline:
+    """Close this request's active connection at one absolute deadline."""
+    def __init__(self, seconds: float):
+        self._seconds = seconds
+        self._lock = threading.Lock()
+        self._socket = None
+        self._timer = None
+        self._deadline = None
+        self._expired = False
+        self._finished = False
+
+    @staticmethod
+    def _close_socket(sock):
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    def attach(self, sock):
+        with self._lock:
+            if self._finished:
+                close_now = True
+            else:
+                self._socket = sock
+                close_now = self._expired
+                if self._timer is None:
+                    self._deadline = time.monotonic() + self._seconds
+                    remaining = max(0.0, self._deadline - time.monotonic())
+                    self._timer = threading.Timer(remaining, self._expire)
+                    self._timer.daemon = True
+                    self._timer.start()
+        if close_now:
+            self._close_socket(sock)
+
+    def _expire(self):
+        with self._lock:
+            if self._finished:
+                return
+            self._expired = True
+            sock = self._socket
+        if sock is not None:
+            self._close_socket(sock)
+
+    def finish(self):
+        with self._lock:
+            self._finished = True
+            self._socket = None
+            timer = self._timer
+            self._timer = None
+        if timer is not None:
+            timer.cancel()
+
+
 class _SplitTimeoutHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, *args, read_timeout: float, **kwargs):
+    def __init__(self, *args, read_timeout: float, deadline, **kwargs):
         self._read_timeout = read_timeout
+        self._deadline = deadline
         super().__init__(*args, **kwargs)
 
     def connect(self):
         super().connect()
         if self.sock is not None:
             self.sock.settimeout(self._read_timeout)
+            self._deadline.attach(self.sock)
 
 
 class _SplitTimeoutHTTPHandler(urllib.request.HTTPHandler):
-    def __init__(self, read_timeout: float):
+    def __init__(self, read_timeout: float, deadline):
         super().__init__()
         self._read_timeout = read_timeout
+        self._deadline = deadline
 
     def http_open(self, request):
         def connection(host, **kwargs):
             return _SplitTimeoutHTTPConnection(
-                host, read_timeout=self._read_timeout, **kwargs)
+                host, read_timeout=self._read_timeout,
+                deadline=self._deadline, **kwargs)
 
         return self.do_open(connection, request)
 
@@ -130,6 +194,7 @@ def post_json(url: str, value: object, *,
         return None
     if not isinstance(read_timeout, (int, float)) or read_timeout <= 0:
         return None
+    deadline = _ResponseDeadline(float(read_timeout))
     try:
         encoded = json.dumps(
             value, ensure_ascii=False, separators=(",", ":"), allow_nan=False
@@ -141,7 +206,7 @@ def post_json(url: str, value: object, *,
             headers={"Content-Type": "application/json"})
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
-            _SplitTimeoutHTTPHandler(float(read_timeout)),
+            _SplitTimeoutHTTPHandler(float(read_timeout), deadline),
             _LoopbackRedirectHandler(),
         )
         with opener.open(request, timeout=float(connect_timeout)) as response:
@@ -160,3 +225,5 @@ def post_json(url: str, value: object, *,
         return result if isinstance(result, dict) else None
     except Exception:
         return None
+    finally:
+        deadline.finish()

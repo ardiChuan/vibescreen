@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sys
 import unicodedata
 
@@ -23,22 +24,39 @@ MAX_TREE_ITEMS = 512
 LATEST_PROTOCOL = "2025-06-18"
 SUPPORTED_PROTOCOLS = {LATEST_PROTOCOL, "2024-11-05"}
 _MISSING = object()
+_PROCESS_SESSION_ID = secrets.token_urlsafe(18)
 
 TOOL_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "required": ["question", "options"],
     "properties": {
-        "question": {"type": "string", "maxLength": 96},
-        "header": {"type": "string", "maxLength": 64},
+        "question": {
+            "type": "string", "minLength": 1,
+            "description": "Non-empty question, at most 96 UTF-8 bytes.",
+            "x-vibepulse-maxUtf8Bytes": 96,
+        },
+        "header": {
+            "type": "string", "minLength": 1,
+            "description": "Optional header, at most 64 UTF-8 bytes.",
+            "x-vibepulse-maxUtf8Bytes": 64,
+        },
         "options": {
             "type": "array", "minItems": 2, "maxItems": 3,
             "items": {
                 "type": "object", "additionalProperties": False,
                 "required": ["label"],
                 "properties": {
-                    "label": {"type": "string", "maxLength": 64},
-                    "description": {"type": "string", "maxLength": 64},
+                    "label": {
+                        "type": "string", "minLength": 1,
+                        "description": "Option label, at most 64 UTF-8 bytes.",
+                        "x-vibepulse-maxUtf8Bytes": 64,
+                    },
+                    "description": {
+                        "type": "string", "minLength": 1,
+                        "description": "Option detail, at most 64 UTF-8 bytes.",
+                        "x-vibepulse-maxUtf8Bytes": 64,
+                    },
                     "recommended": {"type": "boolean"},
                 },
             },
@@ -166,18 +184,23 @@ def _read_timeout():
 
 
 def _context():
-    values = {}
-    for environment, field, maximum in (
-            ("VIBEPULSE_CWD", "cwd", 1024),
-            ("VIBEPULSE_SESSION_ID", "session_id", 256),
-            ("VIBEPULSE_TURN_ID", "turn_id", 256)):
-        if environment not in os.environ:
-            continue
-        value = os.environ[environment]
-        if not _clean_text(value, maximum):
-            return None
-        values[field] = value
-    return values
+    cwd = os.environ.get("VIBEPULSE_CWD")
+    if not _clean_text(cwd, 1024):
+        try:
+            cwd = os.getcwd()
+        except OSError:
+            cwd = None
+    if not _clean_text(cwd, 1024):
+        cwd = "local-workspace"
+
+    session_id = os.environ.get("VIBEPULSE_SESSION_ID")
+    if not _clean_text(session_id, 256):
+        session_id = _PROCESS_SESSION_ID
+
+    turn_id = os.environ.get("VIBEPULSE_TURN_ID")
+    if not _clean_text(turn_id, 256):
+        turn_id = secrets.token_urlsafe(18)
+    return {"cwd": cwd, "session_id": session_id, "turn_id": turn_id}
 
 
 def _valid_server_result(value, options):
@@ -226,9 +249,13 @@ def _initialize(params):
             not _bounded_tree(params["capabilities"]):
         return None
     client = params["clientInfo"]
-    if not isinstance(client, dict) or set(client) != {"name", "version"} or \
+    if not isinstance(client, dict) or \
+            not {"name", "version"}.issubset(client) or \
+            not set(client).issubset({"name", "title", "version"}) or \
             not _clean_text(client["name"], 128) or \
             not _clean_text(client["version"], 64):
+        return None
+    if "title" in client and not _clean_text(client["title"], 128):
         return None
     selected = protocol if protocol in SUPPORTED_PROTOCOLS else LATEST_PROTOCOL
     return {
@@ -255,8 +282,6 @@ def _dispatch(method, params):
         return _tool_error("Invalid ask parameters")
     context = _context()
     port = _port()
-    if context is None:
-        return _tool_error("Invalid client context")
     if port is None:
         return _tool_success(_computer_fallback())
     payload = dict(params["arguments"])
