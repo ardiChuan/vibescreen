@@ -143,6 +143,31 @@ class AgentStatusBodyCapacityTests(unittest.TestCase):
             f"worst-case pending item is {encoded} bytes, budget is "
             f"{interactions.PENDING_BUDGET_BYTES}")
 
+    def test_pending_text_cannot_break_the_firmware_lexical_contract(self):
+        """The device rejects NUL escapes and Unicode control/format text."""
+        for forbidden in ("\x00", "\u202e"):
+            with self.subTest(forbidden=ascii(forbidden)):
+                store = interactions.InteractionStore(
+                    secret="a" * 64, reveal_detail=True)
+                entry = store.park("approval", {
+                    "session_id": "s", "cwd": "/tmp/project",
+                    "tool_name": f"Read{forbidden}", "tool_input": {},
+                }, 60)
+                self.assertIsNone(entry)
+                self.assertIsNone(store.pending_public())
+
+        store = interactions.InteractionStore(
+            secret="a" * 64, reveal_detail=True)
+        entry = store.park("approval", {
+            "session_id": "s", "cwd": "/tmp/Fråga",
+            "tool_name": "Läs", "tool_input": {},
+        }, 60)
+        self.assertIsNotNone(entry)
+        encoded = json.dumps(
+            store.pending_public(), ensure_ascii=False).encode("utf-8")
+        self.assertIn("Fråga".encode("utf-8"), encoded)
+        self.assertNotIn(b"\\u0000", encoded.lower())
+
     def test_worst_case_snapshot_plus_pending_fits_the_device(self):
         payload = worst_case_snapshot()
         payload["pending"] = worst_case_pending()

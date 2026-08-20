@@ -348,6 +348,55 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(len(second.request_id), 22)
         self.assertNotEqual(first.request_id, second.request_id)
 
+    def test_issued_id_history_is_bounded_without_evicting_active_ids(self):
+        history_limit = interactions.ISSUED_ID_HISTORY_LIMIT
+        next_value = 0
+        forced_values = []
+
+        def deterministic_bytes(size):
+            nonlocal next_value
+            self.assertEqual(size, 16)
+            if forced_values:
+                return forced_values.pop(0)
+            raw = next_value.to_bytes(16, "big")
+            next_value += 1
+            return raw
+
+        store = InteractionStore(
+            secret=SECRET, reveal_detail=True, now=self.clock,
+            wall=self.wall, random_bytes=deterministic_bytes)
+        live = store.park("approval", approval_event(), 120)
+        seen = {live.request_id}
+        terminal = store.park("approval", approval_event(), 120)
+        seen.add(terminal.request_id)
+        stamp = int(self.wall())
+        terminal_mac = sign_answer(
+            SECRET, terminal.request_id, "deny", stamp)
+        self.assertEqual(store.resolve(
+            terminal.request_id, "deny", stamp, terminal_mac), (True, "ok"))
+
+        for _ in range(history_limit * 3):
+            entry = store.park("approval", approval_event(), 120)
+            self.assertIsNotNone(entry)
+            self.assertNotIn(entry.request_id, seen)
+            seen.add(entry.request_id)
+            stamp = int(self.wall())
+            mac = sign_answer(SECRET, entry.request_id, "deny", stamp)
+            self.assertEqual(
+                store.resolve(entry.request_id, "deny", stamp, mac),
+                (True, "ok"))
+            self.assertIsNotNone(store.await_verdict(entry))
+
+        self.assertLessEqual(len(store._issued_ids), history_limit)
+        self.assertIn(live.request_id, store._issued_ids)
+        self.assertIn(terminal.request_id, store._issued_ids)
+        self.assertIsNotNone(store.await_verdict(terminal))
+        forced_values.extend((bytes(16), next_value.to_bytes(16, "big")))
+        collision = store.park("approval", approval_event(), 120)
+        self.assertIsNotNone(collision)
+        self.assertNotEqual(collision.request_id, live.request_id)
+        store.deny_all()
+
     def test_v1_claude_compatibility_returns_the_exact_hook_shape(self):
         event = approval_event()
         entry = self.store.park("approval", event, 120)
@@ -370,6 +419,40 @@ class StoreTests(unittest.TestCase):
         self.assertLess(later["expires_in_ms"], public["expires_in_ms"])
         self.answer(entry.request_id)
         self.store.await_verdict(entry)
+
+    def test_hold_duration_rejects_invalid_and_uint32_overflow_values(self):
+        maximum_ms = interactions.MAX_HOLD_MS
+        invalid = (
+            None, False, True, 0, -1, float("nan"), float("inf"),
+            1e308, (maximum_ms + 1) / 1000,
+        )
+        for hold_s in invalid:
+            with self.subTest(hold_s=hold_s):
+                store = InteractionStore(
+                    secret=SECRET, reveal_detail=True, now=self.clock,
+                    wall=self.wall)
+                try:
+                    entry = store.park(
+                        "approval", approval_event(), hold_s)
+                except (OverflowError, ValueError) as exc:
+                    self.fail(f"park leaked a hold conversion error: {exc}")
+                self.assertIsNone(entry)
+                self.assertIsNone(store.pending_public())
+
+        at_boundary = InteractionStore(
+            secret=SECRET, reveal_detail=True, now=self.clock,
+            wall=self.wall)
+        entry = at_boundary.park(
+            "approval", approval_event(), maximum_ms / 1000)
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.hold_ms, maximum_ms)
+
+        subsecond = InteractionStore(
+            secret=SECRET, reveal_detail=True, now=self.clock,
+            wall=self.wall)
+        entry = subsecond.park("approval", approval_event(), 0.5)
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.hold_ms, 1000)
 
     def test_a_second_tap_cannot_land_on_a_later_prompt(self):
         first = self.store.park("question", question_event(), 120)
@@ -500,6 +583,58 @@ class StoreTests(unittest.TestCase):
                     self.fail(f"park leaked UnicodeEncodeError: {exc}")
                 self.assertIsNone(entry)
         self.assertIsNone(self.store.pending_public())
+
+    def test_legacy_park_rejects_control_and_bidi_display_text(self):
+        for forbidden in ("\x00", "\u202e"):
+            question_label = question_event(options=[
+                {"label": f"Run tests{forbidden} (Recommended)",
+                 "description": "Safe local tests"},
+                {"label": "Leave unchanged"},
+            ])
+            question_prompt = question_event(
+                question=f"Approve{forbidden}this?")
+            approval_title = approval_event(f"npm test {forbidden}")
+            approval_subtitle = approval_event()
+            approval_subtitle["tool_input"]["description"] = \
+                f"Safe{forbidden}tests"
+            approval_tool = approval_event(tool=f"Read{forbidden}")
+            events = (
+                ("option label", "question", question_label),
+                ("prompt", "question", question_prompt),
+                ("title", "approval", approval_title),
+                ("subtitle", "approval", approval_subtitle),
+                ("tool", "approval", approval_tool),
+            )
+            for field, kind, event in events:
+                with self.subTest(
+                        forbidden=ascii(forbidden), field=field):
+                    self.assertIsNone(self.store.park(kind, event, 120))
+                    self.assertIsNone(self.store.pending_public())
+
+    def test_legacy_park_rejects_controls_in_project_without_sanitizing(self):
+        for forbidden in ("\x00", "\u202e"):
+            with self.subTest(forbidden=ascii(forbidden)):
+                event = approval_event()
+                event["cwd"] = f"/tmp/safe{forbidden}name"
+                self.assertIsNone(self.store.park("approval", event, 120))
+                self.assertIsNone(self.store.pending_public())
+
+    def test_valid_international_display_text_still_parks(self):
+        event = question_event(
+            question="Vilken väg?",
+            options=[
+                {"label": "Kör tester (Recommended)",
+                 "description": "Säker ändring"},
+                {"label": "Lämna oförändrat"},
+            ])
+
+        entry = self.store.park("question", event, 120)
+
+        self.assertIsNotNone(entry)
+        public = self.store.pending_public()
+        self.assertEqual(public["prompt"], "Vilken väg?")
+        self.assertEqual(public["title"], "Kör tester")
+        self.assertEqual(public["subtitle"], "Säker ändring")
 
     def test_queue_is_bounded(self):
         parked = [self.store.park("approval", approval_event(), 300)

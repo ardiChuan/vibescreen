@@ -565,3 +565,25 @@ class CodexInteractionStoreTests(unittest.TestCase):
                         f"park_normalized leaked UnicodeEncodeError: {exc}")
                 self.assertIsNone(entry)
         self.assertIsNone(self.store.pending_public())
+
+    def test_normalized_boundary_rejects_control_and_format_text(self):
+        cases = []
+        for forbidden in ("\x00", "\u202e"):
+            invalid_prompt = self.normalized_question()
+            invalid_prompt["view"]["prompt"] = f"Approve{forbidden}this"
+            cases.append(("prompt", ascii(forbidden), invalid_prompt))
+
+            invalid_option = self.normalized_question()
+            invalid_option["options"][0]["label"] = \
+                f"Fallback{forbidden}option"
+            cases.append(("option", ascii(forbidden), invalid_option))
+
+            invalid_project = self.normalized_question()
+            invalid_project["project"] = f"safe{forbidden}project"
+            cases.append(("project", ascii(forbidden), invalid_project))
+
+        for field, forbidden, normalized in cases:
+            with self.subTest(field=field, forbidden=forbidden):
+                self.assertIsNone(
+                    self.store.park_normalized(normalized, 120))
+                self.assertIsNone(self.store.pending_public())

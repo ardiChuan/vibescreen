@@ -40,6 +40,8 @@ import re
 import secrets
 import threading
 import time
+import unicodedata
+from collections import deque
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
@@ -58,6 +60,16 @@ VERDICTS = ("approve", "deny", "leave_it")
 # At most this many interactions may be parked at once. Concurrent sessions are
 # expected (that is the multi-agent case); an unbounded queue is not.
 MAX_PENDING = 8
+
+# Keep recent request IDs unavailable for reuse without retaining every ID for
+# the life of the process.  The window is deliberately much larger than the
+# live queue and any plausible human interaction volume during one signature
+# freshness interval.
+ISSUED_ID_HISTORY_LIMIT = 256
+
+# The device parses hold_ms into a uint32_t.  Refuse a duration before its
+# seconds-to-milliseconds conversion can overflow either Python or firmware.
+MAX_HOLD_MS = 0xFFFFFFFF
 
 # A device answer must be signed no more than this many seconds ago. Bounds
 # replay to the window in which the tap could plausibly have happened.
@@ -120,14 +132,40 @@ _APPROVAL_VIEW_FIELDS = frozenset({
 })
 
 
-def _is_utf8(value: Any) -> bool:
+def _is_safe_text(value: Any) -> bool:
+    """Strict UTF-8 text with no control or format code points."""
     if not isinstance(value, str):
         return False
     try:
         value.encode("utf-8")
     except UnicodeEncodeError:
         return False
-    return True
+    return not any(unicodedata.category(char).startswith("C")
+                   for char in value)
+
+
+def _optional_text_is_safe(value: Any) -> bool:
+    return not isinstance(value, str) or _is_safe_text(value)
+
+
+def _claude_event_text_is_safe(kind: str, event: Dict[str, Any]) -> bool:
+    """Validate raw Claude text before cleanup can change its semantics."""
+    if not _optional_text_is_safe(event.get("cwd")):
+        return False
+    tool_input = event.get("tool_input")
+    if kind == "question":
+        question = first_question(tool_input)
+        if question is None:
+            return False
+        fields = [question["question"], question.get("header")]
+        for option in question["options"]:
+            fields.extend((option["label"], option.get("description")))
+        return all(_optional_text_is_safe(value) for value in fields)
+    fields = [event.get("tool_name")]
+    if isinstance(tool_input, dict):
+        fields.extend((tool_input.get("command"),
+                       tool_input.get("description")))
+    return all(_optional_text_is_safe(value) for value in fields)
 
 
 def _clean_text(value: Any, limit: int) -> Optional[str]:
@@ -477,7 +515,7 @@ def _normalized_view(kind: str, raw: Any) -> Optional[Mapping[str, Any]]:
     }
     for field_name, limit in text_limits.items():
         if field_name in view and (
-                not _is_utf8(view[field_name]) or
+                not _is_safe_text(view[field_name]) or
                 not view[field_name] or len(view[field_name]) > limit):
             return None
 
@@ -511,10 +549,10 @@ def _codex_question_is_normalized(normalized: Dict[str, Any],
     for index, option in enumerate(options):
         if not isinstance(option, dict) or "label" not in option or \
                 set(option) - {"label", "description", "recommended"} or \
-                not isinstance(option["label"], str) or not option["label"]:
+                not _is_safe_text(option["label"]) or not option["label"]:
             return False
         if "description" in option and (
-                not isinstance(option["description"], str) or
+                not _is_safe_text(option["description"]) or
                 not option["description"]):
             return False
         if "recommended" in option and \
@@ -552,7 +590,7 @@ def _codex_approval_is_normalized(normalized: Dict[str, Any],
             not isinstance(event.get("tool_name"), str) or \
             not isinstance(event.get("tool_input"), dict):
         return False
-    if not _is_utf8(event["cwd"]) or \
+    if not _is_safe_text(event["cwd"]) or \
             sanitize_project(event["cwd"]) != normalized.get("project"):
         return False
     try:
@@ -605,6 +643,8 @@ class InteractionStore:
         self._lock = threading.Lock()
         self._pending: Dict[str, _Pending] = {}
         self._issued_ids = set()
+        self._issued_order = deque()
+        self._protected_ids = set()
 
     # -- creation ---------------------------------------------------------
 
@@ -613,6 +653,19 @@ class InteractionStore:
         # characters and fits both the current and legacy 33-byte firmware
         # request-id buffers.  Retaining issued IDs also makes an injected
         # collision unable to revive an old double-tap target.
+        while len(self._issued_ids) >= ISSUED_ID_HISTORY_LIMIT:
+            removable = None
+            for _ in range(len(self._issued_order)):
+                candidate = self._issued_order.popleft()
+                if candidate in self._protected_ids:
+                    self._issued_order.append(candidate)
+                else:
+                    removable = candidate
+                    break
+            if removable is None:
+                return None
+            self._issued_ids.discard(removable)
+
         for _ in range(32):
             try:
                 raw = self._random_bytes(16)
@@ -624,6 +677,7 @@ class InteractionStore:
                 "ascii").rstrip("=")
             if request_id not in self._issued_ids:
                 self._issued_ids.add(request_id)
+                self._issued_order.append(request_id)
                 return request_id
         return None
 
@@ -637,9 +691,9 @@ class InteractionStore:
         """
         if kind not in KINDS or not isinstance(event, dict):
             return None
-        cwd = event.get("cwd")
-        if isinstance(cwd, str) and not _is_utf8(cwd):
+        if not _claude_event_text_is_safe(kind, event):
             return None
+        cwd = event.get("cwd")
         tool_input = event.get("tool_input")
         if kind == "question":
             question = first_question(tool_input)
@@ -671,7 +725,7 @@ class InteractionStore:
         view = _normalized_view(kind, normalized.get("view"))
         project = normalized.get("project")
         if view is None or (project is not None and (
-                not _is_utf8(project) or
+                not _is_safe_text(project) or
                 sanitize_project(project) != project)):
             return None
         recommended = normalized.get("recommended_index")
@@ -695,7 +749,7 @@ class InteractionStore:
             raw_cwd = raw_event.get("cwd") if isinstance(raw_event, dict) \
                 else None
             if not isinstance(raw_event, dict) or \
-                    (isinstance(raw_cwd, str) and not _is_utf8(raw_cwd)) or \
+                    not _claude_event_text_is_safe(kind, raw_event) or \
                     sanitize_project(raw_cwd) != project:
                 return None
             tool_input = raw_event.get("tool_input")
@@ -731,14 +785,19 @@ class InteractionStore:
                 return None
             session_id = normalized["session_id"]
 
+        if isinstance(hold_s, bool):
+            return None
         try:
-            duration = max(1.0, float(hold_s))
+            requested_duration = float(hold_s)
         except (TypeError, ValueError, OverflowError):
             return None
-        if not math.isfinite(duration):
+        if not math.isfinite(requested_duration) or \
+                requested_duration <= 0 or \
+                requested_duration > MAX_HOLD_MS / 1000:
             return None
+        duration = max(1.0, requested_duration)
         now = self._now()
-        hold_ms = max(1, int(duration * 1000))
+        hold_ms = int(duration * 1000)
         with self._lock:
             self._sweep_locked(now)
             if len(self._pending) >= MAX_PENDING:
@@ -770,6 +829,7 @@ class InteractionStore:
                 expires_at=now + duration,
             )
             self._pending[entry.request_id] = entry
+            self._protected_ids.add(entry.request_id)
         self._log("parked", entry, None)
         return entry
 
@@ -798,10 +858,12 @@ class InteractionStore:
                 if not is_alive():
                     with self._lock:
                         self._pending.pop(entry.request_id, None)
+                        self._protected_ids.discard(entry.request_id)
                     self._log("abandoned", entry, None)
                     return None
         with self._lock:
             self._pending.pop(entry.request_id, None)
+            self._protected_ids.discard(entry.request_id)
         if entry.verdict is None:
             self._log("timeout", entry, None)
             return None
@@ -819,6 +881,7 @@ class InteractionStore:
             # queue as a ghost.
             with self._lock:
                 self._pending.pop(entry.request_id, None)
+                self._protected_ids.discard(entry.request_id)
             entry.done.set()
             self._log("provider-mismatch", entry, None)
             return None
