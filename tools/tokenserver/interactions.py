@@ -345,7 +345,8 @@ def question_view(question: Dict[str, Any],
         view["can_approve"] = marked and bool(view["prompt"]) and \
             bool(view["title"]) and \
             not _is_truncated(question.get("question"), PROMPT_MAX) and \
-            not _is_truncated(label, TITLE_MAX)
+            not _is_truncated(label, TITLE_MAX) and \
+            not _is_truncated(description, SUBTITLE_MAX)
     else:
         view["can_approve"] = False
     return view, index
@@ -366,8 +367,11 @@ def approval_view(tool_name: Any, tool_input: Any,
                                        if isinstance(tool_input, dict)
                                        else None, SUBTITLE_MAX)
         readable = bool(command) and not _is_truncated(command, TITLE_MAX)
-        view["can_approve"] = readable and approvable_tool(tool_name,
-                                                           tool_input)
+        description = (tool_input.get("description")
+                       if isinstance(tool_input, dict) else None)
+        view["can_approve"] = readable and \
+            not _is_truncated(description, SUBTITLE_MAX) and \
+            approvable_tool(tool_name, tool_input)
     else:
         view["can_approve"] = False
     return view

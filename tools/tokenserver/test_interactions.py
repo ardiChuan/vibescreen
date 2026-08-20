@@ -338,8 +338,7 @@ class ProviderStoreTests(unittest.TestCase):
                 self.assertEqual(public[field], expected)
                 self.assertLessEqual(
                     len(public[field].encode("utf-8")), limit)
-                if field == "title":
-                    self.assertTrue(public["can_approve"])
+                self.assertTrue(public["can_approve"])
                 self.store.deny_all()
 
         too_wide = (
@@ -414,6 +413,52 @@ class ProviderStoreTests(unittest.TestCase):
         self.assertTrue(public["prompt"].endswith("…"))
         self.assertLessEqual(
             len(public["prompt"].encode("utf-8")), interactions.PROMPT_MAX)
+        self.assertFalse(public["can_approve"])
+
+    def test_truncated_question_subtitle_is_alert_only(self):
+        exact = question_event(options=[{
+            "label": "Run tests (Recommended)",
+            "description": "x" * 64,
+        }])
+        entry = self.store.park("question", exact, 120)
+        self.assertIsNotNone(entry)
+        public = self.store.pending_public()
+        self.assertEqual(public["subtitle"], "x" * 64)
+        self.assertTrue(public["can_approve"])
+        self.store.deny_all()
+
+        over = question_event(options=[{
+            "label": "Run tests (Recommended)",
+            "description": "x" * 65,
+        }])
+        entry = self.store.park("question", over, 120)
+        self.assertIsNotNone(entry)
+        public = self.store.pending_public()
+        self.assertTrue(public["subtitle"].endswith("…"))
+        self.assertLessEqual(
+            len(public["subtitle"].encode("utf-8")),
+            interactions.SUBTITLE_MAX)
+        self.assertFalse(public["can_approve"])
+
+    def test_truncated_approval_subtitle_is_alert_only(self):
+        exact = approval_event(command="npm test")
+        exact["tool_input"]["description"] = "é" * 32
+        entry = self.store.park("approval", exact, 120)
+        self.assertIsNotNone(entry)
+        public = self.store.pending_public()
+        self.assertEqual(public["subtitle"], "é" * 32)
+        self.assertTrue(public["can_approve"])
+        self.store.deny_all()
+
+        over = approval_event(command="npm test")
+        over["tool_input"]["description"] = "x" * 65
+        entry = self.store.park("approval", over, 120)
+        self.assertIsNotNone(entry)
+        public = self.store.pending_public()
+        self.assertTrue(public["subtitle"].endswith("…"))
+        self.assertLessEqual(
+            len(public["subtitle"].encode("utf-8")),
+            interactions.SUBTITLE_MAX)
         self.assertFalse(public["can_approve"])
 
     def test_options_total_is_limited_to_firmware_uint8_range(self):
