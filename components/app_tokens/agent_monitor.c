@@ -150,6 +150,8 @@ static struct {
   char stage_id[TK_PENDING_ID_CAP]; /* the interaction the stage belongs to */
   char echo[TK_PENDING_TITLE_CAP];  /* the approved item, for the payoff beat */
   int64_t payoff_until_us;
+  tk_agent_provider payoff_provider;
+  bool has_payoff_provider;
   tk_agent_monitor_needs_you_cb tk_needs_you_cb;
   tk_agent_snapshot snapshot;
   tk_completion_queue queue;
@@ -413,21 +415,150 @@ static void ny_ascii_lower(const char *source, char *destination, size_t cap) {
   destination[i] = '\0';
 }
 
+typedef struct {
+  bool private_fallback;
+  bool can_approve;
+  const lv_font_t *prompt_font;
+  const lv_font_t *command_font;
+  int tool_chip_width;
+} ny_physical_fit;
+
+/* The status parser has already validated UTF-8. Keep glyph validation
+ * independent of LVGL private headers nevertheless: this bounded iterator
+ * consumes one validated scalar and never reads beyond its terminating NUL. */
+static uint32_t ny_utf8_next(const char *text, uint32_t *offset) {
+  const unsigned char *s = (const unsigned char *)text + *offset;
+  uint32_t cp;
+  unsigned count;
+  if (s[0] < 0x80) { cp = s[0]; count = 1; }
+  else if ((s[0] & 0xe0) == 0xc0) {
+    cp = s[0] & 0x1f;
+    count = 2;
+  } else if ((s[0] & 0xf0) == 0xe0) {
+    cp = s[0] & 0x0f;
+    count = 3;
+  } else {
+    cp = s[0] & 0x07;
+    count = 4;
+  }
+  for (unsigned i = 1; i < count; i++) cp = (cp << 6) | (s[i] & 0x3f);
+  *offset += count;
+  return cp;
+}
+
+/* A verdict is only actionable when the exact bytes which give it meaning can
+ * be painted. This is deliberately the same actual-font predicate used by the
+ * renderer: no placeholder glyph, dot-mode clipping, or hidden field can
+ * remain approvable. */
+static bool ny_text_fits(const char *text, const lv_font_t *font,
+                         int max_w, int max_h, bool one_line) {
+  if (!text || !text[0]) return false;
+  uint32_t offset = 0;
+  int ink_top = 32767, ink_bottom = -32768;
+  while (text[offset]) {
+    uint32_t current = ny_utf8_next(text, &offset);
+    uint32_t next_offset = offset;
+    uint32_t next = text[next_offset]
+                        ? ny_utf8_next(text, &next_offset) : 0;
+    lv_font_glyph_dsc_t glyph;
+    bool found = lv_font_get_glyph_dsc(font, &glyph, current, next);
+    if (!found || glyph.is_placeholder) {
+      if (found) lv_font_glyph_release_draw_data(&glyph);
+      return false;
+    }
+    if (glyph.box_h) {
+      int bottom = (int)font->line_height - (int)font->base_line - glyph.ofs_y;
+      int top = bottom - glyph.box_h;
+      if (top < ink_top) ink_top = top;
+      if (bottom > ink_bottom) ink_bottom = bottom;
+    }
+    lv_font_glyph_release_draw_data(&glyph);
+  }
+  lv_point_t size;
+  lv_text_get_size(&size, text, font, 0, 0,
+                   one_line ? LV_COORD_MAX : max_w, LV_TEXT_FLAG_NONE);
+  int height = one_line && ink_bottom > ink_top ? ink_bottom - ink_top : size.y;
+  return size.x <= max_w && height <= max_h &&
+         (!one_line || size.y <= font->line_height);
+}
+
+static ny_physical_fit ny_physical_fit_of(const tk_pending_interaction *p,
+                                           const tk_needs_you_view *decision) {
+  ny_physical_fit fit = {.private_fallback = true,
+                         .prompt_font = &plex_body_27,
+                         .command_font = &plex_mono_40,
+                         .tool_chip_width = 58};
+  if (!p || !decision || !decision->visible) return fit;
+
+  if (decision->kind == TK_PENDING_QUESTION) {
+    bool prompt_ok = p->has_prompt &&
+        ny_text_fits(p->prompt, &plex_body_27, 300, 68, false);
+    if (!prompt_ok && p->has_prompt &&
+        ny_text_fits(p->prompt, &plex_ui_21, 300, 68, false)) {
+      prompt_ok = true;
+      fit.prompt_font = &plex_ui_21;
+    }
+    if (!prompt_ok) return fit;
+    /* An unmarked prompt is intentionally alert-only, but it is not private
+     * when the complete prompt itself is readable. */
+    if (!p->marked) {
+      fit.private_fallback = false;
+      return fit;
+    }
+    if (!p->has_title ||
+        !ny_text_fits(p->title, &plex_body_27, 392, 32, true)) return fit;
+    if (p->has_subtitle &&
+        !ny_text_fits(p->subtitle, &plex_ui_16, 392, 20, true)) return fit;
+    fit.private_fallback = false;
+    fit.can_approve = decision->offer_approve;
+    return fit;
+  }
+
+  if (!p->has_title) return fit;
+  bool command_ok = ny_text_fits(p->title, &plex_mono_40, 432, 62, false);
+  if (!command_ok && ny_text_fits(p->title, &plex_mono_24, 432, 62, false)) {
+    command_ok = true;
+    fit.command_font = &plex_mono_24;
+  }
+  if (!command_ok) return fit;
+  if (p->has_subtitle &&
+      !ny_text_fits(p->subtitle, &plex_body_27, 300, 68, false)) return fit;
+  if (p->has_tool) {
+    char tool[TK_PENDING_TOOL_CAP];
+    ny_ascii_lower(p->tool, tool, sizeof tool);
+    lv_point_t tool_size;
+    lv_text_get_size(&tool_size, tool, &plex_ui_14, 0, 0, LV_COORD_MAX,
+                     LV_TEXT_FLAG_NONE);
+    if (!ny_text_fits(tool, &plex_ui_14, 192, 18, true)) return fit;
+    fit.tool_chip_width = tool_size.x + 16;
+    if (fit.tool_chip_width < 58) fit.tool_chip_width = 58;
+    if (fit.tool_chip_width > 208) return fit;
+  }
+  fit.private_fallback = false;
+  fit.can_approve = decision->offer_approve;
+  return fit;
+}
+
 /* One signed verdict leaving the glass. Every decision is re-checked against
  * the policy here; the render layer never decides. An APPROVE opens the static
  * payoff beat, echoing the verbatim item it just committed. */
 static void needs_you_resolve(tk_needs_you_verdict verdict) {
   const tk_pending_interaction *p = &mon.snapshot.pending;
   tk_needs_you_view decision = tk_needs_you_view_of(&mon.needs_you_state, p);
+  ny_physical_fit fit = ny_physical_fit_of(p, &decision);
+  if ((fit.private_fallback && verdict != TK_NEEDS_YOU_VERDICT_LEAVE_IT) ||
+      (verdict == TK_NEEDS_YOU_VERDICT_APPROVE && !fit.can_approve)) return;
   if (!tk_needs_you_allows(p, &decision, verdict)) return;
-  if (mon.tk_needs_you_cb) mon.tk_needs_you_cb(verdict, p);
   if (verdict == TK_NEEDS_YOU_VERDICT_APPROVE) {
     size_t n = 0;
     for (; p->title[n] && n + 1 < sizeof mon.echo; n++) mon.echo[n] = p->title[n];
     mon.echo[n] = '\0';
     mon.stage = NY_PAYOFF;
     mon.payoff_until_us = mon.rendered_at_us + 2500LL * 1000LL;
+    mon.payoff_provider = p->provider;
+    mon.has_payoff_provider = true;
   }
+  if (mon.tk_needs_you_cb) mon.tk_needs_you_cb(verdict, p);
   /* Drop it at the tap, not a poll later, so a second tap can not double-answer. */
   tk_needs_you_mark_answered(&mon.needs_you_state, p);
   render_needs_you();
@@ -449,7 +580,10 @@ static void needs_you_root_event(lv_event_t *event) {
     render_needs_you();
     return;
   }
-  if (mon.stage == NY_DECISION && !mon.snapshot.pending.has_title) {
+  const tk_pending_interaction *p = &mon.snapshot.pending;
+  tk_needs_you_view decision = tk_needs_you_view_of(&mon.needs_you_state, p);
+  ny_physical_fit fit = ny_physical_fit_of(p, &decision);
+  if (mon.stage == NY_DECISION && fit.private_fallback) {
     needs_you_resolve(TK_NEEDS_YOU_VERDICT_LEAVE_IT);
   }
 }
@@ -630,12 +764,15 @@ static void create_needs_you(lv_obj_t *app_root) {
   v->q_rec = ny_text(v->q_card, &plex_ui_14, COL_CLAUDE, 20, 14, 392, 1, L);
   lv_label_set_text(v->q_rec, "CLAUDE RECOMMENDS");
   v->q_title = ny_text(v->q_card, &plex_body_27, COL_WHITE, 20, 34, 392, 0, L);
+  lv_obj_set_height(v->q_title, 32);
   v->q_sub = ny_text(v->q_card, &plex_ui_16, COL_MUTED, 20, 70, 392, 0, L);
+  lv_obj_set_height(v->q_sub, 20);
   v->q_footer = ny_text(v->q_group, &plex_ui_14, COL_DIM, 0, 440, 480, 1, C);
 
   /* -- APPROVAL body: the command is the hero, in mono --------------------- */
   v->p_group = ny_group(v->root);
   v->p_desc = ny_text(v->p_group, &plex_body_27, COL_WHITE, 148, 70, 300, 0, L);
+  lv_obj_set_height(v->p_desc, 68);
   v->p_chip = bare(v->p_group);
   lv_obj_set_pos(v->p_chip, 24, 146);
   lv_obj_set_size(v->p_chip, 58, 26);
@@ -646,7 +783,8 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_obj_set_style_radius(v->p_chip, 7, 0);
   v->p_chip_lbl = label(v->p_chip, &plex_ui_14, COL_MUTED);
   lv_obj_center(v->p_chip_lbl);
-  v->p_cmd = ny_text(v->p_group, &plex_mono_40, COL_WHITE, 24, 182, 432, 0, L);
+  v->p_cmd = ny_text(v->p_group, &plex_mono_40, COL_WHITE, 24, 174, 432, 0, L);
+  lv_obj_set_height(v->p_cmd, 62); /* ends y236: eight clear px before y244 */
 
   /* -- Shared buttons: APPROVE always filled, DENY the one restrained red -- */
   v->approve = ny_button(v->root, "APPROVE", &plex_attention_25, COL_BLACK,
@@ -760,7 +898,11 @@ static void render_needs_you(void) {
   needs_you_view *v = &mon.needs_you;
   const tk_pending_interaction *p = &mon.snapshot.pending;
   int64_t now_us = mon.rendered_at_us;
-  bool codex = p->provider == TK_AGENT_PROVIDER_CODEX;
+  tk_agent_provider paint_provider =
+      mon.stage == NY_PAYOFF && now_us < mon.payoff_until_us &&
+              mon.has_payoff_provider
+          ? mon.payoff_provider : p->provider;
+  bool codex = paint_provider == TK_AGENT_PROVIDER_CODEX;
   lv_color_t accent = codex ? COL_CODEX : COL_CLAUDE;
   const char *provider = codex ? "CODEX" : "CLAUDE";
   uint8_t wifi_bars = torget_wifi_signal_bars();
@@ -773,7 +915,7 @@ static void render_needs_you(void) {
     memset(&key, 0, sizeof key);
     key.valid = true;
     key.stage = (uint8_t)NY_PAYOFF;
-    key.provider = (uint8_t)p->provider;
+    key.provider = (uint8_t)paint_provider;
     key.wifi_bars = wifi_bars;
     if (!mon.needs_you_rendered.valid ||
         memcmp(&mon.needs_you_rendered, &key, sizeof key) != 0) {
@@ -791,9 +933,11 @@ static void render_needs_you(void) {
   if (mon.stage == NY_PAYOFF) { /* the static window elapsed */
     mon.stage = NY_ATTRACT;
     mon.stage_id[0] = '\0';
+    mon.has_payoff_provider = false;
   }
 
   tk_needs_you_view decision = tk_needs_you_view_of(&mon.needs_you_state, p);
+  ny_physical_fit fit = ny_physical_fit_of(p, &decision);
   mon.needs_you_visible = decision.visible;
 
   if (!decision.visible) {
@@ -812,8 +956,8 @@ static void render_needs_you(void) {
   }
 
   bool is_question = decision.kind == TK_PENDING_QUESTION;
-  bool is_private = !p->has_title;   /* nothing readable to decide on the glass */
-  bool offer_approve = decision.offer_approve;
+  bool is_private = fit.private_fallback;
+  bool offer_approve = decision.offer_approve && fit.can_approve;
   /* DENY is the one restrained-red control: the approval flow only, and only
    * where the service allowed approving — never a blind deny (design law). */
   bool offer_deny = !is_question && offer_approve;
@@ -886,11 +1030,7 @@ static void render_needs_you(void) {
     /* Keep the question inside its 68px band: 27px for a short ask (<=2 lines),
      * else step to 21px so a longer one stays two readable lines above the
      * card instead of overrunning it. LONG_DOT ellipsizes the truly enormous. */
-    lv_point_t qsz;
-    lv_text_get_size(&qsz, p->has_prompt ? p->prompt : "", &plex_body_27, 0, 0,
-                     300, LV_TEXT_FLAG_NONE);
-    lv_obj_set_style_text_font(v->q_prompt,
-                               qsz.y > 68 ? &plex_ui_21 : &plex_body_27, 0);
+    lv_obj_set_style_text_font(v->q_prompt, fit.prompt_font, 0);
     ny_show(v->q_prompt, p->has_prompt);
     /* The recommendation card exists only when Claude marked an option; an
      * unmarked question arrives here alert-only (can_approve already false). */
@@ -922,15 +1062,12 @@ static void render_needs_you(void) {
     char tool[TK_PENDING_TOOL_CAP];
     ny_ascii_lower(p->has_tool ? p->tool : "", tool, sizeof tool);
     lv_label_set_text(v->p_chip_lbl, tool);
+    lv_obj_set_width(v->p_chip, fit.tool_chip_width);
     ny_show(v->p_chip, p->has_tool);
     /* Payload is the hero: mono, verbatim, one stepwise shrink so the longest
      * approvable command still fits at 432 px before truncation would kick in. */
     lv_label_set_text(v->p_cmd, p->title);
-    lv_point_t measured;
-    lv_text_get_size(&measured, p->title, &plex_mono_40, 0, 0, LV_COORD_MAX,
-                     LV_TEXT_FLAG_NONE);
-    lv_obj_set_style_text_font(
-        v->p_cmd, measured.x > 432 ? &plex_mono_24 : &plex_mono_40, 0);
+    lv_obj_set_style_text_font(v->p_cmd, fit.command_font, 0);
     ny_show(v->p_group, true);
   }
 
@@ -969,8 +1106,13 @@ void tk_agent_monitor_needs_you_tap(void) {
   if (mon.stage == NY_ATTRACT) {
     mon.stage = NY_DECISION;
     render_needs_you();
-  } else if (mon.stage == NY_DECISION && !mon.snapshot.pending.has_title) {
-    needs_you_resolve(TK_NEEDS_YOU_VERDICT_LEAVE_IT);
+  } else {
+    const tk_pending_interaction *p = &mon.snapshot.pending;
+    tk_needs_you_view decision = tk_needs_you_view_of(&mon.needs_you_state, p);
+    ny_physical_fit fit = ny_physical_fit_of(p, &decision);
+    if (mon.stage == NY_DECISION && fit.private_fallback) {
+      needs_you_resolve(TK_NEEDS_YOU_VERDICT_LEAVE_IT);
+    }
   }
 }
 

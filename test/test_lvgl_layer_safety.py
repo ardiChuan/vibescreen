@@ -55,10 +55,27 @@ assert "Never implies relay health" in platform_header
 
 # Target sampling is lock-free and stays out of LVGL; the simulator supplies a
 # deterministic fixture through the same platform API.
-assert "atomic_uchar" in target_main
+assert "tg_wifi_signal_state" in target_main
+assert "tg_wifi_signal_event" in target_main
+assert "tg_wifi_signal_sample_begin" in target_main
+assert "tg_wifi_signal_sample_commit" in target_main
 assert "esp_wifi_sta_get_ap_info" in target_main
 assert "pdMS_TO_TICKS(5000)" in target_main
+assert "lv_" not in target_main[
+    target_main.index("static void wifi_signal_task"):
+    target_main.index("/* ------------------------------------------------------- LVGL-tasken")
+]
 assert "torget_wifi_signal_bars" in sim_main
 assert "sim_wifi_signal_bars" in sim_main
+
+# One actual-font predicate owns both screen selection and verdict gating.
+assert "ny_physical_fit_of" in agent_monitor
+assert agent_monitor.count("ny_physical_fit_of(p") >= 3
+assert "lv_font_get_glyph_dsc" in agent_monitor
+assert "300, 68" in agent_monitor
+assert "392, 32" in agent_monitor
+assert "392, 20" in agent_monitor
+assert "432, 62" in agent_monitor
+assert "payoff_provider" in agent_monitor
 
 print("OK: VibePulse labels and shared Needs You tree stay allocation-safe")

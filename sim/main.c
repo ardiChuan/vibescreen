@@ -598,6 +598,8 @@ static void capture_codex_question_variant(const char *tag,
       snapshot.pending.has_prompt = true;
     }
     if (private_view) {
+      snapshot.pending.prompt[0] = '\0';
+      snapshot.pending.has_prompt = false;
       snapshot.pending.title[0] = '\0';
       snapshot.pending.has_title = false;
       snapshot.pending.marked = false;
@@ -613,6 +615,85 @@ static void capture_codex_question_variant(const char *tag,
   free(json);
 }
 
+typedef enum {
+  FIT_TITLE, FIT_SUBTITLE, FIT_DESCRIPTION, FIT_COMMAND, FIT_TOOL
+} fit_field;
+
+static void capture_codex_fit_variant(const char *tag, fit_field field,
+                                      const char *value) {
+  size_t len = 0;
+  char *json = read_fixture("agent-status-needs-you-codex-question.json", &len);
+  tk_agent_snapshot snapshot;
+  bool valid = json && tk_agent_status_parse(json, len, &snapshot);
+  if (valid) {
+    snprintf(snapshot.pending.request_id, sizeof snapshot.pending.request_id,
+             "fit-%u-%s", (unsigned)field, tag + strlen(tag) - 8);
+    if (field == FIT_TITLE || field == FIT_SUBTITLE) {
+      char *target = field == FIT_TITLE ? snapshot.pending.title
+                                        : snapshot.pending.subtitle;
+      snprintf(target, TK_PENDING_TITLE_CAP, "%s", value);
+      snapshot.pending.has_title = true;
+      snapshot.pending.has_subtitle = true;
+    } else {
+      snapshot.pending.kind = TK_PENDING_APPROVAL;
+      snapshot.pending.marked = false;
+      snapshot.pending.has_prompt = false;
+      snapshot.pending.prompt[0] = '\0';
+      snprintf(snapshot.pending.title, sizeof snapshot.pending.title,
+               "python3 -c 'print(1)'");
+      snprintf(snapshot.pending.subtitle, sizeof snapshot.pending.subtitle,
+               "Run a harmless local command");
+      snprintf(snapshot.pending.tool, sizeof snapshot.pending.tool, "Shell");
+      snapshot.pending.has_title = true;
+      snapshot.pending.has_subtitle = true;
+      snapshot.pending.has_tool = true;
+      if (field == FIT_DESCRIPTION)
+        snprintf(snapshot.pending.subtitle, sizeof snapshot.pending.subtitle,
+                 "%s", value);
+      else if (field == FIT_COMMAND)
+        snprintf(snapshot.pending.title, sizeof snapshot.pending.title,
+                 "%s", value);
+      else
+        snprintf(snapshot.pending.tool, sizeof snapshot.pending.tool,
+                 "%s", value);
+    }
+    sim_wifi_signal_bars = 3;
+    tokens_apply_agent_status(&snapshot);
+    tk_agent_monitor_needs_you_tap();
+    dump_frame(tag);
+  } else {
+    capture_failed(tag, "Codex fit fixture rejected");
+  }
+  free(json);
+}
+
+static void capture_codex_fit_matrix(void) {
+  static const char *const boundary[] = {
+      "WWWWWWWWWWWW", "WWWWWWWWWWWWWWWWWWWWWW",
+      "WWWWWW WWWWWW", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "WWWWWWWWWWWW"};
+  static const char *const overbound[] = {
+      "WWWWWWWWWWWWWWWWWWWW", "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "WWWWWWWW WWWWWWWW WWWWWWWW WWWWWWWW",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "WWWWWWWWWWWWWWWWWWWW"};
+  static const char *const missing[] = {
+      "Use \xE2\x82\xAC", "Desktop \xE2\x82\xAC", "Run \xE2\x82\xAC",
+      "echo \xE2\x82\xAC", "Shell\xE2\x82\xAC"};
+  static const char *const names[] = {
+      "title", "subtitle", "description", "command", "tool"};
+  for (int i = 0; i < 5; i++) {
+    char tag[96];
+    snprintf(tag, sizeof tag, "vibepulse-needs-you-fit-%s-boundary", names[i]);
+    capture_codex_fit_variant(tag, (fit_field)i, boundary[i]);
+    snprintf(tag, sizeof tag, "vibepulse-needs-you-fit-%s-overbound", names[i]);
+    capture_codex_fit_variant(tag, (fit_field)i, overbound[i]);
+    snprintf(tag, sizeof tag, "vibepulse-needs-you-fit-%s-missing-glyph",
+             names[i]);
+    capture_codex_fit_variant(tag, (fit_field)i, missing[i]);
+  }
+}
+
 /* Needs You v2, the interactive takeover in every stage the policy can put on
  * the glass: the attract summon, the three decision screens, the page it
  * yields to, and the static payoff beat. The two-stage summon is driven by the
@@ -620,8 +701,7 @@ static void capture_codex_question_variant(const char *tag,
  * because it owns the glass for its static window. */
 static void capture_needs_you_v2(void) {
   static const char *const codex_long_prompt =
-      "Ship the pricing recalibration to production now, or hold it for "
-      "tomorrow's review window?";
+      "Ship pricing now, or hold for tomorrow's review?";
   torget_app_show(SIM_APP_VIBEPULSE);
   feed_tokens();
   tokens_show_view(VIEW_CLAUDE_FABLE);
@@ -672,6 +752,19 @@ static void capture_needs_you_v2(void) {
                                  "codex-wifi-weak", NULL, false, 1);
   capture_codex_question_variant("vibepulse-needs-you-codex-wifi-off",
                                  "codex-wifi-off", NULL, false, 0);
+
+  capture_codex_fit_matrix();
+
+  /* The provider belongs to the accepted verdict, not whichever snapshot
+   * happens to arrive during the short payoff beat. */
+  apply_agent_file("agent-status-needs-you-codex-question.json");
+  tk_agent_monitor_needs_you_tap();
+  tk_agent_monitor_needs_you_press(TK_NEEDS_YOU_VERDICT_APPROVE);
+  dump_frame("vibepulse-needs-you-codex-payoff");
+  apply_agent_file("agent-status-idle.json");
+  dump_frame("vibepulse-needs-you-codex-payoff-empty");
+  apply_agent_file("agent-status-claude-working.json");
+  dump_frame("vibepulse-needs-you-codex-payoff-claude");
 
   /* Payoff owns the glass briefly, so it remains last. */
   sim_wifi_signal_bars = 3;

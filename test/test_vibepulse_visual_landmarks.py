@@ -223,6 +223,24 @@ EXPECTED = {
     "torget-vibepulse-needs-you-codex-private.bmp",
     "torget-vibepulse-needs-you-codex-wifi-weak.bmp",
     "torget-vibepulse-needs-you-codex-wifi-off.bmp",
+    "torget-vibepulse-needs-you-codex-payoff.bmp",
+    "torget-vibepulse-needs-you-codex-payoff-empty.bmp",
+    "torget-vibepulse-needs-you-codex-payoff-claude.bmp",
+    "torget-vibepulse-needs-you-fit-title-boundary.bmp",
+    "torget-vibepulse-needs-you-fit-title-overbound.bmp",
+    "torget-vibepulse-needs-you-fit-title-missing-glyph.bmp",
+    "torget-vibepulse-needs-you-fit-subtitle-boundary.bmp",
+    "torget-vibepulse-needs-you-fit-subtitle-overbound.bmp",
+    "torget-vibepulse-needs-you-fit-subtitle-missing-glyph.bmp",
+    "torget-vibepulse-needs-you-fit-description-boundary.bmp",
+    "torget-vibepulse-needs-you-fit-description-overbound.bmp",
+    "torget-vibepulse-needs-you-fit-description-missing-glyph.bmp",
+    "torget-vibepulse-needs-you-fit-command-boundary.bmp",
+    "torget-vibepulse-needs-you-fit-command-overbound.bmp",
+    "torget-vibepulse-needs-you-fit-command-missing-glyph.bmp",
+    "torget-vibepulse-needs-you-fit-tool-boundary.bmp",
+    "torget-vibepulse-needs-you-fit-tool-overbound.bmp",
+    "torget-vibepulse-needs-you-fit-tool-missing-glyph.bmp",
 }
 
 
@@ -1087,6 +1105,33 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         self.assertGreater(weak_blue, 0)
         self.assertEqual(off_blue, 0)
         self.assertGreater(self._count(off, box, self.NY_MUTED), 0)
+
+    def test_every_semantic_field_must_physically_fit_before_approval(self):
+        fields = ("title", "subtitle", "description", "command", "tool")
+        private = self._ny("codex-private")
+        for field in fields:
+            boundary = self._ny(f"fit-{field}-boundary")
+            overbound = self._ny(f"fit-{field}-overbound")
+            missing = self._ny(f"fit-{field}-missing-glyph")
+            with self.subTest(field=field, case="boundary"):
+                column = [boundary.getpixel((60, y)) == self.NY_CODEX
+                          for y in range(240, 350)]
+                self.assertGreaterEqual(self._longest_run(column), 90)
+            with self.subTest(field=field, case="overbound"):
+                self.assertEqual(overbound.tobytes(), private.tobytes())
+            with self.subTest(field=field, case="missing-glyph"):
+                self.assertEqual(missing.tobytes(), private.tobytes())
+
+    def test_codex_payoff_keeps_provider_across_followup_snapshots(self):
+        payoff = self._ny("codex-payoff")
+        payoff_empty = self._ny("codex-payoff-empty")
+        payoff_claude = self._ny("codex-payoff-claude")
+        self.assertEqual(payoff.tobytes(), payoff_empty.tobytes())
+        self.assertEqual(payoff.tobytes(), payoff_claude.tobytes())
+        self.assertGreater(
+            self._count(payoff, (13, 210, 17, 270), self.NY_CODEX), 0)
+        self.assertEqual(
+            self._count(payoff, (0, 0, 480, 480), self.NY_CLAUDE), 0)
 
 
 if __name__ == "__main__":
