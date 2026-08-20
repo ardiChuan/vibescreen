@@ -407,7 +407,7 @@ static void needs_you_resolve(tk_needs_you_verdict verdict) {
   const tk_pending_interaction *p = &mon.snapshot.pending;
   tk_needs_you_view decision = tk_needs_you_view_of(&mon.needs_you_state, p);
   if (!tk_needs_you_allows(p, &decision, verdict)) return;
-  if (mon.tk_needs_you_cb) mon.tk_needs_you_cb(verdict, p->request_id);
+  if (mon.tk_needs_you_cb) mon.tk_needs_you_cb(verdict, p);
   if (verdict == TK_NEEDS_YOU_VERDICT_APPROVE) {
     size_t n = 0;
     for (; p->title[n] && n + 1 < sizeof mon.echo; n++) mon.echo[n] = p->title[n];

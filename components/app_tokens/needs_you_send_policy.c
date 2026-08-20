@@ -155,6 +155,57 @@ int tk_needs_you_canonical_message(char *out, size_t cap,
   return written;
 }
 
+static bool provider_valid(const char *provider) {
+  return provider &&
+         (strcmp(provider, "claude") == 0 || strcmp(provider, "codex") == 0);
+}
+
+static bool digest_valid(const char *digest) {
+  if (!digest || strlen(digest) != 64) return false;
+  for (size_t i = 0; i < 64; i++) {
+    char byte = digest[i];
+    if (!((byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool request_id_valid(const char *request_id) {
+  if (!request_id) return false;
+  size_t length = strlen(request_id);
+  if (length == 0 || length >= 33) return false;
+  for (size_t i = 0; i < length; i++) {
+    char byte = request_id[i];
+    if (!((byte >= 'a' && byte <= 'z') ||
+          (byte >= 'A' && byte <= 'Z') ||
+          (byte >= '0' && byte <= '9') || byte == '_' || byte == '-')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool verdict_valid(const char *verdict) {
+  return verdict &&
+         (strcmp(verdict, "approve") == 0 || strcmp(verdict, "deny") == 0 ||
+          strcmp(verdict, "leave_it") == 0);
+}
+
+int tk_needs_you_canonical_message_v2(
+    char *out, size_t cap, const char *provider, const char *request_id,
+    const char *view_sha256, const char *verdict_name, uint64_t ts) {
+  if (!out || !provider_valid(provider) || !request_id_valid(request_id) ||
+      !digest_valid(view_sha256) || !verdict_valid(verdict_name)) {
+    return -1;
+  }
+  int written = snprintf(out, cap, "v2|%s|%s|%s|%s|%llu", provider,
+                         request_id, view_sha256, verdict_name,
+                         (unsigned long long)ts);
+  if (written < 0 || (size_t)written >= cap) return -1;
+  return written;
+}
+
 void tk_needs_you_hmac_hex(char out[TK_NEEDS_YOU_HMAC_HEX_CAP],
                            const char *key, const char *message) {
   static const char hex[] = "0123456789abcdef";
@@ -176,6 +227,22 @@ int tk_needs_you_answer_body(char *out, size_t cap, const char *verdict_name,
   int written = snprintf(out, cap,
                          "{\"verdict\":\"%s\",\"ts\":%llu,\"hmac\":\"%s\"}",
                          verdict_name, (unsigned long long)ts, hmac_hex);
+  if (written < 0 || (size_t)written >= cap) return -1;
+  return written;
+}
+
+int tk_needs_you_answer_body_v2(
+    char *out, size_t cap, const char *provider, const char *view_sha256,
+    const char *verdict_name, uint64_t ts, const char *hmac_hex) {
+  if (!out || !provider_valid(provider) || !digest_valid(view_sha256) ||
+      !verdict_valid(verdict_name) || !digest_valid(hmac_hex)) {
+    return -1;
+  }
+  int written = snprintf(
+      out, cap,
+      "{\"provider\":\"%s\",\"view_sha256\":\"%s\","
+      "\"verdict\":\"%s\",\"ts\":%llu,\"hmac\":\"%s\"}",
+      provider, view_sha256, verdict_name, (unsigned long long)ts, hmac_hex);
   if (written < 0 || (size_t)written >= cap) return -1;
   return written;
 }

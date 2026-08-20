@@ -15,6 +15,15 @@ target_cmake = (root / "components/app_tokens/CMakeLists.txt").read_text(
     encoding="utf-8"
 )
 sim_cmake = (root / "sim/CMakeLists.txt").read_text(encoding="utf-8")
+needs_you_net = (root / "components/app_tokens/needs_you_net.c").read_text(
+    encoding="utf-8"
+)
+agent_monitor = (root / "components/app_tokens/agent_monitor.c").read_text(
+    encoding="utf-8"
+)
+agent_monitor_header = (
+    root / "components/app_tokens/agent_monitor.h"
+).read_text(encoding="utf-8")
 
 assert '"agent_net.c"' in target_cmake, "target must compile agent_net.c"
 assert "../components/app_tokens/agent_net.c" not in sim_cmake, (
@@ -70,5 +79,23 @@ assert re.search(
     r"torget_ui_unlock\(\);",
     source,
 ), "a valid snapshot must be applied under the UI lock"
+
+# The callback gets the whole pending snapshot while it is still owned by the
+# UI, and the queue item copies both v2 binding fields before that call returns.
+assert "const tk_pending_interaction *pending" in agent_monitor_header
+assert "mon.tk_needs_you_cb(verdict, p);" in agent_monitor
+for binding_copy in (
+    ".provider = pending->provider",
+    ".has_view_sha256 = pending->has_view_sha256",
+    "memcpy(item.view_sha256, pending->view_sha256",
+):
+    assert binding_copy in needs_you_net, f"missing queued binding: {binding_copy}"
+assert "tk_needs_you_canonical_message_v2(" in needs_you_net
+assert "tk_needs_you_answer_body_v2(" in needs_you_net
+assert re.search(
+    r"pending->provider\s*==\s*TK_AGENT_PROVIDER_CODEX\s*&&\s*"
+    r"!pending->has_view_sha256",
+    needs_you_net,
+), "Codex must be dropped, never downgraded, when its view binding is absent"
 
 print("OK: agentnätets targetkoppling och klientlivscykel är inkopplade")

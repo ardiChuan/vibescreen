@@ -250,6 +250,36 @@ int main(void) {
         TK_AGENT_PROVIDER_CLAUDE == 0 && TK_AGENT_PROVIDER_CODEX == 1 &&
         TK_AGENT_PROVIDER_COUNT == 2 && TK_AGENT_JOBS_MAX == 4);
 
+  fixture = read_file(
+      FIXTURES_DIR "/agent-status-needs-you-codex-question.json", &fixture_len);
+  if (fixture) {
+    memset(&snapshot, 0, sizeof snapshot);
+    check("Codex Needs You-fixturen parsar",
+          tk_agent_status_parse(fixture, fixture_len, &snapshot));
+    check("Codex pending binder provider och vy",
+          snapshot.pending.present &&
+          snapshot.pending.provider == TK_AGENT_PROVIDER_CODEX &&
+          snapshot.pending.has_view_sha256 &&
+          strcmp(snapshot.pending.view_sha256,
+                 "9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a") == 0 &&
+          strcmp(snapshot.pending.request_id,
+                 "ABEiM0RVZneImaq7zN3u_w") == 0);
+    free(fixture);
+  }
+
+  fixture = read_file(
+      FIXTURES_DIR "/agent-status-needs-you-codex-approval.json", &fixture_len);
+  if (fixture) {
+    memset(&snapshot, 0, sizeof snapshot);
+    check("Codex approval-fixturen parsar",
+          tk_agent_status_parse(fixture, fixture_len, &snapshot) &&
+          snapshot.pending.present &&
+          snapshot.pending.kind == TK_PENDING_APPROVAL &&
+          snapshot.pending.provider == TK_AGENT_PROVIDER_CODEX &&
+          snapshot.pending.has_view_sha256);
+    free(fixture);
+  }
+
   /* "Needs You": pending är FRIVILLIG och tolkas mjukt. Ett trasigt
    * pending-objekt får aldrig ta agentlistan med sig — det är hela
    * skillnaden mot resten av den här parsern. */
@@ -268,6 +298,8 @@ int main(void) {
   check("hel fråga läses in",
         PARSE(WITH_PENDING(QUESTION_PENDING), &snapshot) &&
         snapshot.pending.present &&
+        snapshot.pending.provider == TK_AGENT_PROVIDER_CLAUDE &&
+        !snapshot.pending.has_view_sha256 &&
         snapshot.pending.kind == TK_PENDING_QUESTION &&
         snapshot.pending.can_approve && snapshot.pending.marked &&
         snapshot.pending.options_total == 2 &&
@@ -298,6 +330,16 @@ int main(void) {
       "\"expires_in_ms\":1}",                                  /* okänd sort */
       "{\"request_id\":\"abc\",\"kind\":\"question\","
       "\"expires_in_ms\":\"snart\"}",                          /* fel typ */
+      "{\"provider\":\"future\",\"request_id\":\"abc\","
+      "\"kind\":\"question\",\"expires_in_ms\":1}",        /* okänd provider */
+      "{\"provider\":\"codex\",\"request_id\":\"abc\","
+      "\"view_sha256\":\"ABCDEF\",\"kind\":\"question\","
+      "\"expires_in_ms\":1}",                                  /* trasig digest */
+      "{\"provider\":\"codex\",\"request_id\":\"abc\","
+      "\"kind\":\"question\",\"expires_in_ms\":1}",        /* Codex utan digest */
+      "{\"provider\":\"codex\",\"request_id\":\"abc|claude\","
+      "\"view_sha256\":\"9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a\","
+      "\"kind\":\"question\",\"expires_in_ms\":1}",        /* osäkert id */
       "\"inte ett objekt\"",
       "null",
       "[]",
@@ -314,6 +356,13 @@ int main(void) {
           parsed && !snapshot.pending.present &&
           snapshot.claude.job_count == 1);
   }
+
+  memset(&snapshot, 0, sizeof snapshot);
+  check("saknad provider är legacy Claude",
+        PARSE(WITH_PENDING(QUESTION_PENDING), &snapshot) &&
+        snapshot.pending.present &&
+        snapshot.pending.provider == TK_AGENT_PROVIDER_CLAUDE &&
+        !snapshot.pending.has_view_sha256);
 
   memset(&snapshot, 0, sizeof snapshot);
   check("okända fält inuti pending bryter inte bygget",

@@ -109,13 +109,26 @@ int64_t torget_now_us(void) { return (int64_t)lv_tick_get() * 1000; }
  * builds, so the wire is provable by fake-panel while the screens are provable
  * here, and the shared policy proves they agree. */
 static void sim_needs_you_verdict(tk_needs_you_verdict verdict,
-                                  const char *request_id) {
+                                  const tk_pending_interaction *pending) {
   const char *name = tk_needs_you_verdict_name(verdict);
   char message[TK_NEEDS_YOU_MESSAGE_CAP];
   uint64_t ts = (uint64_t)(lv_tick_get() / 1000);
-  if (name && request_id &&
-      tk_needs_you_canonical_message(message, sizeof message, request_id, name,
-                                     ts) > 0) {
+  int written = -1;
+  if (name && pending && pending->has_view_sha256 &&
+      (pending->provider == TK_AGENT_PROVIDER_CLAUDE ||
+       pending->provider == TK_AGENT_PROVIDER_CODEX)) {
+    const char *provider = pending->provider == TK_AGENT_PROVIDER_CODEX
+                               ? "codex"
+                               : "claude";
+    written = tk_needs_you_canonical_message_v2(
+        message, sizeof message, provider, pending->request_id,
+        pending->view_sha256, name, ts);
+  } else if (name && pending &&
+             pending->provider == TK_AGENT_PROVIDER_CLAUDE) {
+    written = tk_needs_you_canonical_message(
+        message, sizeof message, pending->request_id, name, ts);
+  }
+  if (written > 0) {
     printf("needs-you verdict: %s\n", message);
   } else {
     printf("needs-you verdict: (unsendable)\n");

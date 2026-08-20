@@ -80,6 +80,26 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
   -o /tmp/torget-needs-you-send-test
 /tmp/torget-needs-you-send-test
 
+# Cross-language wire vector: the portable panel HMAC immediately above and
+# the tokenserver verifier must pin the same exact v2 bytes forever.
+"$PYTHON_BIN" - <<'PY'
+import sys
+sys.path.insert(0, "..")
+from tools.tokenserver.interactions import sign_answer_v2
+
+actual = sign_answer_v2(
+    "a" * 64,
+    "codex",
+    "ABEiM0RVZneImaq7zN3u_w",
+    "9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a",
+    "approve",
+    1787097720,
+)
+expected = "eeaae64073b070863e3833a1483e24bd41e2da5aa1849ef8663798c32401c6a8"
+assert actual == expected, (actual, expected)
+print("OK: panelens och tokenserverns v2-HMAC-vektor är identisk")
+PY
+
 cc -std=c11 -Wall -Wextra -Werror -O1 \
   ../components/app_tokens/github_status_parse.c \
   test_github_status.c /tmp/torget-cjson.o \

@@ -30,9 +30,12 @@ static const char *TAG = "needs-you-net";
  * sender. verdict_name points at a static string, so it is safe to queue. */
 typedef struct {
   bool panic;
+  tk_agent_provider provider;
+  bool has_view_sha256;
   const char *verdict_name;
   uint64_t ts;
   char request_id[TK_PENDING_ID_CAP];
+  char view_sha256[TK_PENDING_VIEW_SHA256_CAP];
 } verdict_item;
 
 static QueueHandle_t s_queue;
@@ -47,14 +50,36 @@ static void enqueue(const verdict_item *item) {
 }
 
 static void needs_you_send_cb(tk_needs_you_verdict verdict,
-                              const char *request_id) {
+                              const tk_pending_interaction *pending) {
   const char *name = tk_needs_you_verdict_name(verdict);
-  if (!name || !request_id) return; /* never send an unknown verdict */
+  if (!name || !pending || !pending->present) return;
+  if (pending->provider != TK_AGENT_PROVIDER_CLAUDE &&
+      pending->provider != TK_AGENT_PROVIDER_CODEX) {
+    return;
+  }
+  /* Codex must never fall through to the legacy signature. The parser already
+   * enforces this, and this second gate keeps malformed internal calls safe. */
+  if (pending->provider == TK_AGENT_PROVIDER_CODEX &&
+      !pending->has_view_sha256) {
+    ESP_LOGE(TAG, "Codex-svar saknar vybindning — skickar inte");
+    return;
+  }
+  if (pending->has_view_sha256 &&
+      pending->view_sha256[TK_PENDING_VIEW_SHA256_CAP - 1] != '\0') {
+    return;
+  }
   verdict_item item = {
-    .panic = false, .verdict_name = name, .ts = (uint64_t)time(NULL),
+    .panic = false,
+    .provider = pending->provider,
+    .has_view_sha256 = pending->has_view_sha256,
+    .verdict_name = name,
+    .ts = (uint64_t)time(NULL),
   };
-  strncpy(item.request_id, request_id, sizeof item.request_id - 1);
+  strncpy(item.request_id, pending->request_id, sizeof item.request_id - 1);
   item.request_id[sizeof item.request_id - 1] = '\0';
+  if (pending->has_view_sha256) {
+    memcpy(item.view_sha256, pending->view_sha256, sizeof item.view_sha256);
+  }
   enqueue(&item);
 }
 
@@ -72,21 +97,50 @@ static void post_verdict(const verdict_item *item) {
   char body[TK_NEEDS_YOU_BODY_CAP];
   char url[128];
 
-  if (tk_needs_you_canonical_message(message, sizeof message, item->request_id,
-                                     item->verdict_name, item->ts) < 0)
-    return;
-  tk_needs_you_hmac_hex(hmac_hex, TK_VIBEPULSE_DEVICE_KEY, message);
-
   if (item->panic) {
+    if (tk_needs_you_canonical_message(message, sizeof message,
+                                       item->request_id, item->verdict_name,
+                                       item->ts) < 0) {
+      return;
+    }
+    tk_needs_you_hmac_hex(hmac_hex, TK_VIBEPULSE_DEVICE_KEY, message);
     if (tk_needs_you_panic_body(body, sizeof body, item->ts, hmac_hex) < 0)
       return;
-    snprintf(url, sizeof url, "%s/api/panic", TK_VIBEPULSE_BASE_URL);
+    int written = snprintf(url, sizeof url, "%s/api/panic",
+                           TK_VIBEPULSE_BASE_URL);
+    if (written < 0 || (size_t)written >= sizeof url) return;
   } else {
-    if (tk_needs_you_answer_body(body, sizeof body, item->verdict_name,
-                                 item->ts, hmac_hex) < 0)
-      return;
-    snprintf(url, sizeof url, "%s/api/interaction/%s", TK_VIBEPULSE_BASE_URL,
-             item->request_id);
+    const char *provider = item->provider == TK_AGENT_PROVIDER_CODEX
+                               ? "codex"
+                               : "claude";
+    if (item->has_view_sha256) {
+      if (tk_needs_you_canonical_message_v2(
+              message, sizeof message, provider, item->request_id,
+              item->view_sha256, item->verdict_name, item->ts) < 0) {
+        return;
+      }
+      tk_needs_you_hmac_hex(hmac_hex, TK_VIBEPULSE_DEVICE_KEY, message);
+      if (tk_needs_you_answer_body_v2(
+              body, sizeof body, provider, item->view_sha256,
+              item->verdict_name, item->ts, hmac_hex) < 0) {
+        return;
+      }
+    } else {
+      if (item->provider != TK_AGENT_PROVIDER_CLAUDE) return;
+      if (tk_needs_you_canonical_message(message, sizeof message,
+                                         item->request_id,
+                                         item->verdict_name, item->ts) < 0) {
+        return;
+      }
+      tk_needs_you_hmac_hex(hmac_hex, TK_VIBEPULSE_DEVICE_KEY, message);
+      if (tk_needs_you_answer_body(body, sizeof body, item->verdict_name,
+                                   item->ts, hmac_hex) < 0) {
+        return;
+      }
+    }
+    int written = snprintf(url, sizeof url, "%s/api/interaction/%s",
+                           TK_VIBEPULSE_BASE_URL, item->request_id);
+    if (written < 0 || (size_t)written >= sizeof url) return;
   }
 
   esp_http_client_config_t cfg = {

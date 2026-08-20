@@ -484,6 +484,62 @@ static bool pending_bool(const cJSON *object, const char *key) {
   return cJSON_IsTrue(item);
 }
 
+/* Security-bearing pending strings are not display fields: duplicates, null,
+ * controls and truncation all invalidate the optional interaction. */
+static bool pending_contract_string(const cJSON *object, const char *key,
+                                    char *destination, size_t capacity,
+                                    bool *present) {
+  size_t matches = 0;
+  const cJSON *item = NULL;
+  for (const cJSON *child = object->child; child; child = child->next) {
+    if (child->string && strcmp(child->string, key) == 0) {
+      item = child;
+      matches++;
+    }
+  }
+  *present = false;
+  destination[0] = '\0';
+  if (matches == 0) return true;
+  if (matches != 1 || !cJSON_IsString(item) || !item->valuestring) return false;
+
+  const unsigned char *source = (const unsigned char *)item->valuestring;
+  size_t length = 0;
+  while (source[length] != '\0') {
+    if (source[length] < 0x20 || length + 1 >= capacity) return false;
+    length++;
+  }
+  if (length == 0) return false;
+  memcpy(destination, source, length + 1);
+  *present = true;
+  return true;
+}
+
+static bool lowercase_sha256(const char *value) {
+  if (!value || strlen(value) != 64) return false;
+  for (size_t i = 0; i < 64; i++) {
+    char byte = value[i];
+    if (!((byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool pending_request_id_valid(const char *value) {
+  if (!value) return false;
+  size_t length = strlen(value);
+  if (length == 0 || length >= TK_PENDING_ID_CAP) return false;
+  for (size_t i = 0; i < length; i++) {
+    char byte = value[i];
+    if (!((byte >= 'a' && byte <= 'z') ||
+          (byte >= 'A' && byte <= 'Z') ||
+          (byte >= '0' && byte <= '9') || byte == '_' || byte == '-')) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /* The pending interaction is OPTIONAL and parsed softly on purpose.
  *
  * Every other field here is all-or-nothing, because half a quota number is a
@@ -503,6 +559,44 @@ static void parse_pending(const char *json, size_t len, const cJSON *root,
   const cJSON *pending = cJSON_GetObjectItemCaseSensitive(root, "pending");
   if (!cJSON_IsObject(pending)) return;
 
+  char provider[8];
+  bool has_provider = false;
+  if (!pending_contract_string(pending, "provider", provider, sizeof provider,
+                               &has_provider)) {
+    return;
+  }
+  if (has_provider) {
+    if (strcmp(provider, "claude") == 0) {
+      out->provider = TK_AGENT_PROVIDER_CLAUDE;
+    } else if (strcmp(provider, "codex") == 0) {
+      out->provider = TK_AGENT_PROVIDER_CODEX;
+    } else {
+      return;
+    }
+  } else {
+    out->provider = TK_AGENT_PROVIDER_CLAUDE;
+  }
+
+  bool has_view_sha256 = false;
+  if (!pending_contract_string(pending, "view_sha256", out->view_sha256,
+                               sizeof out->view_sha256,
+                               &has_view_sha256)) {
+    memset(out, 0, sizeof *out);
+    return;
+  }
+  if (has_view_sha256 && !lowercase_sha256(out->view_sha256)) {
+    memset(out, 0, sizeof *out);
+    return;
+  }
+  /* A digest without a provider must never be guessed to be Claude. Codex
+   * requires both fields, preventing a malformed v2 item from downgrading. */
+  if ((!has_provider && has_view_sha256) ||
+      (out->provider == TK_AGENT_PROVIDER_CODEX && !has_view_sha256)) {
+    memset(out, 0, sizeof *out);
+    return;
+  }
+  out->has_view_sha256 = has_view_sha256;
+
   const cJSON *kind = cJSON_GetObjectItemCaseSensitive(pending, "kind");
   if (!cJSON_IsString(kind) || !kind->valuestring) return;
   if (strcmp(kind->valuestring, "question") == 0) {
@@ -514,9 +608,9 @@ static void parse_pending(const char *json, size_t len, const cJSON *root,
   }
 
   bool has_request_id = false;
-  optional_pending_string(pending, "request_id", out->request_id,
-                          sizeof out->request_id, &has_request_id);
-  if (!has_request_id) {
+  if (!pending_contract_string(pending, "request_id", out->request_id,
+                               sizeof out->request_id, &has_request_id) ||
+      !has_request_id || !pending_request_id_valid(out->request_id)) {
     memset(out, 0, sizeof *out);
     return; /* nothing to answer with */
   }
