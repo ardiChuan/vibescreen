@@ -94,6 +94,8 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
   -o /tmp/torget-needs-you-send-test
 /tmp/torget-needs-you-send-test
 
+"$PYTHON_BIN" test_interaction_relay_vectors.py
+
 # Cross-language wire vector: the portable panel HMAC immediately above and
 # the tokenserver verifier must pin the same exact v2 bytes forever.
 "$PYTHON_BIN" - <<'PY'
