@@ -201,6 +201,7 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 "$PYTHON_BIN" test_ota_sender_gates.py
 "$PYTHON_BIN" test_wifi_setup_wiring.py
 "$PYTHON_BIN" test_relay_boundary.py
+"$PYTHON_BIN" test_vibepulse_codex_plugin.py
 
 cd ..
 "$PYTHON_BIN" -m unittest tools.agent_assets.test_build_agent_images -v

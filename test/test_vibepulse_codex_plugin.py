@@ -4,16 +4,19 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -183,6 +186,35 @@ def load_loopback():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_setup():
+    path = ROOT / "tools/vibepulse_setup.py"
+    spec = importlib.util.spec_from_file_location("vibepulse_setup_test", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
+class FakeRunner:
+    def __init__(self, responses=()):
+        self.responses = list(responses)
+        self.calls = []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((argv, kwargs))
+        if self.responses:
+            return self.responses.pop(0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+def result(returncode=0, stdout="", stderr=""):
+    return SimpleNamespace(
+        returncode=returncode, stdout=stdout, stderr=stderr)
 
 
 class LoopbackTests(unittest.TestCase):
@@ -890,6 +922,343 @@ class McpServerTests(unittest.TestCase):
             self.assertEqual(
                 responses[0]["result"]["structuredContent"]["status"],
                 "computer")
+
+
+class PluginPackageTests(unittest.TestCase):
+    def read_json(self, relative):
+        return json.loads((ROOT / relative).read_text(encoding="utf-8"))
+
+    def test_marketplace_is_one_available_local_plugin_in_render_order(self):
+        marketplace = self.read_json(".agents/plugins/marketplace.json")
+        self.assertEqual(list(marketplace), ["name", "interface", "plugins"])
+        self.assertEqual(marketplace["name"], "torget")
+        self.assertEqual(
+            marketplace["interface"], {"displayName": "Torget Plugins"})
+        self.assertEqual(marketplace["plugins"], [{
+            "name": "vibepulse",
+            "source": {"source": "local", "path": "./plugins/vibepulse"},
+            "policy": {
+                "installation": "AVAILABLE",
+                "authentication": "ON_INSTALL",
+            },
+            "category": "Developer Tools",
+        }])
+        self.assertNotIn("products", marketplace["plugins"][0]["policy"])
+
+    def test_manifest_has_real_supported_metadata_and_no_phantom_assets(self):
+        manifest = self.read_json(
+            ".agents/plugins/plugins/vibepulse/.codex-plugin/plugin.json")
+        self.assertEqual(manifest["name"], "vibepulse")
+        self.assertRegex(
+            manifest["version"], r"^(0|[1-9][0-9]*)\."
+            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+        self.assertEqual(manifest["version"], "0.1.0")
+        self.assertEqual(manifest["author"]["name"], "Niclas Vestlund")
+        self.assertNotIn("email", manifest["author"])
+        self.assertEqual(manifest["license"], "MIT")
+        repository = "https://github.com/niclasvestlund-YT/vibepulse"
+        self.assertEqual(manifest["repository"], repository)
+        self.assertTrue(manifest["homepage"].startswith(repository))
+        self.assertEqual(manifest["skills"], "./skills/")
+        for unsupported in ("hooks", "apps", "mcpServers"):
+            self.assertNotIn(unsupported, manifest)
+        interface = manifest["interface"]
+        self.assertEqual(interface["displayName"], "VibePulse")
+        self.assertEqual(interface["developerName"], "Niclas Vestlund")
+        self.assertEqual(interface["category"], "Developer Tools")
+        self.assertEqual(interface["capabilities"], ["Interactive"])
+        self.assertEqual(interface["brandColor"], "#6F78FF")
+        self.assertLessEqual(len(interface["defaultPrompt"]), 3)
+        for key in ("shortDescription", "longDescription"):
+            self.assertTrue(interface[key].strip())
+        self.assertNotRegex(json.dumps(manifest), r"TODO|assets/")
+
+    def test_default_discovered_hooks_have_exact_fail_safe_commands(self):
+        hooks = self.read_json(
+            ".agents/plugins/plugins/vibepulse/hooks/hooks.json")
+        self.assertEqual(hooks, {
+            "description": "Optional VibePulse Codex interactions",
+            "hooks": {
+                "SessionStart": [{
+                    "matcher": "startup|resume|clear|compact",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "python3 \"$PLUGIN_ROOT/scripts/session_start.py\"",
+                        "commandWindows":
+                            "py -3 \"%PLUGIN_ROOT%\\scripts\\session_start.py\"",
+                        "timeout": 3,
+                        "additionalContextLimit": 1800,
+                    }],
+                }],
+                "PermissionRequest": [{
+                    "matcher": "*",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "python3 \"$PLUGIN_ROOT/scripts/permission_hook.py\"",
+                        "commandWindows":
+                            "py -3 \"%PLUGIN_ROOT%\\scripts\\permission_hook.py\"",
+                        "timeout": 125,
+                        "statusMessage":
+                            "Waiting for VibePulse or this computer",
+                    }],
+                }],
+            },
+        })
+
+    def test_skill_is_concise_local_only_and_never_invents_approval(self):
+        path = (ROOT / ".agents/plugins/plugins/vibepulse/skills/vibepulse/"
+                "SKILL.md")
+        text = path.read_text(encoding="utf-8")
+        frontmatter, body = text.split("---", 2)[1:]
+        fields = [line.split(":", 1)[0] for line in frontmatter.splitlines()
+                  if line.strip()]
+        self.assertEqual(fields, ["name", "description"])
+        self.assertLess(len(text.splitlines()), 100)
+        for trigger in ("panel", "permission", "setup", "status", "doctor"):
+            self.assertIn(trigger, frontmatter.lower())
+        for safety in ("mcp__vibepulse__ask", "2-3", "request_user_input",
+                       "secret", "silence", "approval", "local"):
+            self.assertIn(safety, body.lower())
+        self.assertIn("python3 tools/vibepulse_setup.py status", body)
+        self.assertIn("python3 tools/vibepulse_setup.py doctor", body)
+        self.assertRegex(body.lower(), r"relay (?:is|remains) not enabled")
+
+    def test_default_runner_invokes_plugin_suite_once(self):
+        runner = (ROOT / "test/run.sh").read_text(encoding="utf-8")
+        self.assertEqual(runner.count("test_vibepulse_codex_plugin.py"), 1)
+
+
+class SetupPlanTests(unittest.TestCase):
+    def test_install_plan_is_exact_and_paths_with_spaces_stay_one_argv(self):
+        setup = load_setup()
+        commands = setup.plan_codex_install(
+            repo_root=Path("/repo with spaces"),
+            python=Path("/python with spaces"), codex=Path("/codex"),
+            marketplace_name="torget")
+        self.assertEqual(commands, [
+            ["/codex", "plugin", "marketplace", "add",
+             "/repo with spaces/.agents/plugins"],
+            ["/codex", "plugin", "add", "vibepulse@torget"],
+            ["/codex", "mcp", "remove", "vibepulse"],
+            ["/codex", "mcp", "add", "vibepulse", "--",
+             "/python with spaces",
+             "/repo with spaces/.agents/plugins/plugins/vibepulse/scripts/"
+             "mcp_server.py"],
+        ])
+
+    def test_provider_choices_and_detail_are_separate_explicit_opt_ins(self):
+        setup = load_setup()
+        expected = {
+            "off": (False, False),
+            "claude": (True, False),
+            "codex": (False, True),
+            "both": (True, True),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for providers, pair in expected.items():
+                path = Path(tmp) / providers / "config.json"
+                runner = FakeRunner()
+                out = io.StringIO()
+                code = setup.main(
+                    ["install", "--providers", providers, "--no-detail"],
+                    repo_root=ROOT, config_path=path,
+                    python=Path(sys.executable), codex=Path("/codex"),
+                    run=runner, stdout=out, stdin_isatty=False)
+                self.assertEqual(code, 0)
+                saved = setup.load_config(path)
+                self.assertEqual((saved.claude_interactions,
+                                  saved.codex_interactions), pair)
+                self.assertFalse(saved.interaction_detail)
+                self.assertEqual(len(runner.calls), 4)
+                self.assertTrue(all(isinstance(call[0], list)
+                                    and call[1].get("shell") is False
+                                    for call in runner.calls))
+                self.assertIn("/hooks", out.getvalue())
+                self.assertIn("computer fallback", out.getvalue().lower())
+
+            path = Path(tmp) / "detail" / "config.json"
+            setup.main(
+                ["install", "--providers", "off", "--detail"],
+                repo_root=ROOT, config_path=path,
+                python=Path(sys.executable), codex=Path("/codex"),
+                run=FakeRunner(), stdout=io.StringIO(), stdin_isatty=False)
+            self.assertTrue(setup.load_config(path).interaction_detail)
+
+    def test_noninteractive_install_defaults_every_provider_and_detail_off(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            code = setup.main(
+                ["install"], repo_root=ROOT, config_path=path,
+                python=Path(sys.executable), codex=Path("/codex"),
+                run=FakeRunner(), stdout=io.StringIO(), stdin_isatty=False)
+            self.assertEqual(code, 0)
+            self.assertEqual(setup.load_config(path), setup.VibePulseConfig())
+
+    def test_install_tolerates_only_known_remove_and_stops_on_other_failure(self):
+        setup = load_setup()
+        absent = "MCP server 'vibepulse' is not configured"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            runner = FakeRunner([
+                result(), result(), result(1, stderr=absent), result(),
+            ])
+            self.assertEqual(setup.main(
+                ["install", "--providers", "codex", "--no-detail"],
+                repo_root=ROOT, config_path=path,
+                python=Path(sys.executable), codex=Path("/codex"),
+                run=runner, stdout=io.StringIO(), stdin_isatty=False), 0)
+            self.assertTrue(setup.load_config(path).codex_interactions)
+
+            failed = Path(tmp) / "failed.json"
+            runner = FakeRunner([result(), result(2, stderr="permission denied")])
+            output = io.StringIO()
+            self.assertEqual(setup.main(
+                ["install", "--providers", "codex", "--no-detail"],
+                repo_root=ROOT, config_path=failed,
+                python=Path(sys.executable), codex=Path("/codex"),
+                run=runner, stdout=output, stdin_isatty=False), 1)
+            self.assertEqual(len(runner.calls), 2)
+            self.assertFalse(failed.exists())
+            self.assertNotIn("PASS", output.getvalue())
+
+    def test_status_is_plain_and_does_not_expose_secrets(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            setup.save_config(path, setup.VibePulseConfig(
+                claude_interactions=True, interaction_detail=True))
+            output = io.StringIO()
+            self.assertEqual(setup.main(
+                ["status"], config_path=path, stdout=output), 0)
+            self.assertEqual(output.getvalue().splitlines(), [
+                "Claude: ON", "Codex: OFF", "Detail: ON"])
+            self.assertNotIn("key", output.getvalue().lower())
+
+    def test_doctor_reports_pass_fix_and_off_without_secret_or_mutation(self):
+        setup = load_setup()
+        secret = "DO_NOT_PRINT_f4390c"
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self, limit):
+                self.limit = limit
+                return json.dumps({
+                    "service": "torget-tokenserver",
+                    "interactions": {"claude": False, "codex": True,
+                                     "detail": False},
+                    "secret": secret,
+                }).encode()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            setup.save_config(path, setup.VibePulseConfig(
+                codex_interactions=True))
+            original = path.read_bytes()
+            runner = FakeRunner([
+                result(stdout="vibepulse@torget trusted\n"),
+                result(stdout="vibepulse running\n"),
+            ])
+            urls = []
+
+            def open_local(request, timeout):
+                urls.append((request.full_url, timeout))
+                return Response()
+
+            output = io.StringIO()
+            self.assertEqual(setup.main(
+                ["doctor"], config_path=path,
+                python=Path(sys.executable), codex=Path("/codex"),
+                run=runner, urlopen=open_local, stdout=output), 0)
+            text = output.getvalue()
+            self.assertIn("PASS Python", text)
+            self.assertIn("PASS Codex plugin", text)
+            self.assertIn("PASS Codex MCP", text)
+            self.assertIn("PASS Tokenserver", text)
+            self.assertIn("PASS Hook review", text)
+            self.assertNotIn(secret, text)
+            self.assertEqual(urls[0][0], "http://127.0.0.1:8737/")
+            self.assertLessEqual(urls[0][1], 3)
+            self.assertEqual(path.read_bytes(), original)
+
+            setup.save_config(path, setup.VibePulseConfig())
+            output = io.StringIO()
+            self.assertEqual(setup.main(
+                ["doctor"], config_path=path,
+                python=Path(sys.executable), codex=None,
+                run=FakeRunner(), stdout=output), 0)
+            self.assertIn("OFF Codex executable", output.getvalue())
+            self.assertIn("OFF Codex plugin", output.getvalue())
+            self.assertIn("OFF Tokenserver", output.getvalue())
+
+    def test_disable_and_uninstall_preserve_non_target_state(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "state/config.json"
+            key = root / "state/device.key"
+            codex_config = root / "home/.codex/config.toml"
+            key.parent.mkdir(parents=True)
+            codex_config.parent.mkdir(parents=True)
+            key.write_text("DEVICE_KEY_1f733d", encoding="utf-8")
+            codex_config.write_text("unrelated = true\n", encoding="utf-8")
+            setup.save_config(config, setup.VibePulseConfig(
+                claude_interactions=True, codex_interactions=True,
+                interaction_detail=True))
+
+            self.assertEqual(setup.main(
+                ["disable", "codex"], config_path=config,
+                stdout=io.StringIO()), 0)
+            self.assertEqual(setup.load_config(config), setup.VibePulseConfig(
+                claude_interactions=True, codex_interactions=False,
+                interaction_detail=True))
+
+            setup.save_config(config, setup.VibePulseConfig(
+                claude_interactions=True, codex_interactions=True,
+                interaction_detail=True))
+            runner = FakeRunner()
+            self.assertEqual(setup.main(
+                ["uninstall", "codex"], config_path=config,
+                codex=Path("/codex"), run=runner,
+                stdout=io.StringIO()), 0)
+            self.assertEqual([call[0] for call in runner.calls], [
+                ["/codex", "mcp", "remove", "vibepulse"],
+                ["/codex", "plugin", "remove", "vibepulse@torget"],
+                ["/codex", "plugin", "marketplace", "remove", "torget"],
+            ])
+            self.assertEqual(setup.load_config(config), setup.VibePulseConfig(
+                claude_interactions=True, codex_interactions=False,
+                interaction_detail=True))
+            self.assertEqual(key.read_text(encoding="utf-8"),
+                             "DEVICE_KEY_1f733d")
+            self.assertEqual(codex_config.read_text(encoding="utf-8"),
+                             "unrelated = true\n")
+
+    def test_uninstall_is_idempotent_but_surfaces_unknown_failures(self):
+        setup = load_setup()
+        known = [
+            "MCP server 'vibepulse' is not configured",
+            "plugin 'vibepulse@torget' is not installed",
+            "marketplace 'torget' is not configured",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            runner = FakeRunner([result(1, stderr=message) for message in known])
+            self.assertEqual(setup.main(
+                ["uninstall", "codex"], config_path=path,
+                codex=Path("/codex"), run=runner,
+                stdout=io.StringIO()), 0)
+            failed = FakeRunner([result(1, stderr="network exploded")])
+            self.assertEqual(setup.main(
+                ["uninstall", "codex"], config_path=path,
+                codex=Path("/codex"), run=failed,
+                stdout=io.StringIO()), 1)
+            self.assertEqual(len(failed.calls), 1)
 
 
 if __name__ == "__main__":

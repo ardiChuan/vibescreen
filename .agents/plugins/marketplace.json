@@ -1,0 +1,20 @@
+{
+  "name": "torget",
+  "interface": {
+    "displayName": "Torget Plugins"
+  },
+  "plugins": [
+    {
+      "name": "vibepulse",
+      "source": {
+        "source": "local",
+        "path": "./plugins/vibepulse"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
