@@ -501,7 +501,10 @@ class MaxTrackerStoreBackfillBudgetTests(unittest.TestCase):
             path_a = claude_root / "session-a.jsonl"
             # No trailing newline on the last line -- a writer that
             # crashed or simply hasn't finished this line yet.
-            path_a.write_text(complete_line + "\n" + dangling)
+            # Byte offsets are the production contract. Avoid Windows text
+            # mode translating the one-byte JSONL newline to CRLF.
+            path_a.write_bytes(
+                (complete_line + "\n" + dangling).encode("utf-8"))
             _age_into_last_month(path_a)  # Finding C: else deferred to live
             path_b = claude_root / "session-b.jsonl"
             _write_jsonl(path_b, [_claude_usage_line(
@@ -1278,7 +1281,8 @@ class MaxTrackerStorePersistenceTests(unittest.TestCase):
             self.assertTrue(path.exists())
             leftovers = [p for p in path.parent.iterdir() if p != path]
             self.assertEqual(leftovers, [])
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
     def test_reloaded_store_produces_an_identical_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:

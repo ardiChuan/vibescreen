@@ -1230,6 +1230,25 @@ class AbandonedHookTests(unittest.TestCase):
                          live.request_id)
         self.store.deny_all()
 
+    def test_equal_clock_ticks_still_preserve_arrival_order(self):
+        random_values = iter((b"\xff" * 16, b"\x00" * 16))
+        store = InteractionStore(
+            secret=SECRET,
+            reveal_detail=True,
+            now=Clock(),
+            random_bytes=lambda size: next(random_values),
+        )
+
+        first = store.park("approval", approval_event(), 600)
+        second = store.park("question", question_event(), 600)
+
+        # Windows' monotonic clock can return the same value for consecutive
+        # parks. A random request ID must never become the queue tie-breaker.
+        self.assertGreater(first.request_id, second.request_id)
+        self.assertEqual(store.pending_public()["request_id"],
+                         first.request_id)
+        store.deny_all()
+
     def test_zombies_no_longer_fill_the_queue(self):
         for _ in range(interactions.MAX_PENDING):
             zombie = self.store.park("approval", approval_event(), 600)

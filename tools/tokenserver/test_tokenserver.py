@@ -1,5 +1,8 @@
 import contextlib
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
 import http.client
 import io
 import inspect
@@ -7,6 +10,7 @@ import json
 import logging
 import multiprocessing
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -201,8 +205,9 @@ class ClaudeLimitHeaderTests(unittest.TestCase):
                 return mock.Mock(stdout=expired_keychain)
             raise AssertionError(command)
 
-        with mock.patch.object(tokenserver.subprocess, "run",
-                               side_effect=run):
+        with mock.patch.object(tokenserver, "_IS_WINDOWS", False), \
+                mock.patch.object(tokenserver.subprocess, "run",
+                                  side_effect=run):
             candidates = tokenserver._read_oauth_candidates()
 
         # Processtokenen först, men den utgångna nyckelringsposten står kvar
@@ -233,8 +238,9 @@ class ClaudeLimitHeaderTests(unittest.TestCase):
                 return mock.Mock(stdout=keychain)
             raise AssertionError(command)
 
-        with mock.patch.object(tokenserver.subprocess, "run",
-                               side_effect=run):
+        with mock.patch.object(tokenserver, "_IS_WINDOWS", False), \
+                mock.patch.object(tokenserver.subprocess, "run",
+                                  side_effect=run):
             candidates = tokenserver._read_oauth_candidates()
 
         self.assertEqual(
@@ -255,8 +261,9 @@ class ClaudeLimitHeaderTests(unittest.TestCase):
                 return mock.Mock(stdout=keychain)
             raise AssertionError(command)
 
-        with mock.patch.object(tokenserver.subprocess, "run",
-                               side_effect=run):
+        with mock.patch.object(tokenserver, "_IS_WINDOWS", False), \
+                mock.patch.object(tokenserver.subprocess, "run",
+                                  side_effect=run):
             candidates = tokenserver._read_oauth_candidates()
 
         self.assertEqual(
@@ -496,6 +503,7 @@ class ClaudeLimitHeaderTests(unittest.TestCase):
         self.assertEqual(calls, ["Bearer dead-token"])
         self.assertEqual(status, "token_dead_awaiting_refresh")
 
+    @unittest.skipUnless(fcntl is not None, "POSIX flock regression")
     def test_probe_yields_when_another_instance_holds_the_lock(self):
         """Maskinvida enprobe-garantin: håller någon annan process låset gör
         cykeln INGEN nätaktivitet alls — extra instanser (worktree, manuell
@@ -957,7 +965,7 @@ class CodexLimitLogTests(unittest.TestCase):
         täckt — så select-bytet hade kunnat gå sönder tyst. Det här kör den
         på riktigt: process, pipe, tråd, kö.
         """
-        script = Path(temp_dir) / "codex"
+        script = Path(temp_dir) / "codex-test-server.py"
         script.write_text(
             "#!/usr/bin/env python3\n"
             "import json, sys\n"
@@ -972,8 +980,7 @@ class CodexLimitLogTests(unittest.TestCase):
             "    elif got == 2:\n"
             f"        print(json.dumps({body!r}), flush=True)\n",
             encoding="utf-8")
-        script.chmod(0o755)
-        return str(script)
+        return [sys.executable, str(script)]
 
     def test_app_server_read_talks_to_a_real_process(self):
         response = {"id": 2, "result": {"rateLimits": {
@@ -1171,6 +1178,13 @@ class CodexLimitLogTests(unittest.TestCase):
                 self.assertIsNone(tokenserver._codex_general_observation(
                     limits, observed_at=1_800_000_000,
                     now_ts=1_800_000_000))
+
+    def test_30_day_window_is_never_published_as_weekly(self):
+        limits = self._limits(46.0, window_minutes=43200)
+
+        self.assertIsNone(tokenserver._codex_general_observation(
+            limits, observed_at=1_800_000_000,
+            now_ts=1_800_000_000))
 
     def test_empty_limit_name_remains_general_weekly(self):
         observation = tokenserver._codex_general_observation(
@@ -1600,7 +1614,8 @@ class UsageSnapshotTests(unittest.TestCase):
 
     def test_default_history_path_is_under_vibepulse_application_support(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
-                mock.patch.object(Path, "home", return_value=Path(temp_dir)):
+                mock.patch.object(Path, "home", return_value=Path(temp_dir)), \
+                mock.patch.object(tokenserver, "_IS_WINDOWS", False):
             tokenserver._default_usage_history = None
 
             history = tokenserver._get_usage_history()
@@ -1613,7 +1628,8 @@ class UsageSnapshotTests(unittest.TestCase):
 
     def test_default_quota_cache_path_is_under_vibepulse_support(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
-                mock.patch.object(Path, "home", return_value=Path(temp_dir)):
+                mock.patch.object(Path, "home", return_value=Path(temp_dir)), \
+                mock.patch.object(tokenserver, "_IS_WINDOWS", False):
             tokenserver._default_quota_cache = None
             cache = tokenserver._get_quota_cache()
 
@@ -2055,6 +2071,31 @@ class JsonBodyReadSafetyTests(unittest.TestCase):
 
 
 class BoundedHTTPServerTests(unittest.TestCase):
+    def test_busy_rejection_drains_request_before_graceful_close(self):
+        events = []
+
+        class BusySocket:
+            def settimeout(self, timeout):
+                events.append(("timeout", timeout))
+
+            def recv(self, size):
+                events.append(("recv", size))
+                return b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"
+
+            def sendall(self, response):
+                events.append(("send", response))
+
+            def shutdown(self, direction):
+                events.append(("shutdown", direction))
+
+        tokenserver.BoundedThreadingHTTPServer._reject_busy(BusySocket())
+
+        self.assertEqual(events[0][0], "timeout")
+        self.assertEqual(events[1][0], "recv")
+        self.assertEqual(events[2][0], "send")
+        self.assertIn(b"503 Service Unavailable", events[2][1])
+        self.assertEqual(events[3], ("shutdown", socket.SHUT_WR))
+
     def test_worker_cap_rejects_promptly_then_recovers_after_completion(self):
         release = threading.Event()
         both_entered = threading.Event()

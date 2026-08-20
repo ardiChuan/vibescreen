@@ -87,6 +87,8 @@ add_executable(torget-sim
   ../components/torget_ticker/ticker.c
   # OTA-ringen: ren LVGL utan ESP-beroenden — bänken bevisar dess raster.
   ../components/torget_ota/ota_ui.c
+  # Wi-Fi-onboardingen: samma delade LVGL-lager som targetet visar.
+  ../components/torget_wifi/wifi_setup_ui.c
   ../third_party/cjson/cJSON.c
   ${SOLELKOLLEN_SRCS}
   ${BUDDY_SRCS}
@@ -106,7 +108,8 @@ target_include_directories(torget-sim PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../components/app_tokens"
   "${CMAKE_CURRENT_SOURCE_DIR}/../components/torget_fmt"
   "${CMAKE_CURRENT_SOURCE_DIR}/../components/torget_ticker"
-  "${CMAKE_CURRENT_SOURCE_DIR}/../components/torget_ota")
+  "${CMAKE_CURRENT_SOURCE_DIR}/../components/torget_ota"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../components/torget_wifi")
 if(SOLELKOLLEN_SRCS)
   target_include_directories(torget-sim PRIVATE
     "${TORGET_SOLELKOLLEN_DIR}/app_solelkollen")

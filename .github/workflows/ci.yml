@@ -1,4 +1,4 @@
-# CI: the two lanes that are rock solid on headless runners.
+# CI: the headless lanes that are rock solid on hosted runners.
 # Lane 3 (the full host gate incl. SDL landmark captures) needs display
 # plumbing on CI and is tracked as a follow-up issue.
 name: CI
@@ -34,16 +34,24 @@ jobs:
         run: npm ci && npm test && npm run typecheck
 
   tokenserver:
-    name: Tokenserver tests (Python stdlib)
-    runs-on: ubuntu-latest
+    name: Tokenserver tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install the optional encrypted-relay dependency
+        shell: bash
+        run: python -m pip install -r requirements-interaction-relay.txt
       - name: Run tokenserver unit tests
+        shell: bash
         run: |
-          # Same twelve modules as test/run.sh, same order. The lists
+          # Same seventeen modules as test/run.sh, same order. The lists
           # drifting apart is how a green CI hid a runtime NameError in
           # PR #11 (test_interactions was missing) — keep them in sync.
           python -m unittest \
@@ -56,10 +64,16 @@ jobs:
             tools.tokenserver.test_value_meter \
             tools.tokenserver.test_update_prices \
             tools.tokenserver.test_codex_usage \
+            tools.tokenserver.test_vibepulse_config \
+            tools.tokenserver.test_codex_interactions \
             tools.tokenserver.test_interactions \
+            tools.tokenserver.test_interaction_relay \
+            tools.tokenserver.test_interaction_relay_integration \
+            tools.tokenserver.test_interaction_relay_crypto \
             tools.tokenserver.test_publisher \
             tools.tokenserver.test_smoke -v
       - name: Run relay mailbox merge tests
+        shell: bash
         run: node --test tools/relay/test.mjs
 
   firmware:

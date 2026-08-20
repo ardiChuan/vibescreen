@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tools.tokenserver import quota_cache
 from tools.tokenserver.quota_cache import CachedQuota, QuotaCache
 
 
@@ -26,6 +27,15 @@ class QuotaCacheTests(unittest.TestCase):
         }
         values.update(overrides)
         return CachedQuota(**values)
+
+    def test_windows_skips_unsupported_directory_fsync(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = QuotaCache(Path(directory) / "quota.json")
+            with mock.patch.object(quota_cache.os, "name", "nt"), \
+                    mock.patch.object(quota_cache.os, "open") as opened:
+                cache._fsync_parent()
+
+            opened.assert_not_called()
 
     def test_put_and_latest_returns_codex_general_weekly(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -316,6 +326,7 @@ class QuotaCacheTests(unittest.TestCase):
                              original)
             self.assertEqual(path.read_text(encoding="utf-8"), on_disk)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX directory fsync")
     def test_fsyncs_temp_before_replace_and_directory_after(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quota.json"
@@ -356,6 +367,7 @@ class QuotaCacheTests(unittest.TestCase):
                 "directory-close",
             ])
 
+    @unittest.skipUnless(os.name == "posix", "POSIX directory fsync")
     def test_directory_fsync_failure_rolls_back_memory_and_disk(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quota.json"
@@ -384,6 +396,7 @@ class QuotaCacheTests(unittest.TestCase):
                              original)
             self.assertEqual(path.read_text(encoding="utf-8"), on_disk)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX directory fsync")
     def test_directory_fsync_rollback_restores_exact_prior_file_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quota.json"

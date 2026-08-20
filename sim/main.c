@@ -36,6 +36,7 @@
 #include "tokens_parse.h"
 #include "torget.h"
 #include "usage_screen.h"
+#include "wifi_setup_ui.h"
 
 /* VibePulse är det här repots app och ligger ALLTID först i registret, så
  * launchern och den obevakade rundan pekar på samma index oavsett vilka
@@ -1105,6 +1106,21 @@ static int run_vibepulse_static_qa(void) {
   dump_overlay_frame("ota-ring-notice");
   torget_ota_ui_set(TG_OTA_UI_HIDDEN, 0, 0);
 
+  /* Wi-Fi onboarding uses the exact target overlay. These four states make
+   * the phone/Mac setup path visible and keep its copy/layout in the same
+   * deterministic 480x480 regression set as OTA and Needs You. */
+  torget_wifi_ui_set(TG_WIFI_UI_SEARCHING, "Niclas iPhone", NULL,
+                     "NOT SEEN - 2.4 GHZ ONLY", 24);
+  dump_overlay_frame("wifi-searching");
+  torget_wifi_ui_set(TG_WIFI_UI_OPEN, "VibePulse-setup", "A1B2C3D4E5F6",
+                     NULL, 583);
+  dump_overlay_frame("wifi-setup-open");
+  torget_wifi_ui_set(TG_WIFI_UI_JOINING, "Niclas iPhone", NULL, NULL, 0);
+  dump_overlay_frame("wifi-joining");
+  torget_wifi_ui_set(TG_WIFI_UI_JOINED, "Niclas iPhone", NULL, NULL, 0);
+  dump_overlay_frame("wifi-joined");
+  torget_wifi_ui_set(TG_WIFI_UI_HIDDEN, NULL, NULL, NULL, 0);
+
   /* Value multiple. Every state the parser can hand the page gets its own
    * raster, because the whole design premise is that a wrong figure here is
    * worse than no figure — the dashes need proving as much as the number. */
@@ -1262,6 +1278,9 @@ int main(int argc, char **argv) {
 
   torget_ui_create(); /* bygger apparna via registret, går in i app 0 */
   tk_agent_monitor_set_needs_you_cb(sim_needs_you_verdict);
+  /* Wi-Fi-lagret före OTA-ringen — samma topplagerordning som targetet,
+   * där READY-ringen ska vinna om båda har något att visa. */
+  torget_wifi_ui_create();
   /* OTA-ringen på topplagret, dold tills QA-dumparna väcker den — samma
    * ordning som targetets app_main (overlay EFTER det delade UI:t). */
   torget_ota_ui_create();

@@ -395,6 +395,13 @@ without reading `partitions.csv` in the checkout you are actually building.
 The panel remembers up to six places. Arrive somewhere new and it needs the
 network once; every visit after that it joins by itself.
 
+<p align="center">
+  <img src="docs/img/vibepulse-wifi-searching.png" width="47%" alt="VibePulse explains that the saved phone hotspot is not visible and reminds the user that the panel needs 2.4 GHz Wi-Fi">
+  &nbsp;
+  <img src="docs/img/vibepulse-wifi-setup.png" width="47%" alt="VibePulse Wi-Fi setup screen showing the temporary network, setup password, phone URL, Mac helper command, and countdown">
+</p>
+<p align="center"><em>The real shared-LVGL 480×480 frames: first the panel explains what failed, then it opens a ten-minute phone/Mac setup window.</em></p>
+
 ```
 tools/wifi-here.sh                 # on the Mac. That is the whole thing.
 ```
@@ -545,15 +552,16 @@ by default; set `PYTHON_BIN` to point at a different 3.11+ interpreter.
 
 ## FAQ
 
-- **Windows for the Mac service?** The data half works. Claude Code has no
+- **Windows for the tokenserver?** Yes. Claude Code has no
   keychain there, so `claude login` writes the same
   `{"claudeAiOauth": {...}}` record to
   `%USERPROFILE%\.claude\.credentials.json` and the service reads it; the
   Codex app-server read and the single-probe lock no longer depend on
   macOS-only syscalls; state and logs live under `%LOCALAPPDATA%\VibePulse\`.
-  What is missing is **autostart** — the launchd plist has no Windows
-  equivalent, so you start it by hand or wire up Task Scheduler yourself.
-  [#3](https://github.com/niclasvestlund-YT/vibepulse/issues/3).
+  For autostart, run the shipped Task Scheduler installer from the repo root:
+  `powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1`.
+  It runs as your signed-in user, starts immediately, restarts on failure, and
+  keeps interaction-provider choices in the tokenserver's saved config.
 - **Linux for the Mac service?** Not yet —
   [#2](https://github.com/niclasvestlund-YT/vibepulse/issues/2);
   contributions very welcome.
