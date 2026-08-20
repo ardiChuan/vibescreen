@@ -21,6 +21,8 @@ from tools.tokenserver.test_interactions import (
     HttpEndToEndTests,
     SECRET,
     StubAgentStatus,
+    approval_event,
+    question_event,
 )
 
 
@@ -621,6 +623,7 @@ class CodexRouteTests(unittest.TestCase):
     """Strict loopback Codex adapters around the provider-aware store."""
 
     request = HttpEndToEndTests.request
+    raw_exchange = HttpEndToEndTests.raw_exchange
     pending = HttpEndToEndTests.pending
     wait_for_pending = HttpEndToEndTests.wait_for_pending
 
@@ -635,6 +638,10 @@ class CodexRouteTests(unittest.TestCase):
             "claude": self.handler.claude_interactions,
             "codex": self.handler.codex_interactions,
             "detail": self.handler.interaction_detail,
+            "body_timeout": getattr(
+                self.handler, "json_body_timeout_s", None),
+            "had_body_timeout": hasattr(
+                self.handler, "json_body_timeout_s"),
         }
         self.store = interactions.InteractionStore(
             secret=SECRET, reveal_detail=True)
@@ -644,7 +651,8 @@ class CodexRouteTests(unittest.TestCase):
         self.handler.claude_interactions = False
         self.handler.codex_interactions = True
         self.handler.interaction_detail = True
-        self.server = server_module.ThreadingHTTPServer(
+        self.handler.json_body_timeout_s = 0.1
+        self.server = server_module.BoundedThreadingHTTPServer(
             ("127.0.0.1", 0), self.handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever,
@@ -662,6 +670,10 @@ class CodexRouteTests(unittest.TestCase):
         self.handler.claude_interactions = self._saved["claude"]
         self.handler.codex_interactions = self._saved["codex"]
         self.handler.interaction_detail = self._saved["detail"]
+        if self._saved["had_body_timeout"]:
+            self.handler.json_body_timeout_s = self._saved["body_timeout"]
+        else:
+            del self.handler.json_body_timeout_s
 
     def answer_v2(self, shown, verdict="approve"):
         stamp = int(time.time())
@@ -696,6 +708,25 @@ class CodexRouteTests(unittest.TestCase):
         handler._send_no_decision = mock.Mock()
         handler._read_json_body = mock.Mock()
         return handler
+
+    def assert_wire_rejected(self, path, payload, headers, expected_status):
+        result = {}
+
+        def post():
+            result["status"], result["raw"] = self.request(
+                "POST", path, payload, headers=headers)
+
+        thread = threading.Thread(target=post, daemon=True)
+        thread.start()
+        thread.join(timeout=0.5)
+        shown = self.pending()
+        if shown is not None:
+            self.store.deny_all()
+        thread.join(timeout=5)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result.get("status"), expected_status)
+        self.assertIsNone(shown)
 
     def test_codex_question_parks_and_returns_exact_structured_answer(self):
         thread, result = self.post_in_thread(
@@ -908,3 +939,130 @@ class CodexRouteTests(unittest.TestCase):
                 handler._send.assert_called_once_with(
                     403, {"error": "hooks must be local"})
                 handler._read_json_body.assert_not_called()
+
+    def test_hook_ingress_rejects_attacker_host_before_parking(self):
+        self.handler.claude_interactions = True
+        cases = (
+            ("/api/hook/question", question_event()),
+            ("/api/hook/permission", approval_event()),
+            ("/api/codex/question", codex_question_event()),
+            ("/api/codex/permission", codex_permission()),
+        )
+        for host in (
+                "attacker.example", f"127.0.0.1:{self.port + 1}"):
+            for path, payload in cases:
+                with self.subTest(host=host, path=path):
+                    self.assert_wire_rejected(
+                        path, payload, {"Host": host}, 403)
+
+    def test_hook_ingress_rejects_every_origin_before_parking(self):
+        self.handler.claude_interactions = True
+        cases = (
+            ("/api/hook/question", question_event()),
+            ("/api/hook/permission", approval_event()),
+            ("/api/codex/question", codex_question_event()),
+            ("/api/codex/permission", codex_permission()),
+        )
+        for origin in ("https://attacker.example", "null"):
+            for path, payload in cases:
+                with self.subTest(origin=origin, path=path):
+                    self.assert_wire_rejected(
+                        path, payload, {"Origin": origin}, 403)
+
+    def test_every_json_post_route_rejects_text_plain_before_parsing(self):
+        self.handler.claude_interactions = True
+        cases = (
+            ("/api/hook/question", question_event()),
+            ("/api/hook/permission", approval_event()),
+            ("/api/codex/question", codex_question_event()),
+            ("/api/codex/permission", codex_permission()),
+            ("/api/interaction/not-a-real-id", {}),
+            ("/api/panic", {}),
+        )
+        for path, payload in cases:
+            with self.subTest(path=path):
+                self.assert_wire_rejected(
+                    path, payload, {"Content-Type": "text/plain"}, 415)
+
+    def test_recognized_loopback_host_forms_reach_the_json_route(self):
+        for host in (
+                "localhost", f"localhost.:{self.port}",
+                f"127.0.0.1:{self.port}", f"127.42.7.9:{self.port}",
+                f"[::1]:{self.port}"):
+            with self.subTest(host=host):
+                status, raw = self.request(
+                    "POST", "/api/codex/question", {},
+                    headers={"Host": host})
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(raw), {
+                    "status": "computer", "reason": "invalid",
+                })
+                self.assertIsNone(self.pending())
+
+    def test_json_content_type_allows_only_an_optional_utf8_charset(self):
+        accepted = (
+            "application/json",
+            "Application/JSON; charset=utf-8",
+            'application/json; charset="UTF-8"',
+        )
+        for content_type in accepted:
+            with self.subTest(accepted=content_type):
+                status, raw = self.request(
+                    "POST", "/api/codex/question", {},
+                    headers={"Content-Type": content_type})
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(raw)["reason"], "invalid")
+
+        for content_type in (
+                "application/json; charset=latin-1",
+                "application/json; profile=hook",
+                "application/json, text/plain"):
+            with self.subTest(rejected=content_type):
+                status, _ = self.request(
+                    "POST", "/api/codex/question", {},
+                    headers={"Content-Type": content_type})
+                self.assertEqual(status, 415)
+                self.assertIsNone(self.pending())
+
+    def test_partial_advertised_body_hits_short_deadline_and_never_parks(self):
+        request = (
+            "POST /api/codex/question HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.port}\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: 100\r\n"
+            "Connection: close\r\n\r\n"
+            "{"
+        ).encode("ascii")
+        started = time.monotonic()
+
+        status, raw = self.raw_exchange(request)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(raw), {
+            "status": "computer", "reason": "invalid",
+        })
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertIsNone(self.pending())
+
+    def test_deep_and_huge_integer_json_fail_closed_without_traceback(self):
+        adversarial = (
+            b"[" * 10000 + b"0" + b"]" * 10000,
+            b'{"value":' + b"9" * 5000 + b"}",
+        )
+        for body in adversarial:
+            with self.subTest(size=len(body)):
+                request = (
+                    "POST /api/codex/question HTTP/1.1\r\n"
+                    f"Host: 127.0.0.1:{self.port}\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    "Connection: close\r\n\r\n"
+                ).encode("ascii") + body
+
+                status, raw = self.raw_exchange(request)
+
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(raw), {
+                    "status": "computer", "reason": "invalid",
+                })
+                self.assertIsNone(self.pending())

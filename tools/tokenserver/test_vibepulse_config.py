@@ -69,6 +69,36 @@ class SavedConfigTests(unittest.TestCase):
         self.assertEqual(load_config(self.path), VibePulseConfig(
             claude_interactions=True, interaction_detail=True))
 
+    def test_actual_bytes_are_capped_even_if_path_metadata_looks_small(self):
+        self.path.parent.mkdir()
+        self.path.write_bytes(
+            b'{"codex_interactions":true}' + b" " * (16 * 1024))
+        fake_stat = mock.Mock(st_size=1)
+
+        with mock.patch.object(Path, "stat", return_value=fake_stat):
+            with self.assertRaises(ConfigError):
+                load_config(self.path)
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(os, "O_NOFOLLOW"),
+        "descriptor-level symlink refusal needs POSIX O_NOFOLLOW")
+    def test_symlink_is_rejected_instead_of_followed(self):
+        target = Path(self.tmp.name) / "target.json"
+        target.write_text(
+            '{"codex_interactions":true}', encoding="utf-8")
+        self.path.parent.mkdir()
+        self.path.symlink_to(target)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file kinds")
+    def test_non_regular_config_path_is_rejected(self):
+        self.path.mkdir(parents=True)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
     def test_round_trip_uses_only_the_public_non_secret_schema(self):
         expected = VibePulseConfig(
             claude_interactions=True,

@@ -33,6 +33,7 @@ Autostart: se README.md härintill (launchd-plist medföljer).
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import logging
 import math
@@ -115,6 +116,8 @@ RECOMPUTE_EVERY_S = 30
 LIMITS_EVERY_S = 240  # rate-limit-proben: 15 anrop/h — kontots bucket delas
                       # med Claude Code självt, och kvoten rör sig långsamt;
                       # panelens 30 s-pollar får ändå cachat svar direkt
+HTTP_MAX_WORKERS = 32
+JSON_BODY_TIMEOUT_S = 2.0
 
 # Vilka token-källor och systemanrop som finns beror på plattformen, inte på
 # konfiguration. Testerna patchar konstanten för att köra Windows-grenarna
@@ -2001,6 +2004,52 @@ def get_snapshot(projects_dir: Path, history=None, now_ts=None,
     return result
 
 
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Thread-per-request HTTP with a fixed resource ceiling."""
+
+    daemon_threads = True
+    block_on_close = False
+
+    def __init__(self, server_address, handler, *,
+                 max_workers=HTTP_MAX_WORKERS):
+        if type(max_workers) is not int or max_workers < 1:
+            raise ValueError("max_workers must be a positive integer")
+        self.max_workers = max_workers
+        self._worker_slots = threading.BoundedSemaphore(max_workers)
+        super().__init__(server_address, handler)
+
+    def process_request(self, request, client_address):
+        if not self._worker_slots.acquire(blocking=False):
+            self._reject_busy(request)
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._worker_slots.release()
+            self.shutdown_request(request)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._worker_slots.release()
+
+    @staticmethod
+    def _reject_busy(request):
+        response = (
+            b"HTTP/1.1 503 Service Unavailable\r\n"
+            b"Content-Length: 0\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        try:
+            request.settimeout(0.25)
+            request.sendall(response)
+        except OSError:
+            pass
+
+
 class Handler(BaseHTTPRequestHandler):
     projects_dir = None  # sätts i main
     agent_status = None  # bakgrundstjänst, sätts i main
@@ -2012,6 +2061,7 @@ class Handler(BaseHTTPRequestHandler):
     claude_interactions = False
     codex_interactions = False
     interaction_detail = False
+    json_body_timeout_s = JSON_BODY_TIMEOUT_S
 
     def _send(self, code, payload):
         body = json.dumps(payload).encode()
@@ -2041,7 +2091,71 @@ class Handler(BaseHTTPRequestHandler):
         "the hook door" and "the device door" genuinely different doors.
         """
         host = self.client_address[0] if self.client_address else ""
-        return host in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        mapped = getattr(address, "ipv4_mapped", None)
+        return bool(mapped.is_loopback if mapped is not None
+                    else address.is_loopback)
+
+    def _header_values(self, name):
+        get_all = getattr(self.headers, "get_all", None)
+        if callable(get_all):
+            return get_all(name) or []
+        value = self.headers.get(name)
+        return [] if value is None else [value]
+
+    def _has_valid_loopback_host(self):
+        values = self._header_values("Host")
+        if len(values) != 1 or not isinstance(values[0], str):
+            return False
+        authority = values[0].strip()
+        port = None
+        if authority.startswith("["):
+            match = re.fullmatch(r"\[([^\]]+)\](?::([0-9]{1,5}))?",
+                                 authority)
+            if match is None:
+                return False
+            try:
+                if ipaddress.ip_address(match.group(1)) != \
+                        ipaddress.ip_address("::1"):
+                    return False
+            except ValueError:
+                return False
+            port = match.group(2)
+        else:
+            if authority.count(":") > 1:
+                return False
+            host = authority
+            if ":" in authority:
+                host, _, port = authority.rpartition(":")
+                if not port:
+                    return False
+            lowered = host.lower()
+            if lowered not in ("localhost", "localhost."):
+                try:
+                    address = ipaddress.ip_address(host)
+                except ValueError:
+                    return False
+                if address.version != 4 or not address.is_loopback:
+                    return False
+        if port is None:
+            return True
+        try:
+            expected_port = int(self.server.server_address[1])
+            supplied_port = int(port)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return False
+        return supplied_port == expected_port
+
+    def _has_json_content_type(self):
+        values = self._header_values("Content-Type")
+        if len(values) != 1 or not isinstance(values[0], str):
+            return False
+        return re.fullmatch(
+            r'application/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?',
+            values[0].strip(), flags=re.IGNORECASE) is not None
 
     def _read_json_body(self, limit=64 * 1024):
         try:
@@ -2051,12 +2165,26 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0 or length > limit:
             return None
         try:
-            raw = self.rfile.read(length)
+            previous_timeout = self.connection.gettimeout()
+            self.connection.settimeout(self.json_body_timeout_s)
         except (ConnectionError, TimeoutError, OSError):
             return None
         try:
+            try:
+                raw = self.rfile.read(length)
+            except (ConnectionError, TimeoutError, OSError):
+                return None
+        finally:
+            try:
+                self.connection.settimeout(previous_timeout)
+            except (ConnectionError, TimeoutError, OSError):
+                pass
+        if len(raw) != length:
+            return None
+        try:
             return json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError,
+                RecursionError):
             return None
 
     def _max_tracker_payload(self):
@@ -2308,6 +2436,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/hook/question", "/api/hook/permission")
         codex_route = self.path in (
             "/api/codex/question", "/api/codex/permission")
+        answer_route = self.path.startswith("/api/interaction/")
+        panic_route = self.path == "/api/panic"
         if claude_route and (self.interaction_store is None or
                              not self.claude_interactions):
             self._send(404, {"error": "interactions are not enabled"})
@@ -2323,6 +2453,17 @@ class Handler(BaseHTTPRequestHandler):
                             self.address_string())
                 self._send(403, {"error": "hooks must be local"})
                 return
+            if not self._has_valid_loopback_host() or \
+                    self._header_values("Origin"):
+                self._send(403, {"error": "hook ingress rejected"})
+                return
+        if (answer_route or panic_route) and self.interaction_store is None:
+            self._send(404, {"error": "interactions are not enabled"})
+            return
+        if (claude_route or codex_route or answer_route or panic_route) and \
+                not self._has_json_content_type():
+            self._send(415, {"error": "application/json required"})
+            return
         if claude_route:
             self._handle_hook(
                 "question" if self.path.endswith("question") else "approval")
@@ -2332,9 +2473,9 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_codex_permission()
         elif self.interaction_store is None:
             self._send(404, {"error": "interactions are not enabled"})
-        elif self.path.startswith("/api/interaction/"):
+        elif answer_route:
             self._handle_answer(self.path[len("/api/interaction/"):])
-        elif self.path == "/api/panic":
+        elif panic_route:
             self._handle_panic()
         else:
             self._send(404, {"error": "not found"})
@@ -2764,7 +2905,7 @@ def main():
 
     srv = None
     try:
-        srv = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
+        srv = BoundedThreadingHTTPServer(("0.0.0.0", args.port), Handler)
         log.info("serverar http://0.0.0.0:%d/api/tokens, "
                  "/api/agent-status, /api/max-tracker och /api/github "
                  "(LAN — exponera inte utåt)", args.port)

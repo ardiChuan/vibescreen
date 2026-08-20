@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -49,22 +50,42 @@ def _strict_object(pairs: Iterable[Tuple[str, object]]) -> dict:
 def load_config(path: Path) -> VibePulseConfig:
     """Load a strict config file; a genuinely missing file means all off."""
     path = Path(path)
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = None
     try:
-        if path.stat().st_size > _MAX_CONFIG_BYTES:
+        fd = os.open(path, flags)
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ConfigError("configuration path must be a regular file")
+        with os.fdopen(fd, "rb") as handle:
+            fd = None
+            raw_bytes = handle.read(_MAX_CONFIG_BYTES + 1)
+        if len(raw_bytes) > _MAX_CONFIG_BYTES:
             raise ConfigError("configuration file is too large")
-        raw = path.read_text(encoding="utf-8")
+        raw = raw_bytes.decode("utf-8", errors="strict")
     except FileNotFoundError:
         return VibePulseConfig()
     except ConfigError:
         raise
     except (OSError, UnicodeError) as exc:
         raise ConfigError("cannot read configuration") from exc
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     try:
         payload = json.loads(raw, object_pairs_hook=_strict_object)
     except ConfigError:
         raise
-    except (json.JSONDecodeError, UnicodeError, ValueError) as exc:
+    except (json.JSONDecodeError, UnicodeError, ValueError,
+            RecursionError) as exc:
         raise ConfigError("malformed configuration JSON") from exc
     if not isinstance(payload, dict):
         raise ConfigError("configuration must be a JSON object")

@@ -1,4 +1,6 @@
+import http.client
 import json
+import socket
 import threading
 import time
 import unittest
@@ -19,6 +21,7 @@ from tools.tokenserver.interactions import (
 
 
 SECRET = "a" * 64
+_NO_BODY = object()
 
 
 class Clock:
@@ -862,7 +865,7 @@ class HttpEndToEndTests(unittest.TestCase):
         self.handler.interaction_timeout_s = 30.0
         self.handler.agent_status = StubAgentStatus()
         self.handler.claude_interactions = True
-        self.server = server_module.ThreadingHTTPServer(
+        self.server = server_module.BoundedThreadingHTTPServer(
             ("127.0.0.1", 0), self.handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever,
@@ -878,16 +881,30 @@ class HttpEndToEndTests(unittest.TestCase):
         self.handler.agent_status = self._saved["agent_status"]
         self.handler.claude_interactions = self._saved["claude"]
 
-    def request(self, method, path, payload=None):
-        import http.client
+    def request(self, method, path, payload=_NO_BODY, headers=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
-        body = json.dumps(payload).encode() if payload is not None else None
-        headers = {"Content-Type": "application/json"} if body else {}
-        conn.request(method, path, body=body, headers=headers)
+        body = (None if payload is _NO_BODY else
+                json.dumps(payload).encode())
+        request_headers = ({"Content-Type": "application/json"}
+                           if body else {})
+        request_headers.update(headers or {})
+        conn.request(method, path, body=body, headers=request_headers)
         response = conn.getresponse()
         raw = response.read()
         conn.close()
         return response.status, raw
+
+    def raw_exchange(self, request, timeout=2.0):
+        client = socket.create_connection(
+            ("127.0.0.1", self.port), timeout=timeout)
+        client.settimeout(timeout)
+        try:
+            client.sendall(request)
+            response = http.client.HTTPResponse(client)
+            response.begin()
+            return response.status, response.read()
+        finally:
+            client.close()
 
     def pending(self):
         status, raw = self.request("GET", "/api/agent-status")
@@ -1066,7 +1083,9 @@ class HttpEndToEndTests(unittest.TestCase):
         for host in ("192.168.1.20", "10.0.0.5", ""):
             handler.client_address = (host, 5000)
             self.assertFalse(handler._is_loopback(), host)
-        for host in ("127.0.0.1", "::1"):
+        for host in (
+                "127.0.0.1", "127.42.7.9", "::1",
+                "::ffff:127.42.7.9"):
             handler.client_address = (host, 5000)
             self.assertTrue(handler._is_loopback(), host)
 

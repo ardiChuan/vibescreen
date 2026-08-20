@@ -1,14 +1,18 @@
 import contextlib
 import fcntl
+import http.client
 import io
+import inspect
 import json
 import logging
+import socket
 import tempfile
 import threading
 import time
 import unittest
 import urllib.error
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from unittest import mock
 import os
@@ -1992,6 +1996,166 @@ class UsageSnapshotTests(unittest.TestCase):
         self.assertFalse(snapshot["claudeWeekStale"])
         self.assertFalse(snapshot["claudeModelWeekStale"])
         self.assertFalse(snapshot["codexWeekStale"])
+
+
+class JsonBodyReadSafetyTests(unittest.TestCase):
+    class StubConnection:
+        def __init__(self, timeout=7.0):
+            self.timeout = timeout
+            self.set_calls = []
+
+        def gettimeout(self):
+            return self.timeout
+
+        def settimeout(self, value):
+            self.timeout = value
+            self.set_calls.append(value)
+
+    def handler(self, raw, advertised=None):
+        handler = tokenserver.Handler.__new__(tokenserver.Handler)
+        handler.headers = {
+            "Content-Length": str(len(raw) if advertised is None else
+                                  advertised),
+        }
+        handler.rfile = io.BytesIO(raw)
+        handler.connection = self.StubConnection()
+        handler.json_body_timeout_s = 0.25
+        return handler
+
+    def test_incomplete_framing_is_not_parsed_as_a_complete_object(self):
+        handler = self.handler(b"{}", advertised=100)
+
+        self.assertIsNone(handler._read_json_body())
+
+    def test_body_read_sets_a_short_deadline_then_restores_socket_timeout(self):
+        class TimedOutReader:
+            def read(self, _length):
+                raise TimeoutError("slow peer")
+
+        handler = self.handler(b"{}")
+        handler.rfile = TimedOutReader()
+
+        self.assertIsNone(handler._read_json_body())
+        self.assertEqual(handler.connection.set_calls, [0.25, 7.0])
+
+    def test_deep_and_huge_integer_json_are_bounded_failures(self):
+        adversarial = (
+            b"[" * 10000 + b"0" + b"]" * 10000,
+            b'{"value":' + b"9" * 5000 + b"}",
+        )
+        for raw in adversarial:
+            with self.subTest(size=len(raw)):
+                handler = self.handler(raw)
+                try:
+                    result = handler._read_json_body()
+                except (RecursionError, ValueError) as exc:
+                    self.fail(f"JSON parser exception escaped: {exc}")
+                self.assertIsNone(result)
+
+
+class BoundedHTTPServerTests(unittest.TestCase):
+    def test_worker_cap_rejects_promptly_then_recovers_after_completion(self):
+        release = threading.Event()
+        both_entered = threading.Event()
+        state_lock = threading.Lock()
+        state = {"active": 0, "peak": 0}
+
+        class BlockingHandler(BaseHTTPRequestHandler):
+            def do_GET(inner_self):
+                with state_lock:
+                    state["active"] += 1
+                    state["peak"] = max(state["peak"], state["active"])
+                    if state["active"] == 2:
+                        both_entered.set()
+                try:
+                    release.wait(timeout=5)
+                    inner_self.send_response(200)
+                    inner_self.send_header("Content-Length", "0")
+                    inner_self.end_headers()
+                finally:
+                    with state_lock:
+                        state["active"] -= 1
+
+            def log_message(self, _format, *args):
+                del args
+
+        server = tokenserver.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), BlockingHandler, max_workers=2)
+        server_thread = threading.Thread(
+            target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        def request():
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.server_address[1], timeout=2)
+            try:
+                connection.request("GET", "/")
+                response = connection.getresponse()
+                response.read()
+                return response.status
+            finally:
+                connection.close()
+
+        results = []
+        workers = [threading.Thread(
+            target=lambda: results.append(request()), daemon=True)
+            for _ in range(2)]
+        try:
+            for worker in workers:
+                worker.start()
+            self.assertTrue(both_entered.wait(timeout=2))
+
+            self.assertEqual(request(), 503)
+            self.assertEqual(state["peak"], 2)
+
+            release.set()
+            for worker in workers:
+                worker.join(timeout=2)
+            self.assertEqual(sorted(results), [200, 200])
+            deadline = time.monotonic() + 2
+            while not server._worker_slots.acquire(blocking=False):
+                self.assertLess(time.monotonic(), deadline)
+                threading.Event().wait(0.01)
+            server._worker_slots.release()
+            self.assertEqual(request(), 200)
+        finally:
+            release.set()
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=2)
+
+    def test_thread_start_failure_releases_its_worker_slot(self):
+        server = tokenserver.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), BaseHTTPRequestHandler, max_workers=1)
+        server_side, client_side = socket.socketpair()
+        try:
+            with mock.patch(
+                    "socketserver.threading.Thread.start",
+                    side_effect=RuntimeError("thread start failed")):
+                with self.assertRaisesRegex(RuntimeError, "thread start"):
+                    server.process_request(server_side, ("127.0.0.1", 1))
+
+            self.assertTrue(server._worker_slots.acquire(blocking=False))
+            server._worker_slots.release()
+            self.assertTrue(server.daemon_threads)
+            self.assertFalse(server.block_on_close)
+        finally:
+            server_side.close()
+            client_side.close()
+            server.server_close()
+
+    def test_default_capacity_leaves_headroom_above_held_hook_limit(self):
+        server = tokenserver.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), BaseHTTPRequestHandler)
+        try:
+            self.assertGreaterEqual(
+                server.max_workers,
+                tokenserver.interactions.MAX_PENDING + 16)
+            self.assertIn(
+                "srv = BoundedThreadingHTTPServer(",
+                inspect.getsource(tokenserver.main))
+        finally:
+            server.server_close()
 
 
 class HandlerPrivacyTests(unittest.TestCase):
