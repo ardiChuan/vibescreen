@@ -223,6 +223,7 @@ cd ..
   tools.tokenserver.test_value_meter \
   tools.tokenserver.test_update_prices \
   tools.tokenserver.test_codex_usage \
+  tools.tokenserver.test_vibepulse_config \
   tools.tokenserver.test_interactions \
   tools.tokenserver.test_publisher \
   tools.tokenserver.test_smoke -v

@@ -66,6 +66,12 @@ except ImportError:  # macOS/Linux
 
 if __package__:
     from .agent_status import AgentStatusService
+    from .codex_interactions import (
+        codex_permission_response,
+        codex_question_result,
+        normalize_codex_permission,
+        normalize_codex_question,
+    )
     from .codex_rollout import codex_rollout_rate_limits, observation_timestamp
     from .github_monitor import GitHubMonitor, disabled_snapshot, normalize_repo
     from .interactions import InteractionStore
@@ -73,9 +79,21 @@ if __package__:
     from .publisher import Publisher
     from .quota_cache import CachedQuota, QuotaCache
     from .usage_history import Forecast, UsageHistory
+    from .vibepulse_config import (
+        ConfigError,
+        VibePulseConfig,
+        load_config,
+        save_config,
+    )
     from . import codex_usage, interactions, value_meter
 else:  # direktkörning: python3 tools/tokenserver/tokenserver.py
     from agent_status import AgentStatusService
+    from codex_interactions import (
+        codex_permission_response,
+        codex_question_result,
+        normalize_codex_permission,
+        normalize_codex_question,
+    )
     from codex_rollout import codex_rollout_rate_limits, observation_timestamp
     from github_monitor import GitHubMonitor, disabled_snapshot, normalize_repo
     from interactions import InteractionStore
@@ -83,6 +101,12 @@ else:  # direktkörning: python3 tools/tokenserver/tokenserver.py
     from publisher import Publisher
     from quota_cache import CachedQuota, QuotaCache
     from usage_history import Forecast, UsageHistory
+    from vibepulse_config import (
+        ConfigError,
+        VibePulseConfig,
+        load_config,
+        save_config,
+    )
     import codex_usage
     import interactions
     import value_meter
@@ -1985,6 +2009,11 @@ class Handler(BaseHTTPRequestHandler):
     plans = {"claude": None, "codex": None}  # sätts i main från --*-plan
     interaction_store = None  # "Needs You", av som standard; sätts i main
     interaction_timeout_s = 120.0  # sätts i main från --interaction-timeout
+    # ``None`` preserves legacy tests/tools that inject only a store. Real
+    # startup always replaces it with the explicit saved boolean.
+    claude_interactions = None
+    codex_interactions = False
+    interaction_detail = False
 
     def _send(self, code, payload):
         body = json.dumps(payload).encode()
@@ -2152,6 +2181,80 @@ class Handler(BaseHTTPRequestHandler):
         except (ConnectionError, TimeoutError, OSError):
             pass  # Claude Code gav upp (timeout, avbruten session)
 
+    def _send_codex_question_fallback(self, reason):
+        self._send(200, {"status": "computer", "reason": reason})
+
+    def _handle_codex_question(self):
+        """Park a strict flat MCP question and return structured fallback."""
+        event = self._read_json_body()
+        identity_fields = {"cwd", "session_id", "turn_id"}
+        question_fields = {"question", "header", "options"}
+        if not isinstance(event, dict) or \
+                not identity_fields.issubset(event) or \
+                not {"question", "options"}.issubset(event) or \
+                set(event) - identity_fields - question_fields:
+            self._send_codex_question_fallback("invalid")
+            return
+        question = {key: event[key] for key in question_fields if key in event}
+        normalized = normalize_codex_question(
+            question, cwd=event["cwd"], session_id=event["session_id"],
+            turn_id=event["turn_id"])
+        if normalized is None:
+            self._send_codex_question_fallback("invalid")
+            return
+        entry = self.interaction_store.park_normalized(
+            normalized, self.interaction_timeout_s)
+        if entry is None:
+            self._send_codex_question_fallback("unavailable")
+            return
+        try:
+            result = self.interaction_store.await_result(
+                entry, is_alive=lambda: not self._hook_client_gone())
+        except Exception:
+            log.exception("Codex-frågan kraschade — lämnar beslutet till "
+                          "datorn")
+            result = None
+        try:
+            if result is None:
+                reason = "disconnected" if self._hook_client_gone() \
+                    else "timeout"
+                self._send_codex_question_fallback(reason)
+            else:
+                self._send(200, codex_question_result(
+                    result.verdict, normalized))
+        except (ConnectionError, TimeoutError, OSError):
+            pass
+
+    def _handle_codex_permission(self):
+        """Park a Codex hook and return its documented decision or silence."""
+        event = self._read_json_body()
+        normalized = normalize_codex_permission(
+            event, reveal=self.interaction_detail)
+        if normalized is None:
+            self._send_no_decision()
+            return
+        entry = self.interaction_store.park_normalized(
+            normalized, self.interaction_timeout_s)
+        if entry is None:
+            self._send_no_decision()
+            return
+        try:
+            result = self.interaction_store.await_result(
+                entry, is_alive=lambda: not self._hook_client_gone())
+        except Exception:
+            log.exception("Codex-behörigheten kraschade — lämnar beslutet "
+                          "till datorn")
+            result = None
+        try:
+            body = (codex_permission_response(result.verdict)
+                    if result is not None else None)
+            if body is None:
+                self._send_no_decision()
+            else:
+                self._send(200, body)
+        except (ConnectionError, TimeoutError, OSError):
+            pass
+
     def _handle_answer(self, request_id):
         payload = self._read_json_body(limit=4096)
         if not isinstance(payload, dict):
@@ -2159,7 +2262,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         ok, reason = self.interaction_store.resolve(
             request_id, payload.get("verdict"), payload.get("ts"),
-            payload.get("hmac"))
+            payload.get("hmac"), provider=payload.get("provider"),
+            view_sha256=payload.get("view_sha256"))
         self._send(200 if ok else 409, {"ok": ok, "reason": reason})
 
     def _handle_panic(self):
@@ -2183,18 +2287,34 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, {"ok": True, "denied": denied})
 
     def do_POST(self):
-        if self.interaction_store is None:
+        claude_route = self.path in (
+            "/api/hook/question", "/api/hook/permission")
+        codex_route = self.path in (
+            "/api/codex/question", "/api/codex/permission")
+        if claude_route and (self.interaction_store is None or
+                             self.claude_interactions is False):
             self._send(404, {"error": "interactions are not enabled"})
             return
-        if self.path in ("/api/hook/question", "/api/hook/permission"):
+        if codex_route and (self.interaction_store is None or
+                            not self.codex_interactions):
+            self._send(404, {"error": "interactions are not enabled"})
+            return
+        if claude_route or codex_route:
             if not self._is_loopback():
                 log.warning("hook-POST från %s avvisad — hookar får bara "
                             "komma från den här maskinen",
                             self.address_string())
                 self._send(403, {"error": "hooks must be local"})
                 return
+        if claude_route:
             self._handle_hook(
                 "question" if self.path.endswith("question") else "approval")
+        elif self.path == "/api/codex/question":
+            self._handle_codex_question()
+        elif self.path == "/api/codex/permission":
+            self._handle_codex_permission()
+        elif self.interaction_store is None:
+            self._send(404, {"error": "interactions are not enabled"})
         elif self.path.startswith("/api/interaction/"):
             self._handle_answer(self.path[len("/api/interaction/"):])
         elif self.path == "/api/panic":
@@ -2245,7 +2365,13 @@ class Handler(BaseHTTPRequestHandler):
                 "usageComputeOk": failing_since is None,
                 "usageComputeFailingForS":
                     (int(time.monotonic() - failing_since)
-                     if failing_since is not None else None)}
+                     if failing_since is not None else None),
+                "interactions": {
+                    "claude": bool(self.claude_interactions),
+                    "codex": bool(self.codex_interactions),
+                    "detail": bool(self.interaction_detail),
+                    "transport": "lan",
+                }}
 
     def log_message(self, fmt, *args):
         pass  # 30 s-pollning ska inte fylla loggen
@@ -2306,11 +2432,18 @@ def _build_arg_parser():
              " mailbox; the mailbox merges freshest-per-source by name")
     ap.add_argument(
         "--interactions", action="store_true",
-        help="accept Claude Code hooks on loopback and let a paired device "
+        help="deprecated alias for --claude-interactions; accept Claude Code "
+             "hooks on loopback and let a paired device "
              "answer them ('Needs You'). Off by default. Needs a device key "
              "(VIBEPULSE_DEVICE_KEY, ~/.vibepulse-device-key, or "
              "TK_VIBEPULSE_DEVICE_KEY in secrets.h) before the device can "
              "answer anything")
+    ap.add_argument(
+        "--claude-interactions", action="store_true",
+        help="accept Claude Code interaction hooks on loopback")
+    ap.add_argument(
+        "--codex-interactions", action="store_true",
+        help="accept Codex question and permission interactions on loopback")
     ap.add_argument(
         "--interaction-detail", action="store_true",
         help="also send the question text and the command to the panel. A "
@@ -2324,6 +2457,54 @@ def _build_arg_parser():
              "the hook's own settings entry, so we answer before Claude "
              "Code stops listening")
     return ap
+
+
+def _resolve_interaction_config(args, path=None):
+    """Merge positive CLI opt-ins over strict saved switches and persist."""
+    config_path = (Path(path) if path is not None else
+                   _state_dir() / "config.json")
+    invalid_saved = False
+    try:
+        saved = load_config(config_path)
+    except ConfigError:
+        log.error("ogiltig VibePulse-konfiguration i %s — sparade "
+                  "interaktioner stängs av", config_path, exc_info=True)
+        saved = VibePulseConfig()
+        invalid_saved = True
+    resolved = VibePulseConfig(
+        claude_interactions=(saved.claude_interactions or
+                             args.claude_interactions or
+                             args.interactions),
+        codex_interactions=(saved.codex_interactions or
+                            args.codex_interactions),
+        interaction_detail=(saved.interaction_detail or
+                            args.interaction_detail),
+    )
+    explicit = (args.claude_interactions or args.codex_interactions or
+                args.interactions or args.interaction_detail)
+    if explicit:
+        # An explicit, valid command-line choice may repair a bad saved file;
+        # without one the bad file is left untouched and safely disabled.
+        save_config(config_path, resolved)
+    elif invalid_saved:
+        return VibePulseConfig()
+    return resolved
+
+
+def _configure_interactions(config, interaction_timeout, audit=None):
+    """Install the resolved provider switches and their one shared store."""
+    Handler.claude_interactions = config.claude_interactions
+    Handler.codex_interactions = config.codex_interactions
+    Handler.interaction_detail = config.interaction_detail
+    Handler.interaction_store = None
+    Handler.interaction_timeout_s = max(5.0, interaction_timeout)
+    if not (config.claude_interactions or config.codex_interactions):
+        return None
+    secret = interactions.read_device_key()
+    Handler.interaction_store = InteractionStore(
+        secret=secret or "", reveal_detail=config.interaction_detail,
+        audit=audit)
+    return secret
 
 
 def _run_max_tracker_backfill(store, stop_event):
@@ -2412,6 +2593,7 @@ def main():
     # pricing against rates the operator believes they replaced is exactly the
     # failure the value multiple exists to avoid.
     _price_table = value_meter.load_prices(args.prices)
+    interaction_config = _resolve_interaction_config(args)
 
     github_monitor = None
     if args.github_repo:
@@ -2482,21 +2664,21 @@ def main():
     Handler.max_tracker_store = max_tracker_store
     Handler.plans = {"claude": args.claude_plan, "codex": args.codex_plan}
 
-    if args.interactions:
-        secret = interactions.read_device_key()
-        Handler.interaction_timeout_s = max(5.0, args.interaction_timeout)
-        Handler.interaction_store = InteractionStore(
-            secret=secret or "",
-            reveal_detail=args.interaction_detail,
-            audit=lambda action, row: log.info("interaktion %s: %s", action,
-                                               json.dumps(row,
-                                                          sort_keys=True)))
-        log.info("Needs You på: hookar tas emot på 127.0.0.1:%d "
-                 "(/api/hook/question, /api/hook/permission), håller %.0f s. "
+    secret = _configure_interactions(
+        interaction_config, args.interaction_timeout,
+        audit=lambda action, row: log.info(
+            "interaktion %s: %s", action,
+            json.dumps(row, sort_keys=True)))
+    if Handler.interaction_store is not None:
+        log.info("Needs You på: Claude=%s, Codex=%s på 127.0.0.1:%d, "
+                 "håller %.0f s. "
                  "Enhetsnyckel: %s. Innehåll till skärmen: %s",
+                 "ja" if interaction_config.claude_interactions else "nej",
+                 "ja" if interaction_config.codex_interactions else "nej",
                  args.port, Handler.interaction_timeout_s,
                  "finns" if secret else "SAKNAS — enheten kan inte svara",
-                 "ja (--interaction-detail)" if args.interaction_detail
+                 "ja (--interaction-detail)"
+                 if interaction_config.interaction_detail
                  else "nej, bara att något väntar")
         if not secret:
             log.warning("ingen enhetsnyckel hittad — hookar parkeras och "

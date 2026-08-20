@@ -17,6 +17,10 @@ from tools.tokenserver import codex_usage, tokenserver
 from tools.tokenserver.max_tracker import MaxTrackerStore
 from tools.tokenserver.quota_cache import CachedQuota, QuotaCache
 from tools.tokenserver.usage_history import Forecast, UsageHistory
+from tools.tokenserver.vibepulse_config import (
+    VibePulseConfig,
+    load_config,
+)
 
 
 class StubHistory:
@@ -2029,6 +2033,36 @@ class HandlerPrivacyTests(unittest.TestCase):
             "anthropic-ratelimit-unified-7d-utilization"])
         self.assertEqual(payload["unknownRateLimitBuckets"], ["7d_haiku"])
 
+    def test_root_diagnostics_report_only_safe_interaction_switches(self):
+        handler = self._handler("/")
+        saved = (
+            tokenserver.Handler.claude_interactions,
+            tokenserver.Handler.codex_interactions,
+            tokenserver.Handler.interaction_detail,
+        )
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "claude_interactions", saved[0])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "codex_interactions", saved[1])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "interaction_detail", saved[2])
+        tokenserver.Handler.claude_interactions = False
+        tokenserver.Handler.codex_interactions = True
+        tokenserver.Handler.interaction_detail = True
+
+        handler.do_GET()
+
+        payload = handler._send.call_args.args[1]
+        self.assertEqual(payload["interactions"], {
+            "claude": False,
+            "codex": True,
+            "detail": True,
+            "transport": "lan",
+        })
+        serialized = json.dumps(payload["interactions"])
+        self.assertNotIn("secret", serialized.lower())
+        self.assertNotIn("key", serialized.lower())
+
 
 class HandlerErrorLoggingTests(unittest.TestCase):
     """500-kontraktet plus loggning: felen ska synas lokalt, aldrig på LAN:et,
@@ -2722,6 +2756,102 @@ class ArgumentParsingTests(unittest.TestCase):
         args = parser.parse_args([])
         self.assertIsNone(args.claude_plan)
         self.assertIsNone(args.codex_plan)
+
+    def test_interaction_switches_are_independent_and_default_off(self):
+        parser = tokenserver._build_arg_parser()
+        defaults = parser.parse_args([])
+        self.assertFalse(defaults.interactions)
+        self.assertFalse(defaults.claude_interactions)
+        self.assertFalse(defaults.codex_interactions)
+        self.assertFalse(defaults.interaction_detail)
+
+        claude = parser.parse_args(["--claude-interactions"])
+        codex = parser.parse_args(["--codex-interactions"])
+        legacy = parser.parse_args(["--interactions"])
+        self.assertTrue(claude.claude_interactions)
+        self.assertFalse(claude.codex_interactions)
+        self.assertTrue(codex.codex_interactions)
+        self.assertFalse(codex.claude_interactions)
+        self.assertTrue(legacy.interactions)
+        self.assertFalse(legacy.codex_interactions)
+
+    def test_saved_choices_persist_and_legacy_alias_enables_only_claude(self):
+        parser = tokenserver._build_arg_parser()
+        with tempfile.TemporaryDirectory(prefix="interaction-config-") as tmp:
+            path = Path(tmp) / "config.json"
+            codex = tokenserver._resolve_interaction_config(
+                parser.parse_args([
+                    "--codex-interactions", "--interaction-detail"]),
+                path=path)
+            self.assertEqual(codex, VibePulseConfig(
+                codex_interactions=True, interaction_detail=True))
+            self.assertEqual(load_config(path), codex)
+
+            persisted = tokenserver._resolve_interaction_config(
+                parser.parse_args([]), path=path)
+            self.assertEqual(persisted, codex)
+
+            path.unlink()
+            legacy = tokenserver._resolve_interaction_config(
+                parser.parse_args(["--interactions"]), path=path)
+            self.assertEqual(legacy, VibePulseConfig(
+                claude_interactions=True))
+            self.assertFalse(legacy.codex_interactions)
+
+    def test_explicit_cli_survives_invalid_saved_config_fail_closed(self):
+        parser = tokenserver._build_arg_parser()
+        with tempfile.TemporaryDirectory(prefix="interaction-config-") as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text('{"codex_interactions":"yes"}',
+                            encoding="utf-8")
+
+            with self.assertLogs("tokenserver", level="ERROR"):
+                resolved = tokenserver._resolve_interaction_config(
+                    parser.parse_args(["--claude-interactions"]), path=path)
+
+            self.assertEqual(resolved, VibePulseConfig(
+                claude_interactions=True))
+            self.assertEqual(load_config(path), resolved)
+
+    def test_store_exists_if_and_only_if_a_provider_is_enabled(self):
+        handler = tokenserver.Handler
+        saved = (
+            handler.interaction_store,
+            handler.interaction_timeout_s,
+            handler.claude_interactions,
+            handler.codex_interactions,
+            handler.interaction_detail,
+        )
+
+        def restore():
+            (handler.interaction_store, handler.interaction_timeout_s,
+             handler.claude_interactions, handler.codex_interactions,
+             handler.interaction_detail) = saved
+
+        self.addCleanup(restore)
+        cases = (
+            (VibePulseConfig(), False),
+            (VibePulseConfig(interaction_detail=True), False),
+            (VibePulseConfig(claude_interactions=True), True),
+            (VibePulseConfig(codex_interactions=True), True),
+            (VibePulseConfig(claude_interactions=True,
+                             codex_interactions=True), True),
+        )
+        with mock.patch.object(
+                tokenserver.interactions, "read_device_key",
+                return_value="a" * 64):
+            for config, expected_store in cases:
+                with self.subTest(config=config):
+                    tokenserver._configure_interactions(
+                        config, interaction_timeout=30.0)
+                    self.assertEqual(handler.interaction_store is not None,
+                                     expected_store)
+                    self.assertEqual(handler.claude_interactions,
+                                     config.claude_interactions)
+                    self.assertEqual(handler.codex_interactions,
+                                     config.codex_interactions)
+                    self.assertEqual(handler.interaction_detail,
+                                     config.interaction_detail)
 
 
 class ValueMultipleIntegrationTests(unittest.TestCase):

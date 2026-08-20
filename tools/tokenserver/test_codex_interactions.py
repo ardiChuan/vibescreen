@@ -1,6 +1,9 @@
 import dataclasses
 import json
+import threading
+import time
 import unittest
+from unittest import mock
 
 from tools.tokenserver import interactions
 from tools.tokenserver.interaction_types import (
@@ -12,6 +15,12 @@ from tools.tokenserver.codex_interactions import (
     codex_question_result,
     normalize_codex_permission,
     normalize_codex_question,
+)
+from tools.tokenserver.interactions import sign_answer_v2
+from tools.tokenserver.test_interactions import (
+    HttpEndToEndTests,
+    SECRET,
+    StubAgentStatus,
 )
 
 
@@ -58,6 +67,25 @@ def codex_permission(**overrides):
         "cwd": "/Users/niclas/vibepulse",
         "tool_name": "Read",
         "tool_input": {"command": "cat README.md"},
+    }
+    event.update(overrides)
+    return event
+
+
+def codex_question_event(**overrides):
+    event = {
+        "question": "How should Codex handle approvals?",
+        "header": "Approvals",
+        "options": [
+            {"label": "Use the trusted hook",
+             "description": "Desktop + CLI, one setup",
+             "recommended": True},
+            {"label": "Keep computer only",
+             "description": "No panel decisions"},
+        ],
+        "cwd": "/Users/niclas/vibepulse",
+        "session_id": "session-123",
+        "turn_id": "turn-456",
     }
     event.update(overrides)
     return event
@@ -587,3 +615,225 @@ class CodexInteractionStoreTests(unittest.TestCase):
                 self.assertIsNone(
                     self.store.park_normalized(normalized, 120))
                 self.assertIsNone(self.store.pending_public())
+
+
+class CodexRouteTests(unittest.TestCase):
+    """Strict loopback Codex adapters around the provider-aware store."""
+
+    request = HttpEndToEndTests.request
+    pending = HttpEndToEndTests.pending
+    wait_for_pending = HttpEndToEndTests.wait_for_pending
+
+    def setUp(self):
+        from tools.tokenserver import tokenserver as server_module
+        self.module = server_module
+        self.handler = server_module.Handler
+        self._saved = {
+            "store": self.handler.interaction_store,
+            "timeout": self.handler.interaction_timeout_s,
+            "agent_status": self.handler.agent_status,
+            "claude": self.handler.claude_interactions,
+            "codex": self.handler.codex_interactions,
+            "detail": self.handler.interaction_detail,
+        }
+        self.store = interactions.InteractionStore(
+            secret=SECRET, reveal_detail=True)
+        self.handler.interaction_store = self.store
+        self.handler.interaction_timeout_s = 30.0
+        self.handler.agent_status = StubAgentStatus()
+        self.handler.claude_interactions = False
+        self.handler.codex_interactions = True
+        self.handler.interaction_detail = True
+        self.server = server_module.ThreadingHTTPServer(
+            ("127.0.0.1", 0), self.handler)
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.store.deny_all()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.handler.interaction_store = self._saved["store"]
+        self.handler.interaction_timeout_s = self._saved["timeout"]
+        self.handler.agent_status = self._saved["agent_status"]
+        self.handler.claude_interactions = self._saved["claude"]
+        self.handler.codex_interactions = self._saved["codex"]
+        self.handler.interaction_detail = self._saved["detail"]
+
+    def answer_v2(self, shown, verdict="approve"):
+        stamp = int(time.time())
+        mac = sign_answer_v2(
+            SECRET, "codex", shown["request_id"],
+            shown["view_sha256"], verdict, stamp)
+        return self.request(
+            "POST", f"/api/interaction/{shown['request_id']}", {
+                "provider": "codex",
+                "view_sha256": shown["view_sha256"],
+                "verdict": verdict,
+                "ts": stamp,
+                "hmac": mac,
+            })
+
+    def post_in_thread(self, path, payload):
+        result = {}
+
+        def post():
+            result["status"], result["raw"] = self.request(
+                "POST", path, payload)
+
+        thread = threading.Thread(target=post, daemon=True)
+        thread.start()
+        return thread, result
+
+    def direct_handler(self, path, host="192.168.1.20"):
+        handler = self.handler.__new__(self.handler)
+        handler.path = path
+        handler.client_address = (host, 5000)
+        handler._send = mock.Mock()
+        handler._send_no_decision = mock.Mock()
+        handler._read_json_body = mock.Mock()
+        return handler
+
+    def test_codex_question_parks_and_returns_exact_structured_answer(self):
+        thread, result = self.post_in_thread(
+            "/api/codex/question", codex_question_event())
+
+        shown = self.wait_for_pending()
+        self.assertEqual(shown["provider"], "codex")
+        self.assertEqual(shown["kind"], "question")
+        self.assertEqual(shown["title"], "Use the trusted hook")
+        self.assertEqual(self.answer_v2(shown)[0], 200)
+        thread.join(timeout=10)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(json.loads(result["raw"]), {
+            "status": "answered",
+            "option_index": 0,
+            "answer": "Use the trusted hook",
+        })
+
+    def test_codex_question_deny_is_explicit_computer_fallback(self):
+        thread, result = self.post_in_thread(
+            "/api/codex/question", codex_question_event())
+        shown = self.wait_for_pending()
+        self.answer_v2(shown, "deny")
+        thread.join(timeout=10)
+
+        self.assertEqual(json.loads(result["raw"]), {
+            "status": "computer", "reason": "deny",
+        })
+
+    def test_unmarked_question_cannot_accidentally_approve(self):
+        payload = codex_question_event(options=[
+            {"label": "Use the trusted hook"},
+            {"label": "Keep computer only"},
+        ])
+        thread, result = self.post_in_thread("/api/codex/question", payload)
+        shown = self.wait_for_pending()
+        self.assertFalse(shown["can_approve"])
+
+        status, raw = self.answer_v2(shown, "approve")
+        self.assertEqual(status, 409)
+        self.assertFalse(json.loads(raw)["ok"])
+        self.answer_v2(shown, "leave_it")
+        thread.join(timeout=10)
+        self.assertEqual(json.loads(result["raw"]), {
+            "status": "computer", "reason": "leave_it",
+        })
+
+    def test_codex_permission_allow_and_deny_use_documented_hook_json(self):
+        for verdict, expected in (
+                ("approve", {"behavior": "allow"}),
+                ("deny", {"behavior": "deny",
+                          "message": "Denied from VibePulse"})):
+            with self.subTest(verdict=verdict):
+                thread, result = self.post_in_thread(
+                    "/api/codex/permission", codex_permission())
+                shown = self.wait_for_pending()
+                self.answer_v2(shown, verdict)
+                thread.join(timeout=10)
+                self.assertEqual(
+                    json.loads(result["raw"])["hookSpecificOutput"], {
+                        "hookEventName": "PermissionRequest",
+                        "decision": expected,
+                    })
+
+    def test_codex_permission_leave_it_returns_empty_body(self):
+        thread, result = self.post_in_thread(
+            "/api/codex/permission", codex_permission())
+        shown = self.wait_for_pending()
+        self.answer_v2(shown, "leave_it")
+        thread.join(timeout=10)
+        self.assertEqual((result["status"], result["raw"]), (200, b""))
+
+    def test_invalid_flat_question_envelopes_fail_closed_without_parking(self):
+        invalid = (
+            codex_question_event(extra="unknown"),
+            {"question": codex_question(), "cwd": "/tmp/project",
+             "session_id": "s", "turn_id": "t"},
+            codex_question_event(session_id=None),
+            codex_question_event(options=[{"label": "only one"}]),
+        )
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                started = time.monotonic()
+                status, raw = self.request(
+                    "POST", "/api/codex/question", payload)
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(raw), {
+                    "status": "computer", "reason": "invalid",
+                })
+                self.assertIsNone(self.pending())
+                self.assertLess(time.monotonic() - started, 5)
+
+    def test_invalid_permission_returns_empty_body_without_parking(self):
+        for payload in (None, [], {"hook_event_name": "PreToolUse"}):
+            with self.subTest(payload=payload):
+                status, raw = self.request(
+                    "POST", "/api/codex/permission", payload)
+                self.assertEqual((status, raw), (200, b""))
+                self.assertIsNone(self.pending())
+
+    def test_codex_timeouts_fail_closed_for_question_and_permission(self):
+        self.handler.interaction_timeout_s = 1.0
+        status, raw = self.request(
+            "POST", "/api/codex/question", codex_question_event())
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(raw), {
+            "status": "computer", "reason": "timeout",
+        })
+
+        status, raw = self.request(
+            "POST", "/api/codex/permission", codex_permission())
+        self.assertEqual((status, raw), (200, b""))
+
+    def test_provider_switches_are_independent_and_disabled_routes_do_not_parse(self):
+        cases = (
+            (True, False, "/api/codex/question"),
+            (False, True, "/api/hook/question"),
+        )
+        for claude, codex, path in cases:
+            with self.subTest(claude=claude, codex=codex, path=path):
+                self.handler.claude_interactions = claude
+                self.handler.codex_interactions = codex
+                handler = self.direct_handler(path, host="127.0.0.1")
+                handler.do_POST()
+                handler._send.assert_called_once_with(
+                    404, {"error": "interactions are not enabled"})
+                handler._read_json_body.assert_not_called()
+
+    def test_all_hook_and_codex_ingress_routes_reject_non_loopback_before_parsing(self):
+        self.handler.claude_interactions = True
+        for path in (
+                "/api/hook/question", "/api/hook/permission",
+                "/api/codex/question", "/api/codex/permission"):
+            with self.subTest(path=path):
+                handler = self.direct_handler(path)
+                handler.do_POST()
+                handler._send.assert_called_once_with(
+                    403, {"error": "hooks must be local"})
+                handler._read_json_body.assert_not_called()
