@@ -34,13 +34,14 @@ class SavedConfigTests(unittest.TestCase):
         self.assertFalse(config.claude_interactions)
         self.assertFalse(config.codex_interactions)
         self.assertFalse(config.interaction_detail)
+        self.assertFalse(config.legacy_claude_panel_v1)
         with self.assertRaises(dataclasses.FrozenInstanceError):
             config.codex_interactions = True
 
     def test_direct_construction_rejects_every_non_boolean_field(self):
         for field in (
                 "claude_interactions", "codex_interactions",
-                "interaction_detail"):
+                "interaction_detail", "legacy_claude_panel_v1"):
             for value in (0, 1, "yes", None):
                 values = {field: value}
                 with self.subTest(field=field, value=value):
@@ -52,6 +53,7 @@ class SavedConfigTests(unittest.TestCase):
         object.__setattr__(forged, "claude_interactions", False)
         object.__setattr__(forged, "codex_interactions", 1)
         object.__setattr__(forged, "interaction_detail", False)
+        object.__setattr__(forged, "legacy_claude_panel_v1", False)
 
         with self.assertRaises(ConfigError):
             save_config(self.path, forged)
@@ -72,6 +74,11 @@ class SavedConfigTests(unittest.TestCase):
         }), encoding="utf-8")
         self.assertEqual(load_config(self.path), VibePulseConfig(
             claude_interactions=True, interaction_detail=True))
+
+        self.path.write_text(
+            '{"legacy_claude_panel_v1":true}', encoding="utf-8")
+        self.assertEqual(load_config(self.path), VibePulseConfig(
+            legacy_claude_panel_v1=True))
 
     def test_actual_bytes_are_capped_even_if_path_metadata_looks_small(self):
         self.path.parent.mkdir()
@@ -225,6 +232,7 @@ class SavedConfigTests(unittest.TestCase):
             claude_interactions=True,
             codex_interactions=True,
             interaction_detail=True,
+            legacy_claude_panel_v1=True,
         )
 
         save_config(self.path, expected)
@@ -234,6 +242,7 @@ class SavedConfigTests(unittest.TestCase):
             "claude_interactions": True,
             "codex_interactions": True,
             "interaction_detail": True,
+            "legacy_claude_panel_v1": True,
         })
         self.assertNotIn("key", self.path.read_text(encoding="utf-8").lower())
 
@@ -257,7 +266,7 @@ class SavedConfigTests(unittest.TestCase):
         self.path.parent.mkdir()
         for field in (
                 "claude_interactions", "codex_interactions",
-                "interaction_detail"):
+                "interaction_detail", "legacy_claude_panel_v1"):
             for value in (0, 1, "true", [], {}, None):
                 with self.subTest(field=field, value=value):
                     self.path.write_text(

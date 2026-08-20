@@ -2063,6 +2063,7 @@ class Handler(BaseHTTPRequestHandler):
     claude_interactions = False
     codex_interactions = False
     interaction_detail = False
+    legacy_claude_panel_v1 = False
     json_body_timeout_s = JSON_BODY_TIMEOUT_S
 
     def _send(self, code, payload):
@@ -2287,8 +2288,10 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(event, dict):
             self._send_no_decision()
             return
-        entry = self.interaction_store.park(
-            kind, event, self.interaction_timeout_s)
+        park = (self.interaction_store.park_legacy
+                if self.legacy_claude_panel_v1
+                else self.interaction_store.park)
+        entry = park(kind, event, self.interaction_timeout_s)
         if entry is None:
             # Not renderable, or too many already parked. The terminal is a
             # perfectly good place to answer this one.
@@ -2530,6 +2533,8 @@ class Handler(BaseHTTPRequestHandler):
                     "claude": bool(self.claude_interactions),
                     "codex": bool(self.codex_interactions),
                     "detail": bool(self.interaction_detail),
+                    "legacyClaudePanelV1": bool(
+                        self.legacy_claude_panel_v1),
                     "transport": "lan",
                 }}
 
@@ -2620,6 +2625,12 @@ def _build_arg_parser():
              "screen learns only that something is waiting, and in which "
              "project, and can only deny or defer to the terminal")
     ap.add_argument(
+        "--legacy-claude-panel-v1", action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable or disable the saved INSECURE compatibility protocol "
+             "for old Claude-only panel firmware. Default off. Current "
+             "Claude and all Codex interactions remain provider/digest-bound")
+    ap.add_argument(
         "--interaction-timeout", type=float, default=120.0,
         help="seconds to hold a hook open before handing the decision back "
              "to the terminal (default 120). Keep it below the timeout in "
@@ -2658,10 +2669,14 @@ def _resolve_interaction_config(args, path=None):
                 saved.codex_interactions, args.codex_interactions),
             interaction_detail=chosen(
                 saved.interaction_detail, args.interaction_detail),
+            legacy_claude_panel_v1=chosen(
+                saved.legacy_claude_panel_v1,
+                args.legacy_claude_panel_v1),
         )
         explicit = (claude_override is not None or
                     args.codex_interactions is not None or
-                    args.interaction_detail is not None)
+                    args.interaction_detail is not None or
+                    args.legacy_claude_panel_v1 is not None)
         if explicit:
             # An explicit valid choice may repair a bad saved file. Keeping
             # this save under the same lock as the read prevents lost merges.
@@ -2676,6 +2691,7 @@ def _configure_interactions(config, interaction_timeout, audit=None):
     Handler.claude_interactions = config.claude_interactions
     Handler.codex_interactions = config.codex_interactions
     Handler.interaction_detail = config.interaction_detail
+    Handler.legacy_claude_panel_v1 = config.legacy_claude_panel_v1
     Handler.interaction_store = None
     Handler.interaction_timeout_s = max(5.0, interaction_timeout)
     if not (config.claude_interactions or config.codex_interactions):
@@ -2849,6 +2865,11 @@ def main():
         audit=lambda action, row: log.info(
             "interaktion %s: %s", action,
             json.dumps(row, sort_keys=True)))
+    if interaction_config.legacy_claude_panel_v1:
+        log.warning("OSÄKER KOMPATIBILITET PÅ: gamla Claude-panelens "
+                    "v1-svar saknar provider/digest-bindning. Stäng av "
+                    "med --no-legacy-claude-panel-v1 när gammal firmware "
+                    "inte längre används. Codex förblir v2.")
     if Handler.interaction_store is not None:
         log.info("Needs You på: Claude=%s, Codex=%s på 127.0.0.1:%d, "
                  "håller %.0f s. "

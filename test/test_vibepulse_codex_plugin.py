@@ -361,6 +361,7 @@ def healthy_diagnostics():
             "claude": False,
             "codex": True,
             "detail": False,
+            "legacyClaudePanelV1": False,
             "transport": "lan",
         },
     }).encode()
@@ -1267,6 +1268,31 @@ class PluginPackageTests(unittest.TestCase):
 
 
 class SetupPlanTests(unittest.TestCase):
+    def test_disable_preserves_unrelated_switches_and_clears_legacy_with_claude(self):
+        setup = load_setup()
+        saved = setup.VibePulseConfig(
+            claude_interactions=True, codex_interactions=True,
+            interaction_detail=True, legacy_claude_panel_v1=True)
+
+        self.assertEqual(
+            setup._disabled_config(saved, "codex"),
+            setup.VibePulseConfig(
+                claude_interactions=True, interaction_detail=True,
+                legacy_claude_panel_v1=True))
+        self.assertEqual(
+            setup._disabled_config(saved, "claude"),
+            setup.VibePulseConfig(
+                codex_interactions=True, interaction_detail=True))
+
+    def test_setup_help_exposes_explicit_legacy_claude_opt_in_and_opt_out(self):
+        setup = load_setup()
+        help_text = setup._parser()._subparsers._group_actions[0].choices[
+            "install"].format_help()
+
+        self.assertIn("--legacy-claude-panel-v1", help_text)
+        self.assertIn("--no-legacy-claude-panel-v1", help_text)
+        self.assertIn("insecure", help_text.lower())
+
     def test_install_plan_is_exact_and_paths_with_spaces_stay_one_argv(self):
         setup = load_setup()
         commands = setup.plan_codex_install(
@@ -1341,6 +1367,61 @@ class SetupPlanTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(setup.load_config(path), setup.VibePulseConfig())
 
+    def test_legacy_claude_panel_mode_is_explicit_saved_and_claude_only(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            code = setup.main(
+                ["install", "--providers", "claude", "--no-detail",
+                 "--legacy-claude-panel-v1"],
+                repo_root=ROOT, config_path=path,
+                python=Path(sys.executable), codex=Path("/codex"),
+                run=StatefulCodexRunner(), stdout=io.StringIO(),
+                stdin_isatty=False)
+
+            self.assertEqual(code, 0)
+            self.assertEqual(setup.load_config(path), setup.VibePulseConfig(
+                claude_interactions=True, legacy_claude_panel_v1=True))
+
+            code = setup.main(
+                ["install", "--providers", "claude", "--no-detail",
+                 "--no-legacy-claude-panel-v1"],
+                repo_root=ROOT, config_path=path,
+                python=Path(sys.executable), codex=Path("/codex"),
+                run=StatefulCodexRunner(), stdout=io.StringIO(),
+                stdin_isatty=False)
+            self.assertEqual(code, 0)
+            self.assertEqual(setup.load_config(path), setup.VibePulseConfig(
+                claude_interactions=True))
+
+            runner = StatefulCodexRunner()
+            output = io.StringIO()
+            code = setup.main(
+                ["install", "--providers", "codex", "--no-detail",
+                 "--legacy-claude-panel-v1"],
+                repo_root=ROOT, config_path=path,
+                python=Path(sys.executable), codex=Path("/codex"),
+                run=runner, stdout=output, stdin_isatty=False)
+            self.assertEqual(code, 1)
+            self.assertEqual(runner.calls, [])
+            self.assertIn("requires Claude", output.getvalue())
+
+    def test_status_never_hides_insecure_legacy_claude_mode(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            setup.save_config(path, setup.VibePulseConfig(
+                claude_interactions=True,
+                legacy_claude_panel_v1=True))
+            output = io.StringIO()
+
+            self.assertEqual(setup.main(
+                ["status"], config_path=path, stdout=output), 0)
+
+            self.assertIn(
+                "Legacy Claude panel v1: ON (INSECURE COMPATIBILITY MODE)",
+                output.getvalue())
+
     def test_install_stops_on_unexpected_command_failure_without_saving(self):
         setup = load_setup()
         with tempfile.TemporaryDirectory() as tmp:
@@ -1370,7 +1451,8 @@ class SetupPlanTests(unittest.TestCase):
             self.assertEqual(setup.main(
                 ["status"], config_path=path, stdout=output), 0)
             self.assertEqual(output.getvalue().splitlines(), [
-                "Claude: ON", "Codex: OFF", "Detail: ON"])
+                "Claude: ON", "Codex: OFF", "Detail: ON",
+                "Legacy Claude panel v1: OFF"])
             self.assertNotIn("key", output.getvalue().lower())
 
     def test_doctor_uses_exact_json_evidence_and_never_claims_hook_trust(self):
@@ -1392,7 +1474,9 @@ class SetupPlanTests(unittest.TestCase):
                 return json.dumps({
                     "service": "torget-tokenserver",
                     "interactions": {"claude": False, "codex": True,
-                                     "detail": False, "transport": "lan"},
+                                     "detail": False,
+                                     "legacyClaudePanelV1": False,
+                                     "transport": "lan"},
                     "secret": secret,
                 }).encode()
 
@@ -1440,6 +1524,36 @@ class SetupPlanTests(unittest.TestCase):
             self.assertIn("OFF Codex executable", output.getvalue())
             self.assertIn("OFF Codex plugin", output.getvalue())
             self.assertIn("OFF Tokenserver", output.getvalue())
+
+    def test_doctor_reports_legacy_claude_mode_as_an_insecure_fix(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            setup.save_config(path, setup.VibePulseConfig(
+                claude_interactions=True,
+                legacy_claude_panel_v1=True))
+            response = BytesResponse(json.dumps({
+                "service": "torget-tokenserver",
+                "interactions": {
+                    "claude": True, "codex": False, "detail": False,
+                    "legacyClaudePanelV1": True, "transport": "lan",
+                },
+            }).encode())
+            output = io.StringIO()
+
+            code = setup.main(
+                ["doctor"], config_path=path,
+                python=Path(sys.executable), codex=None,
+                run=FakeRunner([python_probe_ok()]),
+                urlopen=lambda *_args, **_kwargs: response,
+                stdout=output)
+
+            self.assertEqual(code, 1)
+            self.assertIn("FIX Legacy Claude panel v1", output.getvalue())
+            self.assertIn("insecure", output.getvalue().lower())
+            self.assertIn("--no-legacy-claude-panel-v1",
+                          output.getvalue())
+            self.assertIn("PASS Tokenserver", output.getvalue())
 
     def test_disable_and_uninstall_preserve_non_target_state(self):
         setup = load_setup()

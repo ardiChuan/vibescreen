@@ -135,6 +135,11 @@ def _parser() -> argparse.ArgumentParser:
         "--no-detail", dest="detail", action="store_false",
         help="keep question/command detail on this computer")
     install.set_defaults(detail=None)
+    install.add_argument(
+        "--legacy-claude-panel-v1",
+        action=argparse.BooleanOptionalAction, default=None,
+        help="enable or disable INSECURE compatibility for old Claude panel "
+             "firmware; default off and never applies to Codex")
 
     commands.add_parser("status", help="show saved provider switches")
     commands.add_parser("doctor", help="run read-only local diagnostics")
@@ -171,11 +176,14 @@ def _interactive_detail(input_fn: Callable[[str], str]) -> bool:
             return True
 
 
-def _chosen_config(providers: str, detail: bool) -> VibePulseConfig:
+def _chosen_config(providers: str, detail: bool,
+                   legacy_claude_panel_v1: bool = False) -> VibePulseConfig:
     return VibePulseConfig(
         claude_interactions=providers in {"claude", "both"},
         codex_interactions=providers in {"codex", "both"},
         interaction_detail=detail,
+        legacy_claude_panel_v1=(legacy_claude_panel_v1 and
+                                providers in {"claude", "both"}),
     )
 
 
@@ -186,6 +194,8 @@ def _disabled_config(saved: VibePulseConfig, target: str) -> VibePulseConfig:
         codex_interactions=(saved.codex_interactions
                             if target == "claude" else False),
         interaction_detail=saved.interaction_detail,
+        legacy_claude_panel_v1=(saved.legacy_claude_panel_v1
+                                if target == "codex" else False),
     )
 
 
@@ -501,6 +511,10 @@ def _print_status(config: VibePulseConfig, stdout) -> None:
     print(f"Claude: {switch(config.claude_interactions)}", file=stdout)
     print(f"Codex: {switch(config.codex_interactions)}", file=stdout)
     print(f"Detail: {switch(config.interaction_detail)}", file=stdout)
+    legacy = switch(config.legacy_claude_panel_v1)
+    suffix = " (INSECURE COMPATIBILITY MODE)" \
+        if config.legacy_claude_panel_v1 else ""
+    print(f"Legacy Claude panel v1: {legacy}{suffix}", file=stdout)
 
 
 def _reject_json_constant(value):
@@ -752,6 +766,14 @@ def _doctor(
         ) -> bool:
     fixes = False
 
+    if config.legacy_claude_panel_v1:
+        print("FIX Legacy Claude panel v1: insecure compatibility mode is "
+              "enabled; reinstall with --no-legacy-claude-panel-v1",
+              file=stdout)
+        fixes = True
+    else:
+        print("PASS Legacy Claude panel v1: secure v2 mode", file=stdout)
+
     python_ok = _python_probe_ok(python, run)
     if not python_ok:
         print("FIX Python executable: install Python 3.11 or newer", file=stdout)
@@ -835,6 +857,7 @@ def _doctor(
                 "claude": config.claude_interactions,
                 "codex": config.codex_interactions,
                 "detail": config.interaction_detail,
+                "legacyClaudePanelV1": config.legacy_claude_panel_v1,
                 "transport": "lan",
             }
             if (payload.get("service") != "torget-tokenserver" or
@@ -1020,13 +1043,15 @@ def _failed_step_with_publish_state(
 
 
 def _install_transaction(
-        *, path: Path, providers: str, detail: bool, repo_root: Path,
+        *, path: Path, providers: str, detail: bool,
+        legacy_claude_panel_v1: bool, repo_root: Path,
         python: Path, codex: Path, run, stdout) -> bool:
     """Mutate owned Codex resources and publish routing transactionally."""
     with config_lock(_setup_transaction_path(path)):
         with config_lock(path):
             snapshot = load_config(path)
-        target = _chosen_config(providers, detail)
+        target = _chosen_config(
+            providers, detail, legacy_claude_panel_v1)
         before = None
         failed_step = "runtime preflight"
         try:
@@ -1194,11 +1219,18 @@ def main(
         detail = args.detail
         if detail is None:
             detail = (_interactive_detail(input_fn) if interactive else False)
+        legacy_claude_panel_v1 = bool(args.legacy_claude_panel_v1)
+        if (legacy_claude_panel_v1 and
+                providers not in {"claude", "both"}):
+            print("FIX --legacy-claude-panel-v1 requires Claude in "
+                  "--providers", file=output)
+            return 1
         if codex_path is None or python_path is None:
             print("FIX Python or Codex executable not found", file=output)
             return 1
         if not _install_transaction(
                 path=path, providers=providers, detail=detail,
+                legacy_claude_panel_v1=legacy_claude_panel_v1,
                 repo_root=Path(repo_root), python=python_path,
                 codex=codex_path, run=run, stdout=output):
             return 1

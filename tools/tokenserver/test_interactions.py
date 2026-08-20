@@ -102,6 +102,15 @@ class RenderabilityTests(unittest.TestCase):
         payload = question_event(multiSelect=True)["tool_input"]
         self.assertIsNone(first_question(payload))
 
+    def test_question_option_count_matches_firmware_uint8_boundary(self):
+        accepted = question_event(options=[{"label": str(index)}
+                                           for index in range(255)])
+        rejected = question_event(options=[{"label": str(index)}
+                                           for index in range(256)])
+
+        self.assertIsNotNone(first_question(accepted["tool_input"]))
+        self.assertIsNone(first_question(rejected["tool_input"]))
+
     def test_malformed_payloads_are_not_answerable(self):
         for payload in (None, {}, {"questions": []}, {"questions": [{}]},
                         {"questions": [{"question": "x", "options": []}]},
@@ -305,6 +314,120 @@ class ProviderStoreTests(unittest.TestCase):
             body["hookSpecificOutput"]["updatedInput"]["answers"],
             {"Which auth approach?": "New auth layer (Recommended)"})
         self.assertIsNone(self.store.pending_public())
+
+    def test_claude_utf8_limits_are_bytes_and_preserve_codepoints(self):
+        exact_cases = (
+            (question_event(
+                question="é" * 48,
+                options=[{"label": "x (Recommended)"}]),
+             "prompt", "é" * 48, 96),
+            (question_event(options=[{
+                "label": "é" * 32 + " (Recommended)",
+                "description": "safe",
+            }]), "title", "é" * 32, 64),
+            (question_event(options=[{
+                "label": "safe (Recommended)",
+                "description": "é" * 32,
+            }]), "subtitle", "é" * 32, 64),
+        )
+        for event, field, expected, limit in exact_cases:
+            with self.subTest(field=field):
+                entry = self.store.park("question", event, 120)
+                self.assertIsNotNone(entry)
+                public = self.store.pending_public()
+                self.assertEqual(public[field], expected)
+                self.assertLessEqual(
+                    len(public[field].encode("utf-8")), limit)
+                if field == "title":
+                    self.assertTrue(public["can_approve"])
+                self.store.deny_all()
+
+        too_wide = (
+            question_event(question="é" * 49),
+            question_event(options=[{
+                "label": "é" * 33 + " (Recommended)",
+                "description": "safe",
+            }]),
+            question_event(options=[{
+                "label": "safe (Recommended)",
+                "description": "é" * 33,
+            }]),
+        )
+        for event in too_wide:
+            with self.subTest(event=event):
+                self.assertIsNone(self.store.park("question", event, 120))
+                self.assertIsNone(self.store.pending_public())
+
+    def test_claude_approval_and_normalized_views_use_utf8_byte_limits(self):
+        exact_cases = (
+            (approval_event(command="é" * 32), "title", "é" * 32, 64),
+            (approval_event(tool="é" * 12), "tool", "é" * 12, 24),
+        )
+        exact_subtitle = approval_event()
+        exact_subtitle["tool_input"]["description"] = "é" * 32
+        exact_cases += ((exact_subtitle, "subtitle", "é" * 32, 64),)
+        for event, field, expected, limit in exact_cases:
+            with self.subTest(exact_field=field):
+                entry = self.store.park("approval", event, 120)
+                self.assertIsNotNone(entry)
+                public = self.store.pending_public()
+                self.assertEqual(public[field], expected)
+                self.assertLessEqual(
+                    len(public[field].encode("utf-8")), limit)
+                self.store.deny_all()
+
+        over_title = approval_event(command="é" * 33)
+        over_tool = approval_event(tool="é" * 13)
+        over_subtitle = approval_event()
+        over_subtitle["tool_input"]["description"] = "é" * 33
+        for event in (over_title, over_tool, over_subtitle):
+            with self.subTest(event=event):
+                self.assertIsNone(self.store.park("approval", event, 120))
+                self.assertIsNone(self.store.pending_public())
+
+        self.assertIsNotNone(interactions._normalized_view("question", {
+            "kind": "question", "options_total": 1, "marked": True,
+            "prompt": "safe", "title": "é" * 32, "can_approve": True,
+        }))
+        self.assertIsNone(interactions._normalized_view("question", {
+            "kind": "question", "options_total": 1, "marked": True,
+            "prompt": "safe", "title": "é" * 33, "can_approve": True,
+        }))
+        self.assertIsNotNone(interactions._normalized_view("approval", {
+            "kind": "approval", "tool": "Read",
+            "subtitle": "é" * 32, "can_approve": False,
+        }))
+        self.assertIsNone(interactions._normalized_view("approval", {
+            "kind": "approval", "tool": "Read",
+            "subtitle": "é" * 33, "can_approve": False,
+        }))
+
+    def test_truncated_question_prompt_is_alert_only(self):
+        event = question_event(
+            question="Choose carefully " + "x" * 200,
+            options=[{"label": "Run tests (Recommended)"}])
+
+        entry = self.store.park("question", event, 120)
+
+        self.assertIsNotNone(entry)
+        public = self.store.pending_public()
+        self.assertTrue(public["prompt"].endswith("…"))
+        self.assertLessEqual(
+            len(public["prompt"].encode("utf-8")), interactions.PROMPT_MAX)
+        self.assertFalse(public["can_approve"])
+
+    def test_options_total_is_limited_to_firmware_uint8_range(self):
+        base = {
+            "kind": "question", "marked": False, "can_approve": False,
+        }
+        self.assertIsNotNone(interactions._normalized_view(
+            "question", {**base, "options_total": 255}))
+        self.assertIsNone(interactions._normalized_view(
+            "question", {**base, "options_total": 256}))
+        self.assertIsNone(self.store.park(
+            "question", question_event(options=[{"label": str(index)}
+                                                   for index in range(256)]),
+            120))
 
     def test_view_digest_ignores_only_countdown_and_self_digest(self):
         self.store.park("question", question_event(), 90)
@@ -908,12 +1031,15 @@ class HttpEndToEndTests(unittest.TestCase):
             "timeout": self.handler.interaction_timeout_s,
             "agent_status": self.handler.agent_status,
             "claude": self.handler.claude_interactions,
+            "legacy_claude_panel_v1": getattr(
+                self.handler, "legacy_claude_panel_v1", False),
         }
         self.store = InteractionStore(secret=SECRET, reveal_detail=True)
         self.handler.interaction_store = self.store
         self.handler.interaction_timeout_s = 30.0
         self.handler.agent_status = StubAgentStatus()
         self.handler.claude_interactions = True
+        self.handler.legacy_claude_panel_v1 = False
         self.server = server_module.BoundedThreadingHTTPServer(
             ("127.0.0.1", 0), self.handler)
         self.port = self.server.server_address[1]
@@ -929,6 +1055,8 @@ class HttpEndToEndTests(unittest.TestCase):
         self.handler.interaction_timeout_s = self._saved["timeout"]
         self.handler.agent_status = self._saved["agent_status"]
         self.handler.claude_interactions = self._saved["claude"]
+        self.handler.legacy_claude_panel_v1 = \
+            self._saved["legacy_claude_panel_v1"]
 
     def request(self, method, path, payload=_NO_BODY, headers=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
@@ -1029,6 +1157,36 @@ class HttpEndToEndTests(unittest.TestCase):
         self.assertEqual(shown["title"], "npm test")
         self.answer(shown, "approve")
         thread.join(timeout=10)
+        self.assertEqual(
+            json.loads(result["raw"])["hookSpecificOutput"]["decision"],
+            {"behavior": "allow"})
+
+    def test_explicit_legacy_claude_mode_uses_v1_only_for_claude(self):
+        self.handler.legacy_claude_panel_v1 = True
+        result = {}
+
+        def hook():
+            result["status"], result["raw"] = self.request(
+                "POST", "/api/hook/permission", approval_event())
+
+        thread = threading.Thread(target=hook, daemon=True)
+        thread.start()
+        shown = self.wait_for_pending()
+        self.assertNotIn("provider", shown)
+        self.assertNotIn("view_sha256", shown)
+        stamp = int(time.time())
+        mac = sign_answer(
+            SECRET, shown["request_id"], "approve", stamp)
+
+        status, raw = self.request(
+            "POST", f"/api/interaction/{shown['request_id']}", {
+                "verdict": "approve", "ts": stamp, "hmac": mac,
+            })
+
+        self.assertEqual(status, 200, raw)
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result["status"], 200)
         self.assertEqual(
             json.loads(result["raw"])["hookSpecificOutput"]["decision"],
             {"behavior": "allow"})

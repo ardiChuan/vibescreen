@@ -169,21 +169,60 @@ def _claude_event_text_is_safe(kind: str, event: Dict[str, Any]) -> bool:
 
 
 def _clean_text(value: Any, limit: int) -> Optional[str]:
-    """Control-free, length-bounded display text, or None."""
+    """Control-free, firmware-byte-bounded display text, or None.
+
+    Claude's established behavior shortens text that is over the display's
+    character limit.  The suffix itself is multibyte, so build that shortened
+    form against the actual UTF-8 byte budget.  A value that looks within the
+    character limit but exceeds the firmware byte buffer is rejected instead
+    of silently changing international text.
+    """
     if not isinstance(value, str):
         return None
     collapsed = " ".join(value.split())
     if not collapsed:
         return None
     if len(collapsed) > limit:
-        collapsed = collapsed[:limit - 1].rstrip() + "…"
+        suffix = "…"
+        budget = limit - len(suffix.encode("utf-8"))
+        prefix = []
+        used = 0
+        for char in collapsed:
+            encoded = char.encode("utf-8")
+            if used + len(encoded) > budget:
+                break
+            prefix.append(char)
+            used += len(encoded)
+        collapsed = "".join(prefix).rstrip() + suffix
+    try:
+        if len(collapsed.encode("utf-8")) > limit:
+            return None
+    except UnicodeEncodeError:
+        return None
     return collapsed
 
 
 def _is_truncated(value: Any, limit: int) -> bool:
     if not isinstance(value, str):
         return False
-    return len(" ".join(value.split())) > limit
+    collapsed = " ".join(value.split())
+    try:
+        return (len(collapsed) > limit or
+                len(collapsed.encode("utf-8")) > limit)
+    except UnicodeEncodeError:
+        return True
+
+
+def _byte_overflow_inside_character_limit(value: Any, limit: int) -> bool:
+    """Would character-counting accept text the firmware byte cap rejects?"""
+    if not isinstance(value, str):
+        return False
+    collapsed = " ".join(value.split())
+    try:
+        return (len(collapsed) <= limit and
+                len(collapsed.encode("utf-8")) > limit)
+    except UnicodeEncodeError:
+        return True
 
 
 def recommended_index(options: Any) -> int:
@@ -239,7 +278,7 @@ def first_question(tool_input: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(question, dict):
         return None
     options = question.get("options")
-    if not isinstance(options, list) or not options:
+    if not isinstance(options, list) or not 1 <= len(options) <= 255:
         return None
     if not isinstance(question.get("question"), str):
         return None
@@ -303,7 +342,9 @@ def question_view(question: Dict[str, Any],
         # questions are alert-only (the design doc's "never invent a
         # recommendation"), so the terminal — which shows every option —
         # takes those.
-        view["can_approve"] = marked and bool(view["title"]) and \
+        view["can_approve"] = marked and bool(view["prompt"]) and \
+            bool(view["title"]) and \
+            not _is_truncated(question.get("question"), PROMPT_MAX) and \
             not _is_truncated(label, TITLE_MAX)
     else:
         view["can_approve"] = False
@@ -330,6 +371,39 @@ def approval_view(tool_name: Any, tool_input: Any,
     else:
         view["can_approve"] = False
     return view
+
+
+def _claude_display_fits(kind: str, event: Dict[str, Any],
+                         reveal: bool) -> bool:
+    """Reject character-valid text that cannot fit firmware UTF-8 buffers."""
+    tool_input = event.get("tool_input")
+    if kind == "question":
+        if not reveal:
+            return True
+        question = first_question(tool_input)
+        if question is None:
+            return False
+        options = question["options"]
+        selected = options[recommended_index(options)]
+        return not any((
+            _byte_overflow_inside_character_limit(
+                question.get("question"), PROMPT_MAX),
+            _byte_overflow_inside_character_limit(
+                strip_recommended(selected["label"]), TITLE_MAX),
+            _byte_overflow_inside_character_limit(
+                selected.get("description"), SUBTITLE_MAX),
+        ))
+    if _byte_overflow_inside_character_limit(event.get("tool_name"), 24):
+        return False
+    if not reveal:
+        return True
+    return not any((
+        _byte_overflow_inside_character_limit(
+            command_of(tool_input), TITLE_MAX),
+        _byte_overflow_inside_character_limit(
+            tool_input.get("description")
+            if isinstance(tool_input, dict) else None, SUBTITLE_MAX),
+    ))
 
 
 def hook_response(kind: str, verdict: str, event: Dict[str, Any],
@@ -516,16 +590,18 @@ def _normalized_view(kind: str, raw: Any) -> Optional[Mapping[str, Any]]:
     for field_name, limit in text_limits.items():
         if field_name in view and (
                 not _is_safe_text(view[field_name]) or
-                not view[field_name] or len(view[field_name]) > limit):
+                not view[field_name] or
+                len(view[field_name].encode("utf-8")) > limit):
             return None
 
     if kind == "question":
         if type(view.get("options_total")) is not int or \
-                view["options_total"] < 1 or \
+                not 1 <= view["options_total"] <= 255 or \
                 type(view.get("marked")) is not bool:
             return None
         if view["can_approve"] and (
-                not view["marked"] or not view.get("title")):
+                not view["marked"] or not view.get("prompt") or
+                not view.get("title")):
             return None
     elif view["can_approve"] and not view.get("title"):
         return None
@@ -708,6 +784,8 @@ class InteractionStore:
         if kind not in KINDS or not isinstance(event, dict):
             return None
         if not _claude_event_text_is_safe(kind, event):
+            return None
+        if not _claude_display_fits(kind, event, self._reveal):
             return None
         cwd = event.get("cwd")
         tool_input = event.get("tool_input")

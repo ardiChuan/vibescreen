@@ -2205,6 +2205,7 @@ class HandlerPrivacyTests(unittest.TestCase):
             tokenserver.Handler.claude_interactions,
             tokenserver.Handler.codex_interactions,
             tokenserver.Handler.interaction_detail,
+            getattr(tokenserver.Handler, "legacy_claude_panel_v1", False),
         )
         self.addCleanup(setattr, tokenserver.Handler,
                         "claude_interactions", saved[0])
@@ -2212,9 +2213,12 @@ class HandlerPrivacyTests(unittest.TestCase):
                         "codex_interactions", saved[1])
         self.addCleanup(setattr, tokenserver.Handler,
                         "interaction_detail", saved[2])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "legacy_claude_panel_v1", saved[3])
         tokenserver.Handler.claude_interactions = False
         tokenserver.Handler.codex_interactions = True
         tokenserver.Handler.interaction_detail = True
+        tokenserver.Handler.legacy_claude_panel_v1 = True
 
         handler.do_GET()
 
@@ -2223,6 +2227,7 @@ class HandlerPrivacyTests(unittest.TestCase):
             "claude": False,
             "codex": True,
             "detail": True,
+            "legacyClaudePanelV1": True,
             "transport": "lan",
         })
         serialized = json.dumps(payload["interactions"])
@@ -2930,16 +2935,21 @@ class ArgumentParsingTests(unittest.TestCase):
         self.assertIsNone(defaults.claude_interactions)
         self.assertIsNone(defaults.codex_interactions)
         self.assertIsNone(defaults.interaction_detail)
+        self.assertIsNone(defaults.legacy_claude_panel_v1)
 
         claude = parser.parse_args(["--claude-interactions"])
         codex = parser.parse_args(["--codex-interactions"])
         legacy = parser.parse_args(["--interactions"])
+        legacy_panel = parser.parse_args(["--legacy-claude-panel-v1"])
+        modern_panel = parser.parse_args(["--no-legacy-claude-panel-v1"])
         self.assertTrue(claude.claude_interactions)
         self.assertFalse(claude.codex_interactions)
         self.assertTrue(codex.codex_interactions)
         self.assertFalse(codex.claude_interactions)
         self.assertTrue(legacy.interactions)
         self.assertIsNone(legacy.codex_interactions)
+        self.assertTrue(legacy_panel.legacy_claude_panel_v1)
+        self.assertFalse(modern_panel.legacy_claude_panel_v1)
 
     def test_saved_true_switches_can_be_disabled_and_persisted(self):
         parser = tokenserver._build_arg_parser()
@@ -2947,6 +2957,7 @@ class ArgumentParsingTests(unittest.TestCase):
             claude_interactions=True,
             codex_interactions=True,
             interaction_detail=True,
+            legacy_claude_panel_v1=True,
         )
         with tempfile.TemporaryDirectory(prefix="interaction-optout-") as tmp:
             path = Path(tmp) / "config.json"
@@ -2958,6 +2969,7 @@ class ArgumentParsingTests(unittest.TestCase):
                 claude_interactions=True,
                 codex_interactions=False,
                 interaction_detail=True,
+                legacy_claude_panel_v1=True,
             ))
             self.assertEqual(load_config(path), codex_off)
 
@@ -2967,6 +2979,7 @@ class ArgumentParsingTests(unittest.TestCase):
                     "--no-claude-interactions",
                     "--no-codex-interactions",
                     "--no-interaction-detail",
+                    "--no-legacy-claude-panel-v1",
                 ]), path=path)
             self.assertEqual(all_off, VibePulseConfig())
             self.assertEqual(load_config(path), all_off)
@@ -3053,7 +3066,8 @@ class ArgumentParsingTests(unittest.TestCase):
 
         for flag in (
                 "--no-claude-interactions", "--no-codex-interactions",
-                "--no-interaction-detail"):
+                "--no-interaction-detail", "--legacy-claude-panel-v1",
+                "--no-legacy-claude-panel-v1"):
             self.assertIn(flag, help_text)
         self.assertIn("saved", help_text.lower())
         self.assertIn("disable", help_text.lower())
@@ -3061,6 +3075,29 @@ class ArgumentParsingTests(unittest.TestCase):
     def test_handler_provider_defaults_are_strictly_off(self):
         self.assertIs(tokenserver.Handler.claude_interactions, False)
         self.assertIs(tokenserver.Handler.codex_interactions, False)
+        self.assertIs(tokenserver.Handler.legacy_claude_panel_v1, False)
+
+    def test_legacy_claude_panel_v1_choice_persists_without_changing_others(self):
+        parser = tokenserver._build_arg_parser()
+        with tempfile.TemporaryDirectory(prefix="interaction-config-") as tmp:
+            path = Path(tmp) / "config.json"
+            original = VibePulseConfig(
+                claude_interactions=True, codex_interactions=True,
+                interaction_detail=True)
+            save_config(path, original)
+
+            enabled = tokenserver._resolve_interaction_config(
+                parser.parse_args(["--legacy-claude-panel-v1"]), path=path)
+            self.assertEqual(enabled, VibePulseConfig(
+                claude_interactions=True, codex_interactions=True,
+                interaction_detail=True, legacy_claude_panel_v1=True))
+            self.assertEqual(load_config(path), enabled)
+
+            disabled = tokenserver._resolve_interaction_config(
+                parser.parse_args(["--no-legacy-claude-panel-v1"]),
+                path=path)
+            self.assertEqual(disabled, original)
+            self.assertEqual(load_config(path), original)
 
     def test_saved_choices_persist_and_legacy_alias_enables_only_claude(self):
         parser = tokenserver._build_arg_parser()
@@ -3108,12 +3145,14 @@ class ArgumentParsingTests(unittest.TestCase):
             handler.claude_interactions,
             handler.codex_interactions,
             handler.interaction_detail,
+            getattr(handler, "legacy_claude_panel_v1", False),
         )
 
         def restore():
             (handler.interaction_store, handler.interaction_timeout_s,
              handler.claude_interactions, handler.codex_interactions,
-             handler.interaction_detail) = saved
+             handler.interaction_detail,
+             handler.legacy_claude_panel_v1) = saved
 
         self.addCleanup(restore)
         cases = (
@@ -3139,6 +3178,9 @@ class ArgumentParsingTests(unittest.TestCase):
                                      config.codex_interactions)
                     self.assertEqual(handler.interaction_detail,
                                      config.interaction_detail)
+                    self.assertEqual(
+                        handler.legacy_claude_panel_v1,
+                        config.legacy_claude_panel_v1)
 
 
 class RepositoryRunnerTests(unittest.TestCase):

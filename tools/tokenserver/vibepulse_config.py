@@ -26,6 +26,7 @@ _FIELDS = frozenset({
     "claude_interactions",
     "codex_interactions",
     "interaction_detail",
+    "legacy_claude_panel_v1",
 })
 _MAX_CONFIG_BYTES = 16 * 1024
 _PROCESS_LOCKS = {}
@@ -47,11 +48,12 @@ class VibePulseConfig:
     claude_interactions: bool = False
     codex_interactions: bool = False
     interaction_detail: bool = False
+    legacy_claude_panel_v1: bool = False
 
     def __post_init__(self) -> None:
         for field_name in (
                 "claude_interactions", "codex_interactions",
-                "interaction_detail"):
+                "interaction_detail", "legacy_claude_panel_v1"):
             if type(getattr(self, field_name)) is not bool:
                 raise ConfigError(
                     f"{field_name} must be a boolean")

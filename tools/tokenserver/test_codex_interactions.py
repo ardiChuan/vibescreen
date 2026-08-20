@@ -638,6 +638,8 @@ class CodexRouteTests(unittest.TestCase):
             "claude": self.handler.claude_interactions,
             "codex": self.handler.codex_interactions,
             "detail": self.handler.interaction_detail,
+            "legacy_claude_panel_v1": getattr(
+                self.handler, "legacy_claude_panel_v1", False),
             "body_timeout": getattr(
                 self.handler, "json_body_timeout_s", None),
             "had_body_timeout": hasattr(
@@ -651,6 +653,7 @@ class CodexRouteTests(unittest.TestCase):
         self.handler.claude_interactions = False
         self.handler.codex_interactions = True
         self.handler.interaction_detail = True
+        self.handler.legacy_claude_panel_v1 = False
         self.handler.json_body_timeout_s = 0.1
         self.server = server_module.BoundedThreadingHTTPServer(
             ("127.0.0.1", 0), self.handler)
@@ -670,6 +673,8 @@ class CodexRouteTests(unittest.TestCase):
         self.handler.claude_interactions = self._saved["claude"]
         self.handler.codex_interactions = self._saved["codex"]
         self.handler.interaction_detail = self._saved["detail"]
+        self.handler.legacy_claude_panel_v1 = \
+            self._saved["legacy_claude_panel_v1"]
         if self._saved["had_body_timeout"]:
             self.handler.json_body_timeout_s = self._saved["body_timeout"]
         else:
@@ -746,6 +751,20 @@ class CodexRouteTests(unittest.TestCase):
             "option_index": 0,
             "answer": "Use the trusted hook",
         })
+
+    def test_legacy_claude_mode_never_downgrades_codex(self):
+        self.handler.legacy_claude_panel_v1 = True
+        thread, result = self.post_in_thread(
+            "/api/codex/question", codex_question_event())
+
+        shown = self.wait_for_pending()
+        self.assertEqual(shown["provider"], "codex")
+        self.assertRegex(shown["view_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(self.answer_v2(shown)[0], 200)
+        thread.join(timeout=10)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result["status"], 200)
 
     def test_codex_question_deny_is_explicit_computer_fallback(self):
         thread, result = self.post_in_thread(
