@@ -9,11 +9,13 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import signal
 import shutil
 import subprocess
 import sys
 import threading
+import time
 from typing import Callable, Sequence
 import urllib.request
 
@@ -204,7 +206,10 @@ def _known_absent(argv: Sequence[str], stderr: str) -> bool:
     return pattern.fullmatch(normalized) is not None
 
 
-def _close_process_pipes(process) -> None:
+def _close_process_pipes(process, *, only_if_idle: bool = False,
+                         threads: Sequence[threading.Thread] = ()) -> None:
+    if only_if_idle and any(thread.is_alive() for thread in threads):
+        return
     for pipe in (getattr(process, "stdout", None),
                  getattr(process, "stderr", None)):
         if pipe is not None:
@@ -249,8 +254,146 @@ def _terminate_process_tree(process) -> None:
                 pass
 
 
-def _bounded_process(argv: Sequence[str]) -> _CommandResult | None:
-    """Run one argv while retaining only a bounded prefix of both pipes."""
+def _decode_command_result(
+        returncode: int, captured: dict[str, bytearray],
+        reader_errors: Sequence[BaseException] = (),
+        ) -> _CommandResult | None:
+    if (reader_errors or
+            len(captured["stdout"]) > MAX_COMMAND_OUTPUT_BYTES or
+            len(captured["stderr"]) > MAX_COMMAND_OUTPUT_BYTES):
+        return None
+    try:
+        stdout = bytes(captured["stdout"]).decode("utf-8", errors="strict")
+        stderr = bytes(captured["stderr"]).decode("utf-8", errors="strict")
+    except UnicodeError:
+        return None
+    return _CommandResult(returncode, stdout, stderr)
+
+
+def _capture_chunk(captured: dict[str, bytearray], label: str,
+                   chunk: bytes) -> None:
+    remaining = MAX_COMMAND_OUTPUT_BYTES + 1 - len(captured[label])
+    if remaining > 0:
+        captured[label].extend(chunk[:remaining])
+
+
+def _bounded_posix_process(argv: Sequence[str]) -> _CommandResult | None:
+    """Capture raw pipes without ever waiting for inherited-writer EOF."""
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    reads: dict[int, str] = {}
+    writes: list[int] = []
+    process = None
+    selector = selectors.DefaultSelector()
+    timed_out = False
+    returncode = None
+    drain_deadline = None
+
+    try:
+        for label in ("stdout", "stderr"):
+            read_fd, write_fd = os.pipe()
+            reads[read_fd] = label
+            writes.append(write_fd)
+            os.set_blocking(read_fd, False)
+            selector.register(read_fd, selectors.EVENT_READ, label)
+        process = subprocess.Popen(
+            [str(value) for value in argv], stdin=subprocess.DEVNULL,
+            stdout=writes[0], stderr=writes[1], shell=False,
+            close_fds=True, start_new_session=True)
+    except (OSError, subprocess.SubprocessError):
+        selector.close()
+        for read_fd in tuple(reads):
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
+        return None
+    finally:
+        for write_fd in writes:
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+
+    deadline = time.monotonic() + COMMAND_TIMEOUT_SECONDS
+    try:
+        while True:
+            now = time.monotonic()
+            polled = process.poll()
+            if polled is not None and returncode is None:
+                returncode = polled
+                drain_deadline = now + PIPE_JOIN_TIMEOUT_SECONDS
+            if polled is None and not timed_out and now >= deadline:
+                timed_out = True
+                _terminate_process_tree(process)
+                returncode = process.poll()
+                drain_deadline = time.monotonic() + PIPE_JOIN_TIMEOUT_SECONDS
+
+            if timed_out or returncode is not None:
+                assert drain_deadline is not None
+                if not reads:
+                    break
+                remaining = drain_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+            else:
+                remaining = deadline - time.monotonic()
+            wait = max(0.0, min(0.05, remaining))
+            events = selector.select(wait) if reads else ()
+            if not reads and wait:
+                time.sleep(wait)
+            for key, _mask in events:
+                fd = key.fd
+                while True:
+                    try:
+                        chunk = os.read(fd, 8192)
+                    except BlockingIOError:
+                        break
+                    except OSError:
+                        chunk = b""
+                    if not chunk:
+                        try:
+                            selector.unregister(fd)
+                        except (KeyError, OSError):
+                            pass
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                        reads.pop(fd, None)
+                        break
+                    _capture_chunk(captured, key.data, chunk)
+
+            if not timed_out and returncode is None:
+                returncode = process.poll()
+                if returncode is not None:
+                    drain_deadline = (time.monotonic() +
+                                      PIPE_JOIN_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError):
+        _terminate_process_tree(process)
+        return None
+    except BaseException:
+        _terminate_process_tree(process)
+        raise
+    finally:
+        selector.close()
+        for read_fd in tuple(reads):
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
+
+    if timed_out:
+        return None
+    if returncode is None:
+        returncode = process.poll()
+    if returncode is None:
+        _terminate_process_tree(process)
+        return None
+    return _decode_command_result(returncode, captured)
+
+
+def _bounded_thread_process(argv: Sequence[str]) -> _CommandResult | None:
+    """Windows fallback: bounded daemon readers; never close under a reader."""
     process = None
     threads: list[threading.Thread] = []
     captured = {"stdout": bytearray(), "stderr": bytearray()}
@@ -262,11 +405,14 @@ def _bounded_process(argv: Sequence[str]) -> _CommandResult | None:
                 chunk = pipe.read(8192)
                 if not chunk:
                     return
-                remaining = MAX_COMMAND_OUTPUT_BYTES + 1 - len(captured[label])
-                if remaining > 0:
-                    captured[label].extend(chunk[:remaining])
+                _capture_chunk(captured, label, chunk)
         except BaseException as exc:
             reader_errors.append(exc)
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
 
     try:
         process_kwargs = {
@@ -276,11 +422,8 @@ def _bounded_process(argv: Sequence[str]) -> _CommandResult | None:
             "shell": False,
             "close_fds": True,
         }
-        if os.name == "posix":
-            process_kwargs["start_new_session"] = True
-        else:
-            process_kwargs["creationflags"] = getattr(
-                subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        process_kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         process = subprocess.Popen(
             [str(value) for value in argv], **process_kwargs)
         assert process.stdout is not None and process.stderr is not None
@@ -308,7 +451,8 @@ def _bounded_process(argv: Sequence[str]) -> _CommandResult | None:
         if process is not None:
             if any(thread.is_alive() for thread in threads):
                 _terminate_process_tree(process)
-            _close_process_pipes(process)
+            _close_process_pipes(
+                process, only_if_idle=True, threads=threads)
         for thread in threads:
             if thread.is_alive():
                 thread.join(PIPE_JOIN_TIMEOUT_SECONDS)
@@ -316,16 +460,14 @@ def _bounded_process(argv: Sequence[str]) -> _CommandResult | None:
     if any(thread.is_alive() for thread in threads):
         return None
 
-    if (reader_errors or
-            len(captured["stdout"]) > MAX_COMMAND_OUTPUT_BYTES or
-            len(captured["stderr"]) > MAX_COMMAND_OUTPUT_BYTES):
-        return None
-    try:
-        stdout = bytes(captured["stdout"]).decode("utf-8", errors="strict")
-        stderr = bytes(captured["stderr"]).decode("utf-8", errors="strict")
-    except UnicodeError:
-        return None
-    return _CommandResult(returncode, stdout, stderr)
+    return _decode_command_result(returncode, captured, reader_errors)
+
+
+def _bounded_process(argv: Sequence[str]) -> _CommandResult | None:
+    """Run one argv with bounded time and retained output."""
+    if os.name == "posix":
+        return _bounded_posix_process(argv)
+    return _bounded_thread_process(argv)
 
 
 def _invoke(argv: Sequence[str], run) -> _CommandResult | None:

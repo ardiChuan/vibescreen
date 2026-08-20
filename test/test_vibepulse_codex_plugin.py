@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import subprocess
 import sys
@@ -2475,6 +2476,54 @@ class SetupPlanTests(unittest.TestCase):
             self.assertFalse(any(thread.name.startswith("vibepulse-drain-")
                                  for thread in threading.enumerate()))
 
+    @unittest.skipUnless(os.name == "posix", "POSIX detached-pipe behavior")
+    def test_detached_descendant_cannot_extend_process_capture_deadline(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            pid_path = Path(tmp) / "detached.pid"
+            descendant = (
+                "import os,pathlib,sys,time; "
+                "os.setsid(); "
+                "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+                "time.sleep(4)"
+            )
+            parent = (
+                "import pathlib,subprocess,sys,time; "
+                "subprocess.Popen([sys.executable,'-c',sys.argv[1],"
+                "sys.argv[2]]); "
+                "p=pathlib.Path(sys.argv[2]); "
+                "exec('while not p.exists():\\n time.sleep(.01)'); "
+                "time.sleep(10)"
+            )
+            detached_pid = None
+            try:
+                with mock.patch.object(
+                        setup, "COMMAND_TIMEOUT_SECONDS", 0.2), \
+                        mock.patch.object(
+                            setup, "PIPE_JOIN_TIMEOUT_SECONDS", 0.05):
+                    started = time.monotonic()
+                    self.assertIsNone(setup._invoke([
+                        sys.executable, "-c", parent, descendant,
+                        str(pid_path)], setup._AUTO))
+                    elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 1.5)
+                detached_pid = int(pid_path.read_text(encoding="utf-8"))
+                os.kill(detached_pid, 0)
+                recovered = setup._invoke(
+                    [sys.executable, "-c", "print('after-detach')"],
+                    setup._AUTO)
+                self.assertIsNotNone(recovered)
+                self.assertEqual(recovered.stdout, "after-detach\n")
+                self.assertFalse(any(
+                    thread.name.startswith("vibepulse-drain-")
+                    for thread in threading.enumerate()))
+            finally:
+                if detached_pid is not None:
+                    try:
+                        os.kill(detached_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
     def test_keyboard_interrupt_compensates_and_does_not_escape_cli(self):
         setup = load_setup()
         with tempfile.TemporaryDirectory() as tmp:
@@ -2529,6 +2578,23 @@ class SetupPlanTests(unittest.TestCase):
         self.assertFalse(any(thread.name.startswith("vibepulse-drain-")
                              for thread in threading.enumerate()))
 
+    @unittest.skipUnless(os.name == "posix", "POSIX raw-pipe behavior")
+    def test_closed_output_does_not_end_a_still_running_process_early(self):
+        setup = load_setup()
+        closes_then_sleeps = [
+            sys.executable, "-c",
+            "import os,time; os.close(1); os.close(2); time.sleep(3)",
+        ]
+        with mock.patch.object(setup, "COMMAND_TIMEOUT_SECONDS", 0.15), \
+                mock.patch.object(
+                    setup, "PIPE_JOIN_TIMEOUT_SECONDS", 0.05):
+            started = time.monotonic()
+            self.assertIsNone(setup._invoke(
+                closes_then_sleeps, setup._AUTO))
+            elapsed = time.monotonic() - started
+        self.assertGreaterEqual(elapsed, 0.1)
+        self.assertLess(elapsed, 1.0)
+
     def test_process_interrupt_terminates_tree_and_windows_uses_taskkill(self):
         setup = load_setup()
 
@@ -2538,10 +2604,10 @@ class SetupPlanTests(unittest.TestCase):
             stderr = io.BytesIO()
 
             def wait(self, timeout=None):
-                raise KeyboardInterrupt()
+                return 1
 
             def poll(self):
-                return None
+                raise KeyboardInterrupt()
 
         process = InterruptProcess()
         with mock.patch.object(
@@ -2572,6 +2638,79 @@ class SetupPlanTests(unittest.TestCase):
             "taskkill", "/PID", "31337", "/T", "/F"])
         self.assertFalse(kwargs["shell"])
         self.assertLessEqual(kwargs["timeout"], 2)
+
+    def test_capture_setup_and_windows_fallback_release_owned_handles(self):
+        setup = load_setup()
+        opened = []
+        real_pipe = os.pipe
+
+        def tracked_pipe():
+            pair = real_pipe()
+            opened.extend(pair)
+            return pair
+
+        with mock.patch.object(setup.os, "pipe", side_effect=tracked_pipe), \
+                mock.patch.object(
+                    setup.subprocess, "Popen", side_effect=OSError("nope")):
+            self.assertIsNone(setup._bounded_posix_process(["/missing"]))
+        for fd in opened:
+            with self.subTest(fd=fd), self.assertRaises(OSError):
+                os.fstat(fd)
+
+        release = threading.Event()
+
+        class HeldPipe:
+            def __init__(self):
+                self.closed = False
+
+            def read(self, _size):
+                release.wait(2)
+                return b""
+
+            def close(self):
+                self.assert_reader_released()
+                self.closed = True
+
+            def assert_reader_released(self):
+                if not release.is_set():
+                    raise AssertionError("closed while reader was active")
+
+        class TimeoutProcess:
+            pid = 8181
+
+            def __init__(self):
+                self.stdout = HeldPipe()
+                self.stderr = HeldPipe()
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired("fake", timeout)
+
+            def poll(self):
+                return None
+
+        process = TimeoutProcess()
+        try:
+            with mock.patch.object(
+                    setup.subprocess, "Popen", return_value=process), \
+                    mock.patch.object(setup, "_terminate_process_tree"), \
+                    mock.patch.object(
+                        setup, "PIPE_JOIN_TIMEOUT_SECONDS", 0.02):
+                started = time.monotonic()
+                self.assertIsNone(setup._bounded_thread_process(["fake.exe"]))
+                self.assertLess(time.monotonic() - started, 0.3)
+            self.assertFalse(process.stdout.closed)
+            self.assertFalse(process.stderr.closed)
+        finally:
+            release.set()
+            deadline = time.monotonic() + 1
+            while (any(thread.name.startswith("vibepulse-drain-")
+                       for thread in threading.enumerate()) and
+                   time.monotonic() < deadline):
+                time.sleep(0.01)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+        self.assertFalse(any(thread.name.startswith("vibepulse-drain-")
+                             for thread in threading.enumerate()))
 
     def test_absence_allowlist_is_exact_anchored_and_command_scoped(self):
         setup = load_setup()
