@@ -27,6 +27,16 @@ class InteractionRelayBuildTests(unittest.TestCase):
         self.assertRegex(match.group("body"), r"(?m)^\s*bool\b")
         self.assertRegex(match.group("body"), r"(?m)^\s*default n\s*$")
 
+    def test_enabled_relay_selects_its_hkdf_dependency(self) -> None:
+        source = read("main/Kconfig.projbuild")
+        match = re.search(
+            r"config TK_VIBEPULSE_INTERACTION_RELAY\n(?P<body>.*?)(?=\nconfig |\nendmenu|\Z)",
+            source,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        self.assertRegex(match.group("body"), r"(?m)^\s*select MBEDTLS_HKDF_C\s*$")
+
     def test_component_is_absent_from_default_build(self) -> None:
         source = read("components/app_tokens/CMakeLists.txt")
         self.assertIn("if(CONFIG_TK_VIBEPULSE_INTERACTION_RELAY)", source)

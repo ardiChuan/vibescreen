@@ -10,6 +10,7 @@ menu "VibePulse optional network features"
 config TK_VIBEPULSE_INTERACTION_RELAY
     bool "Encrypted Needs You relay (works across unrelated Wi-Fi)"
     default n
+    select MBEDTLS_HKDF_C
     help
         Poll a separately deployed Cloudflare mailbox for end-to-end
         encrypted Claude/Codex Needs You views and return signed encrypted
