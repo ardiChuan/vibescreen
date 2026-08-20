@@ -98,6 +98,7 @@ assert "tools/interaction-relay" in runner
 assert "npm ci" in runner and "npm test" in runner and "npm run typecheck" in runner
 assert "node-version: 22" in workflow
 assert "tools/interaction-relay" in workflow
+assert "requirements-interaction-relay.txt" in workflow
 for runner in ("ubuntu-latest", "macos-latest", "windows-latest"):
     assert runner in workflow, f"tokenserver CI is missing {runner}"
 for module in (

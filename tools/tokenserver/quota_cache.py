@@ -146,6 +146,11 @@ class QuotaCache:
         }
 
     def _fsync_parent(self) -> None:
+        # Windows does not expose POSIX directory descriptors/fsync. The
+        # temporary file itself is still flushed before os.replace; asking
+        # Windows to open the parent as a file makes every cache write fail.
+        if os.name == "nt":
+            return
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         descriptor = os.open(self.path.parent, flags)
         try:

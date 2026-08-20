@@ -1,5 +1,8 @@
 import contextlib
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
 import http.client
 import io
 import inspect
@@ -496,6 +499,7 @@ class ClaudeLimitHeaderTests(unittest.TestCase):
         self.assertEqual(calls, ["Bearer dead-token"])
         self.assertEqual(status, "token_dead_awaiting_refresh")
 
+    @unittest.skipUnless(fcntl is not None, "POSIX flock regression")
     def test_probe_yields_when_another_instance_holds_the_lock(self):
         """Maskinvida enprobe-garantin: håller någon annan process låset gör
         cykeln INGEN nätaktivitet alls — extra instanser (worktree, manuell
