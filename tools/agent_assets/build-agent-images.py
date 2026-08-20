@@ -248,6 +248,7 @@ def descriptor(name: str, data_name: str, color_format: str, stride: int,
 def render_generated_sources() -> tuple[str, str]:
     claude = build_claude()
     codex = build_codex(112)
+    codex_64 = build_codex(64)
     claude_32 = build_claude(32)
     codex_32 = build_codex(32)
     mascots = [(name, *build_mascot(pose, cell))
@@ -261,6 +262,7 @@ def render_generated_sources() -> tuple[str, str]:
 
 extern const lv_image_dsc_t tk_img_claude;
 extern const lv_image_dsc_t tk_img_codex;
+extern const lv_image_dsc_t tk_img_codex_64;
 extern const lv_image_dsc_t tk_img_claude_32;
 extern const lv_image_dsc_t tk_img_codex_32;
 
@@ -272,6 +274,7 @@ extern const lv_image_dsc_t tk_img_codex_32;
     source = "#include \"agent_assets.h\"\n\n"
     source += c_array("tk_img_claude_data", claude)
     source += c_array("tk_img_codex_data", codex)
+    source += c_array("tk_img_codex_64_data", codex_64)
     source += c_array("tk_img_claude_32_data", claude_32)
     source += c_array("tk_img_codex_32_data", codex_32)
     for name, data, _, _ in mascots:
@@ -281,6 +284,8 @@ extern const lv_image_dsc_t tk_img_codex_32;
                          "LV_COLOR_FORMAT_A8", CANVAS, len(claude))
     source += descriptor("tk_img_codex", "tk_img_codex_data",
                          "LV_COLOR_FORMAT_I4", 112 // 2, len(codex), 112)
+    source += descriptor("tk_img_codex_64", "tk_img_codex_64_data",
+                         "LV_COLOR_FORMAT_I4", 64 // 2, len(codex_64), 64)
     source += descriptor("tk_img_claude_32", "tk_img_claude_32_data",
                          "LV_COLOR_FORMAT_A8", 32, len(claude_32), 32)
     source += descriptor("tk_img_codex_32", "tk_img_codex_32_data",

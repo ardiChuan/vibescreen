@@ -65,6 +65,19 @@ class AgentAssetTests(unittest.TestCase):
                 self.assertEqual(len(data), 16 * 4 + size * size // 2)
                 self.assertEqual(data, build.build_codex(size))
 
+    def test_codex_needs_you_asset_is_native_transparent_64(self):
+        data = build.build_codex(64)
+        palette, indices = decode_i4(data, 64)
+        self.assertEqual(len(data), 16 * 4 + 64 * 64 // 2)
+        self.assertEqual(palette[0], (0, 0, 0, 0))
+        self.assertEqual(sum(color == (255, 255, 255, 255)
+                             for color in palette), 1)
+        self.assertTrue(all(indices[i] == 0 for i in (0, 63, 4032, 4095)))
+        header, source = build.render_generated_sources()
+        self.assertIn("tk_img_codex_64", header)
+        self.assertIn(".w = 64", source)
+        self.assertIn(".stride = 32", source)
+
     def test_codex_palette_reserves_transparency_and_one_exact_white(self):
         for size in (112, 32):
             palette, indices = decode_i4(build.build_codex(size), size)
