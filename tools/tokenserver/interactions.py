@@ -728,6 +728,7 @@ class _Pending:
     session_key: Optional[str]
     hold_ms: int
     created_at: float
+    arrival_index: int
     expires_at: float
     relay_job: RelayPublishJob
     done: threading.Event = field(default_factory=threading.Event)
@@ -759,6 +760,7 @@ class InteractionStore:
         self._relay_listener = relay_listener
         self._lock = threading.Lock()
         self._pending: Dict[str, _Pending] = {}
+        self._next_arrival_index = 0
         self._issued_ids = set()
         self._issued_order = deque()
         self._protected_ids = set()
@@ -997,6 +999,8 @@ class InteractionStore:
                 provider=provider.value,
                 can_approve=bool(view.get("can_approve")),
             )
+            arrival_index = self._next_arrival_index
+            self._next_arrival_index += 1
             entry = _Pending(
                 request_id=request_id,
                 provider=provider,
@@ -1010,6 +1014,7 @@ class InteractionStore:
                 session_key=_session_key(session_id),
                 hold_ms=hold_ms,
                 created_at=now,
+                arrival_index=arrival_index,
                 expires_at=now + duration,
                 relay_job=relay_job,
             )
@@ -1272,7 +1277,7 @@ class InteractionStore:
             if self._pending:
                 entry = min(
                     self._pending.values(),
-                    key=lambda item: (item.created_at, item.request_id),
+                    key=lambda item: (item.created_at, item.arrival_index),
                 )
                 payload = {
                     "request_id": entry.request_id,
