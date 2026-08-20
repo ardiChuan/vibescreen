@@ -65,6 +65,7 @@ typedef struct {
   lv_obj_t *a_group;
   lv_obj_t *a_ring;
   lv_obj_t *a_mascot;
+  lv_obj_t *a_codex_icon;
   lv_obj_t *a_word;       /* NEEDS YOU */
   lv_obj_t *a_project;
   lv_obj_t *a_tap;        /* TAP TO ANSWER */
@@ -73,7 +74,14 @@ typedef struct {
   lv_obj_t *h_group;
   lv_obj_t *h_ring;
   lv_obj_t *h_mascot;
-  lv_obj_t *h_eyebrow;    /* CLAUDE NEEDS YOU · PROJECT */
+  lv_obj_t *h_codex_icon;
+  lv_obj_t *h_eyebrow;    /* PROVIDER NEEDS YOU · PROJECT */
+
+  /* Wi-Fi context, not transport/relay health: one shared 28px top-right
+   * object containing three arcs and their dot. */
+  lv_obj_t *wifi_group;
+  lv_obj_t *wifi_arc[3];
+  lv_obj_t *wifi_dot;
 
   /* QUESTION body */
   lv_obj_t *q_group;
@@ -93,6 +101,7 @@ typedef struct {
 
   /* Shared buttons */
   lv_obj_t *approve;
+  lv_obj_t *approve_label;
   lv_obj_t *deny;
   lv_obj_t *leave;
 
@@ -100,6 +109,7 @@ typedef struct {
   lv_obj_t *pv_group;
   lv_obj_t *pv_ring;
   lv_obj_t *pv_mascot;
+  lv_obj_t *pv_codex_icon;
   lv_obj_t *pv_title;
   lv_obj_t *pv_sub;
   lv_obj_t *pv_tap;
@@ -107,6 +117,7 @@ typedef struct {
   /* PAYOFF */
   lv_obj_t *po_group;
   lv_obj_t *po_mascot;
+  lv_obj_t *po_codex_icon;
   lv_obj_t *po_word;      /* ON IT. */
   lv_obj_t *po_echo;      /* the verbatim approved item */
   lv_obj_t *po_spark[5];
@@ -123,6 +134,8 @@ typedef struct {
   uint8_t kind;
   uint8_t stage;
   uint8_t options_total;
+  uint8_t provider;
+  uint8_t wifi_bars;
   uint16_t ring_permille;
   char request_id[TK_PENDING_ID_CAP];
 } needs_you_key;
@@ -482,7 +495,8 @@ static void ny_ring_set(lv_obj_t *arc, uint16_t permille) {
 static lv_obj_t *ny_button(lv_obj_t *parent, const char *text,
                            const lv_font_t *font, lv_color_t text_color,
                            lv_color_t accent, bool filled,
-                           tk_needs_you_verdict verdict) {
+                           tk_needs_you_verdict verdict,
+                           lv_obj_t **label_out) {
   lv_obj_t *btn = bare(parent);
   lv_obj_set_style_radius(btn, 18, 0);
   if (filled) {
@@ -500,6 +514,7 @@ static lv_obj_t *ny_button(lv_obj_t *parent, const char *text,
   lv_obj_t *lbl = label(btn, font, text_color);
   lv_label_set_text(lbl, text);
   lv_obj_center(lbl);
+  if (label_out) *label_out = lbl;
   return btn;
 }
 
@@ -508,6 +523,27 @@ static lv_obj_t *ny_group(lv_obj_t *parent) {
   lv_obj_set_pos(group, 0, 0);
   lv_obj_set_size(group, VP_SCREEN_W, VP_SCREEN_H);
   return group;
+}
+
+static lv_obj_t *ny_codex_icon(lv_obj_t *parent, int x, int y) {
+  lv_obj_t *icon = lv_image_create(parent);
+  lv_image_set_src(icon, &tk_img_codex_64);
+  lv_obj_set_pos(icon, x, y);
+  lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+  return icon;
+}
+
+static lv_obj_t *ny_wifi_arc(needs_you_view *v, int size, int offset) {
+  lv_obj_t *arc = lv_arc_create(v->wifi_group);
+  lv_obj_remove_style_all(arc);
+  lv_obj_set_size(arc, size, size);
+  lv_obj_set_pos(arc, offset, offset);
+  lv_arc_set_rotation(arc, 225);
+  lv_arc_set_bg_angles(arc, 0, 90);
+  lv_obj_set_style_arc_width(arc, 3, LV_PART_MAIN);
+  lv_obj_set_style_arc_rounded(arc, true, LV_PART_MAIN);
+  lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+  return arc;
 }
 
 static void create_needs_you(lv_obj_t *app_root) {
@@ -533,6 +569,20 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_obj_set_style_border_width(v->frame, 2, 0);
   lv_obj_set_style_radius(v->frame, 40, 0);
 
+  /* A fixed lane shared by every Needs You stage. It describes the local
+   * Wi-Fi association only; no relay or server-health claim is encoded. */
+  v->wifi_group = bare(v->root);
+  lv_obj_set_pos(v->wifi_group, 418, 38);
+  lv_obj_set_size(v->wifi_group, 28, 28);
+  v->wifi_arc[0] = ny_wifi_arc(v, 28, 0);
+  v->wifi_arc[1] = ny_wifi_arc(v, 20, 4);
+  v->wifi_arc[2] = ny_wifi_arc(v, 12, 8);
+  v->wifi_dot = bare(v->wifi_group);
+  lv_obj_set_pos(v->wifi_dot, 12, 22);
+  lv_obj_set_size(v->wifi_dot, 4, 4);
+  lv_obj_set_style_radius(v->wifi_dot, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_opa(v->wifi_dot, LV_OPA_COVER, 0);
+
   /* -- ATTRACT: the across-the-room alert, ring carrying the countdown ------ */
   v->a_group = ny_group(v->root);
   v->a_ring = ny_ring(v->a_group, 240, 150, 78, 9);
@@ -540,6 +590,7 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_image_set_src(v->a_mascot, &tk_img_mascot_alert_8);
   lv_obj_set_pos(v->a_mascot, 176, 96);
   lv_obj_remove_flag(v->a_mascot, LV_OBJ_FLAG_CLICKABLE);
+  v->a_codex_icon = ny_codex_icon(v->a_group, 208, 118);
   v->a_word = ny_text(v->a_group, &plex_headline_48, COL_WHITE, 0, 278, 480, 0, C);
   lv_label_set_text(v->a_word, "NEEDS YOU");
   v->a_project = ny_text(v->a_group, &plex_text_21, COL_CLAUDE, 0, 332, 480, 3, C);
@@ -553,9 +604,11 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_image_set_src(v->h_mascot, &tk_img_mascot_asking_4);
   lv_obj_set_pos(v->h_mascot, 48, 49);
   lv_obj_remove_flag(v->h_mascot, LV_OBJ_FLAG_CLICKABLE);
+  v->h_codex_icon = ny_codex_icon(v->h_group, 48, 48);
   /* 14 px keeps CLAUDE NEEDS YOU · PROJECT on one line beside the ring; the
    * design's 15 px has no full-ASCII raster and 16 px wrapped. */
-  v->h_eyebrow = ny_text(v->h_group, &plex_ui_14, COL_CLAUDE, 148, 46, 312, 1, L);
+  v->h_eyebrow = ny_text(v->h_group, &plex_ui_14, COL_CLAUDE, 148, 46, 260, 1, L);
+  lv_label_set_long_mode(v->h_eyebrow, LV_LABEL_LONG_DOT);
 
   /* -- QUESTION body ------------------------------------------------------- */
   v->q_group = ny_group(v->root);
@@ -597,11 +650,12 @@ static void create_needs_you(lv_obj_t *app_root) {
 
   /* -- Shared buttons: APPROVE always filled, DENY the one restrained red -- */
   v->approve = ny_button(v->root, "APPROVE", &plex_attention_25, COL_BLACK,
-                         COL_CLAUDE, true, TK_NEEDS_YOU_VERDICT_APPROVE);
+                         COL_CLAUDE, true, TK_NEEDS_YOU_VERDICT_APPROVE,
+                         &v->approve_label);
   v->deny = ny_button(v->root, "DENY", &plex_attention_25, COL_RED, COL_RED,
-                      false, TK_NEEDS_YOU_VERDICT_DENY);
+                      false, TK_NEEDS_YOU_VERDICT_DENY, NULL);
   v->leave = ny_button(v->root, "LEAVE IT", &plex_attention_25, COL_MUTED,
-                       COL_DIM, false, TK_NEEDS_YOU_VERDICT_LEAVE_IT);
+                       COL_DIM, false, TK_NEEDS_YOU_VERDICT_LEAVE_IT, NULL);
 
   /* -- PRIVATE: no buttons; the mascot holds the secret at 60% ------------- */
   v->pv_group = ny_group(v->root);
@@ -611,6 +665,8 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_obj_set_pos(v->pv_mascot, 184, 96);
   lv_obj_set_style_image_opa(v->pv_mascot, 153, 0); /* 60%: private reads dim */
   lv_obj_remove_flag(v->pv_mascot, LV_OBJ_FLAG_CLICKABLE);
+  v->pv_codex_icon = ny_codex_icon(v->pv_group, 208, 120);
+  lv_obj_set_style_image_opa(v->pv_codex_icon, 153, 0);
   v->pv_title = ny_text(v->pv_group, &plex_body_27, COL_WHITE, 0, 274, 480, 1, C);
   lv_label_set_text(v->pv_title, "SOMETHING IS WAITING");
   v->pv_sub = ny_text(v->pv_group, &plex_ui_16, COL_MUTED, 0, 324, 480, 0, C);
@@ -624,6 +680,7 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_image_set_src(v->po_mascot, &tk_img_mascot_happy_8);
   lv_obj_set_pos(v->po_mascot, 176, 120);
   lv_obj_remove_flag(v->po_mascot, LV_OBJ_FLAG_CLICKABLE);
+  v->po_codex_icon = ny_codex_icon(v->po_group, 208, 152);
   const int spark[5][3] = {{150, 110, 10}, {322, 96, 12}, {346, 180, 8},
                            {128, 196, 8}, {306, 236, 10}};
   for (int i = 0; i < 5; i++) {
@@ -655,6 +712,47 @@ static void ny_hide_all_groups(needs_you_view *v) {
   ny_show(v->leave, false);
 }
 
+static void ny_set_wifi(needs_you_view *v, uint8_t bars, lv_color_t accent) {
+  if (bars > 3) bars = 3;
+  lv_color_t color = bars == 0 ? COL_MUTED : accent;
+  lv_obj_set_style_bg_color(v->wifi_dot, color, 0);
+  for (int i = 0; i < 3; i++) {
+    /* Stored outer-to-inner; one bar therefore exposes only the innermost
+     * arc, while disconnected keeps the complete silhouette in muted grey. */
+    bool visible = bars == 0 || (uint8_t)(3 - i) <= bars;
+    ny_show(v->wifi_arc[i], visible);
+    lv_obj_set_style_arc_color(v->wifi_arc[i], color, LV_PART_MAIN);
+  }
+}
+
+static void ny_set_provider(needs_you_view *v, bool codex,
+                            lv_color_t accent, uint8_t wifi_bars) {
+  lv_obj_set_style_border_color(v->frame, accent, 0);
+  lv_obj_set_style_arc_color(v->a_ring, accent, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(v->h_ring, accent, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(v->pv_ring, accent, LV_PART_INDICATOR);
+  lv_obj_set_style_text_color(v->a_project, accent, 0);
+  lv_obj_set_style_text_color(v->h_eyebrow, accent, 0);
+  lv_obj_set_style_text_color(v->q_rec, accent, 0);
+  lv_obj_set_style_bg_color(v->approve, accent, 0);
+  lv_label_set_text(v->q_rec,
+                    codex ? "CODEX RECOMMENDS" : "CLAUDE RECOMMENDS");
+  lv_label_set_text(v->pv_sub, codex ? "Details stay on your computer"
+                                     : "Details stay on the Mac");
+  for (int i = 0; i < 5; i++)
+    lv_obj_set_style_bg_color(v->po_spark[i], accent, 0);
+
+  ny_show(v->a_mascot, !codex);
+  ny_show(v->a_codex_icon, codex);
+  ny_show(v->h_mascot, !codex);
+  ny_show(v->h_codex_icon, codex);
+  ny_show(v->pv_mascot, !codex);
+  ny_show(v->pv_codex_icon, codex);
+  ny_show(v->po_mascot, !codex);
+  ny_show(v->po_codex_icon, codex);
+  ny_set_wifi(v, wifi_bars, accent);
+}
+
 /* Paint the stage the policy and the human's tap put us in. Reads
  * tk_needs_you_view_of; decides nothing. Repaints only when what is on the
  * glass actually changes, so ticks between polls are free. */
@@ -662,6 +760,10 @@ static void render_needs_you(void) {
   needs_you_view *v = &mon.needs_you;
   const tk_pending_interaction *p = &mon.snapshot.pending;
   int64_t now_us = mon.rendered_at_us;
+  bool codex = p->provider == TK_AGENT_PROVIDER_CODEX;
+  lv_color_t accent = codex ? COL_CODEX : COL_CLAUDE;
+  const char *provider = codex ? "CODEX" : "CLAUDE";
+  uint8_t wifi_bars = torget_wifi_signal_bars();
 
   /* PAYOFF is a device-side beat that outlives the answered interaction; it
    * owns the glass for its short static window, then falls back to the page. */
@@ -671,10 +773,13 @@ static void render_needs_you(void) {
     memset(&key, 0, sizeof key);
     key.valid = true;
     key.stage = (uint8_t)NY_PAYOFF;
+    key.provider = (uint8_t)p->provider;
+    key.wifi_bars = wifi_bars;
     if (!mon.needs_you_rendered.valid ||
         memcmp(&mon.needs_you_rendered, &key, sizeof key) != 0) {
       memcpy(&mon.needs_you_rendered, &key, sizeof key);
       ny_hide_all_groups(v);
+      ny_set_provider(v, codex, accent, wifi_bars);
       lv_label_set_text(v->po_echo, mon.echo);
       ny_show(v->po_echo, mon.echo[0] != '\0');
       ny_show(v->po_group, true);
@@ -724,6 +829,8 @@ static void render_needs_you(void) {
   key.kind = (uint8_t)decision.kind;
   key.stage = (uint8_t)mon.stage;
   key.options_total = p->options_total;
+  key.provider = (uint8_t)p->provider;
+  key.wifi_bars = wifi_bars;
   key.ring_permille = decision.ring_permille;
   memcpy(key.request_id, p->request_id, sizeof key.request_id);
   if (mon.needs_you_rendered.valid &&
@@ -734,6 +841,7 @@ static void render_needs_you(void) {
   memcpy(&mon.needs_you_rendered, &key, sizeof key);
 
   ny_hide_all_groups(v);
+  ny_set_provider(v, codex, accent, wifi_bars);
 
   char project[TK_AGENT_PROJECT_CAP];
   tk_agent_monitor_project_label(p->has_project ? p->project : "", project,
@@ -765,13 +873,15 @@ static void render_needs_you(void) {
                                             : &tk_img_mascot_neutral_4);
   char eyebrow[80];
   if (project[0])
-    snprintf(eyebrow, sizeof eyebrow, "CLAUDE NEEDS YOU \xC2\xB7 %s", project);
+    snprintf(eyebrow, sizeof eyebrow, "%s NEEDS YOU \xC2\xB7 %s", provider,
+             project);
   else
-    snprintf(eyebrow, sizeof eyebrow, "CLAUDE NEEDS YOU");
+    snprintf(eyebrow, sizeof eyebrow, "%s NEEDS YOU", provider);
   lv_label_set_text(v->h_eyebrow, eyebrow);
   ny_show(v->h_group, true);
 
   if (is_question) {
+    lv_label_set_text(v->approve_label, "APPROVE");
     lv_label_set_text(v->q_prompt, p->has_prompt ? p->prompt : "");
     /* Keep the question inside its 68px band: 27px for a short ask (<=2 lines),
      * else step to 21px so a longer one stays two readable lines above the
@@ -793,14 +903,20 @@ static void render_needs_you(void) {
     int more = (int)p->options_total - 1;
     if (more >= 1) {
       char footer[48];
-      snprintf(footer, sizeof footer,
-               more == 1 ? "%d MORE OPTION IN TERMINAL"
-                         : "%d MORE OPTIONS IN TERMINAL", more);
+      if (codex)
+        snprintf(footer, sizeof footer,
+                 more == 1 ? "%d MORE OPTION ON COMPUTER"
+                           : "%d MORE OPTIONS ON COMPUTER", more);
+      else
+        snprintf(footer, sizeof footer,
+                 more == 1 ? "%d MORE OPTION IN TERMINAL"
+                           : "%d MORE OPTIONS IN TERMINAL", more);
       lv_label_set_text(v->q_footer, footer);
     }
     ny_show(v->q_footer, more >= 1);
     ny_show(v->q_group, true);
   } else {
+    lv_label_set_text(v->approve_label, codex ? "ALLOW ONCE" : "APPROVE");
     lv_label_set_text(v->p_desc, p->has_subtitle ? p->subtitle : "");
     ny_show(v->p_desc, p->has_subtitle);
     char tool[TK_PENDING_TOOL_CAP];

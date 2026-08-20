@@ -217,6 +217,12 @@ EXPECTED = {
     "torget-vibepulse-needs-you-private.bmp",
     "torget-vibepulse-needs-you-none.bmp",
     "torget-vibepulse-needs-you-payoff.bmp",
+    "torget-vibepulse-needs-you-codex-question.bmp",
+    "torget-vibepulse-needs-you-codex-question-long.bmp",
+    "torget-vibepulse-needs-you-codex-approval.bmp",
+    "torget-vibepulse-needs-you-codex-private.bmp",
+    "torget-vibepulse-needs-you-codex-wifi-weak.bmp",
+    "torget-vibepulse-needs-you-codex-wifi-off.bmp",
 }
 
 
@@ -940,9 +946,11 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
 
     # -- Needs You v2 takeover: pinned to the approved-direction geometry ----
     NY_CLAUDE = (217, 119, 87)   # #D97757
+    NY_CODEX = (111, 120, 255)   # #6F78FF
     NY_RED = (229, 72, 77)       # #E5484D
     NY_WHITE = (255, 255, 255)
     NY_HAIR = (32, 35, 40)       # #202328 ring track
+    NY_MUTED = (146, 152, 162)    # #9298A2 disconnected Wi-Fi
 
     def _ny(self, name):
         return self.image(f"torget-vibepulse-needs-you-{name}.bmp")
@@ -1023,6 +1031,62 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         self.assertGreater(
             self._count(image, (176, 120, 304, 224), self.NY_CLAUDE), 400)
         self._no_filled_slab(image)
+
+    def test_codex_needs_you_uses_blue_shared_geometry_and_native_icon(self):
+        question = self._ny("codex-question")
+        self.assertGreater(
+            self._count(question, (13, 210, 17, 270), self.NY_CODEX), 0)
+        self.assertEqual(question.getpixel((5, 5)), (0, 0, 0))
+
+        # Native 64px asset is placed at (48,48). Its four transparent
+        # corners reveal the black stage — no white logo tile can return.
+        for point in ((48, 48), (111, 48), (48, 111), (111, 111)):
+            with self.subTest(point=point):
+                self.assertNotEqual(question.getpixel(point), self.NY_WHITE)
+        icon = question.crop((48, 48, 112, 112))
+        self.assertGreater(
+            sum(pixel == self.NY_CODEX
+                for pixel in icon.get_flattened_data()), 80)
+
+        # Claude's approved card and button anchors stay the shared anchors.
+        self.assertEqual(question.getpixel((50, 140)), self.NY_HAIR)
+        approve_column = [question.getpixel((60, y)) == self.NY_CODEX
+                          for y in range(244, 340)]
+        self.assertGreaterEqual(self._longest_run(approve_column), 90)
+
+    def test_codex_long_copy_stays_out_of_card_and_wifi_lane(self):
+        image = self._ny("codex-question-long")
+        card_gap = image.crop((24, 126, 456, 138))
+        self.assertLess(
+            sum(1 for pixel in card_gap.get_flattened_data()
+                if max(pixel) > 90), 400)
+
+        # Eyebrow ends at x=408 and Wi-Fi begins at x=418: the approved ten
+        # pixel safety gap must remain pure black on the eyebrow row.
+        for x in range(408, 418):
+            for y in range(38, 66):
+                self.assertEqual(image.getpixel((x, y)), (0, 0, 0))
+
+    def test_codex_permission_uses_same_large_controls(self):
+        image = self._ny("codex-approval")
+        column = [image.getpixel((60, y)) == self.NY_CODEX
+                  for y in range(252, 348)]
+        self.assertGreaterEqual(self._longest_run(column), 90)
+        self.assertGreater(
+            self._count(image, (24, 358, 232, 452), self.NY_RED), 0)
+
+    def test_wifi_icon_distinguishes_strong_weak_and_disconnected(self):
+        strong = self._ny("codex-question")
+        weak = self._ny("codex-wifi-weak")
+        off = self._ny("codex-wifi-off")
+        box = (418, 38, 446, 66)
+        strong_blue = self._count(strong, box, self.NY_CODEX)
+        weak_blue = self._count(weak, box, self.NY_CODEX)
+        off_blue = self._count(off, box, self.NY_CODEX)
+        self.assertGreater(strong_blue, weak_blue)
+        self.assertGreater(weak_blue, 0)
+        self.assertEqual(off_blue, 0)
+        self.assertGreater(self._count(off, box, self.NY_MUTED), 0)
 
 
 if __name__ == "__main__":

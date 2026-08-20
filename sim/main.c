@@ -102,6 +102,11 @@ void torget_net_wait(void)  {}
 void torget_keep_awake(void) {} /* ljusrampen finns bara på panelen */
 void torget_data_alive(void) {}  /* bootskärmen drivs manuellt i QA:n */
 
+/* Deterministic fixture for exact raster captures: 0 disconnected, 1 weak,
+ * 2 medium, 3 strong. Like target RSSI, this says nothing about relay health. */
+static uint8_t sim_wifi_signal_bars = 3;
+uint8_t torget_wifi_signal_bars(void) { return sim_wifi_signal_bars; }
+
 int64_t torget_now_us(void) { return (int64_t)lv_tick_get() * 1000; }
 
 /* The sim has no network, so a tap on the glass just prints the canonical
@@ -574,15 +579,53 @@ static void poll_keys(lv_timer_t *t) {
   }
 }
 
+static void capture_codex_question_variant(const char *tag,
+                                           const char *request_id,
+                                           const char *prompt,
+                                           bool private_view,
+                                           uint8_t wifi_bars) {
+  size_t len = 0;
+  char *json = read_fixture("agent-status-needs-you-codex-question.json", &len);
+  tk_agent_snapshot snapshot;
+  bool valid = json && tk_agent_status_parse(json, len, &snapshot) &&
+               snapshot.pending.provider == TK_AGENT_PROVIDER_CODEX;
+  if (valid) {
+    snprintf(snapshot.pending.request_id, sizeof snapshot.pending.request_id,
+             "%s", request_id);
+    if (prompt) {
+      snprintf(snapshot.pending.prompt, sizeof snapshot.pending.prompt, "%s",
+               prompt);
+      snapshot.pending.has_prompt = true;
+    }
+    if (private_view) {
+      snapshot.pending.title[0] = '\0';
+      snapshot.pending.has_title = false;
+      snapshot.pending.marked = false;
+      snapshot.pending.can_approve = false;
+    }
+    sim_wifi_signal_bars = wifi_bars;
+    tokens_apply_agent_status(&snapshot);
+    tk_agent_monitor_needs_you_tap();
+    dump_frame(tag);
+  } else {
+    capture_failed(tag, "Codex question fixture rejected");
+  }
+  free(json);
+}
+
 /* Needs You v2, the interactive takeover in every stage the policy can put on
  * the glass: the attract summon, the three decision screens, the page it
  * yields to, and the static payoff beat. The two-stage summon is driven by the
  * deterministic tap/press paths that stand in for a glass touch. Payoff is last
  * because it owns the glass for its static window. */
 static void capture_needs_you_v2(void) {
+  static const char *const codex_long_prompt =
+      "Ship the pricing recalibration to production now, or hold it for "
+      "tomorrow's review window?";
   torget_app_show(SIM_APP_VIBEPULSE);
   feed_tokens();
   tokens_show_view(VIEW_CLAUDE_FABLE);
+  sim_wifi_signal_bars = 3;
 
   apply_agent_file("agent-status-needs-you-question.json");
   dump_frame("vibepulse-needs-you-attract");
@@ -607,6 +650,31 @@ static void capture_needs_you_v2(void) {
   tokens_show_view(VIEW_CLAUDE_FABLE);
   dump_frame("vibepulse-needs-you-none");
 
+  /* Codex uses the same tree and exact vertical anchors.  Only the provider
+   * fixture, native icon, accent, copy, and deterministic Wi-Fi fixture vary.
+   * The long/private variants are derived from the parsed signed-view fixture
+   * solely for raster coverage; no verdict is sent from these frames. */
+  apply_agent_file("agent-status-needs-you-codex-question.json");
+  tk_agent_monitor_needs_you_tap();
+  dump_frame("vibepulse-needs-you-codex-question");
+
+  capture_codex_question_variant("vibepulse-needs-you-codex-question-long",
+                                 "codex-long-question", codex_long_prompt,
+                                 false, 3);
+
+  apply_agent_file("agent-status-needs-you-codex-approval.json");
+  tk_agent_monitor_needs_you_tap();
+  dump_frame("vibepulse-needs-you-codex-approval");
+
+  capture_codex_question_variant("vibepulse-needs-you-codex-private",
+                                 "codex-private-view", NULL, true, 3);
+  capture_codex_question_variant("vibepulse-needs-you-codex-wifi-weak",
+                                 "codex-wifi-weak", NULL, false, 1);
+  capture_codex_question_variant("vibepulse-needs-you-codex-wifi-off",
+                                 "codex-wifi-off", NULL, false, 0);
+
+  /* Payoff owns the glass briefly, so it remains last. */
+  sim_wifi_signal_bars = 3;
   apply_agent_file("agent-status-needs-you-question.json");
   tk_agent_monitor_needs_you_tap();
   tk_agent_monitor_needs_you_press(TK_NEEDS_YOU_VERDICT_APPROVE);

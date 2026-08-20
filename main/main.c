@@ -84,6 +84,10 @@ static EventGroupHandle_t s_net_events;
 #define WIFI_GOT_IP BIT0
 #define NET_READY   BIT1 /* IP + SNTP: TLS kräver rimlig tid */
 
+/* Lock-free presentation input only. The network task owns radio sampling;
+ * LVGL merely reads the last 0..3 value through torget_wifi_signal_bars(). */
+static atomic_uchar s_wifi_signal_bars;
+
 /* ------------------------------------------------- plattforms-API:t (torget.h) */
 
 /*
@@ -105,6 +109,10 @@ int64_t torget_now_us(void) { return esp_timer_get_time(); }
 
 void torget_net_wait(void) {
   xEventGroupWaitBits(s_net_events, NET_READY, pdFALSE, pdTRUE, portMAX_DELAY);
+}
+
+uint8_t torget_wifi_signal_bars(void) {
+  return atomic_load_explicit(&s_wifi_signal_bars, memory_order_relaxed);
 }
 
 void torget_keep_awake(void) { s_last_activity_us = esp_timer_get_time(); }
@@ -277,6 +285,7 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (s_first_start) { s_first_start = false; return; } /* nättasken sköter första */
     if (!atomic_load(&s_sta_paused)) esp_wifi_connect();
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+    atomic_store_explicit(&s_wifi_signal_bars, 0, memory_order_relaxed);
     xEventGroupClearBits(s_net_events, WIFI_GOT_IP);
     int reason = ((wifi_event_sta_disconnected_t *)data)->reason;
     wifi_note_reason(reason);
@@ -304,6 +313,8 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     vTaskDelay(pdMS_TO_TICKS(2000));
     if (!atomic_load(&s_sta_paused)) esp_wifi_connect();
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+    /* GOT_IP is enough to say connected even before the first RSSI sample. */
+    atomic_store_explicit(&s_wifi_signal_bars, 1, memory_order_relaxed);
     char ssid[TG_WIFI_SSID_CAP];
     wifi_copy_current_ssid(ssid, sizeof ssid);
     ESP_LOGI(TAG, "WiFi uppe (\"%s\")", ssid);
@@ -403,6 +414,23 @@ static void net_task(void *arg) {
   torget_boot_screen_stage(TG_BOOT_TIME_OK);
   xEventGroupSetBits(s_net_events, NET_READY);
   vTaskDelete(NULL);
+}
+
+/* RSSI is sampled away from the LVGL task.  Five seconds is deliberate:
+ * signal strength is orientation context, not a live transport-health meter,
+ * and a low-priority periodic query must never contend with display work. */
+static void wifi_signal_task(void *arg) {
+  (void)arg;
+  for (;;) {
+    wifi_ap_record_t ap;
+    uint8_t bars = 0;
+    if ((xEventGroupGetBits(s_net_events) & WIFI_GOT_IP) != 0 &&
+        esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+      bars = ap.rssi >= -55 ? 3 : ap.rssi >= -70 ? 2 : 1;
+    }
+    atomic_store_explicit(&s_wifi_signal_bars, bars, memory_order_relaxed);
+    vTaskDelay(pdMS_TO_TICKS(5000));
+  }
 }
 
 /* ------------------------------------------------------- LVGL-tasken, 10 Hz */
@@ -760,6 +788,8 @@ void app_main(void) {
    * bana och får aldrig stå bakom en valfri funktion i minneskön. */
   if (xTaskCreate(net_task, "torget-net", 4096, NULL, 5, NULL) != pdPASS)
     ESP_LOGE(TAG, "torget-net kunde inte skapas — apparna får aldrig data");
+  if (xTaskCreate(wifi_signal_task, "wifi-signal", 2048, NULL, 2, NULL) != pdPASS)
+    ESP_LOGW(TAG, "wifi-signal kunde inte skapas — ikonen visar frånkopplad");
   /* OTA-ytan är LAT: vid boot startar bara den lilla fönstervakten.
    * Http-servern och dess minneskostnad existerar först när ett KEY3-håll
    * öppnat underhållsfönstret — en boot utan uppdatering ska ha samma
