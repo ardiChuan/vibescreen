@@ -28,6 +28,13 @@ arrives. The networks in `secrets.h` are appended underneath as an
 home network. That is what keeps a bad entry from turning into a USB
 rescue.
 
+<p align="center">
+  <img src="img/vibepulse-wifi-searching.png" width="47%" alt="The panel explains that a saved hotspot is not visible and that it needs 2.4 GHz Wi-Fi">
+  &nbsp;
+  <img src="img/vibepulse-wifi-setup.png" width="47%" alt="The temporary VibePulse Wi-Fi setup network, password, phone URL, Mac command, and countdown on the panel">
+</p>
+<p align="center"><em>Exact 480×480 simulator captures of the same LVGL overlay compiled into the panel firmware.</em></p>
+
 ## What actually changed on the road
 
 Four things about travel that the old firmware got wrong:

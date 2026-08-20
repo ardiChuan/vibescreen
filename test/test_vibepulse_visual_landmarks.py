@@ -205,6 +205,12 @@ EXPECTED = {
     "torget-ota-ring-restarting.bmp",
     "torget-ota-ring-notice.bmp",
 
+    # Wi-Fi onboarding uses the same target LVGL overlay in the simulator.
+    "torget-wifi-searching.bmp",
+    "torget-wifi-setup-open.bmp",
+    "torget-wifi-joining.bmp",
+    "torget-wifi-joined.bmp",
+
     "torget-boot-cold.bmp",
     "torget-boot-wifi.bmp",
     "torget-boot-time.bmp",
@@ -446,6 +452,42 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         self.assertIn(white, update_row)
         later_row = [image.getpixel((x, 366)) for x in range(120, 360)]
         self.assertIn(muted, later_row)
+
+    def test_wifi_onboarding_states_are_legible_and_visually_distinct(self):
+        searching = self.image("torget-wifi-searching.bmp")
+        opened = self.image("torget-wifi-setup-open.bmp")
+        joining = self.image("torget-wifi-joining.bmp")
+        joined = self.image("torget-wifi-joined.bmp")
+
+        for image in (searching, opened, joining, joined):
+            with self.subTest(image=image):
+                self.assertEqual(image.getpixel((5, 5)), (0, 0, 0))
+                header = image.crop((34, 48, 446, 116))
+                self.assertGreater(
+                    sum(pixel == (255, 255, 255)
+                        for pixel in header.get_flattened_data()),
+                    300,
+                )
+
+        # The setup frame must visibly carry the AP, password, phone URL,
+        # one-command Mac path, and bounded-window footer in their own bands.
+        for box in (
+            (34, 132, 446, 164),
+            (34, 166, 446, 204),
+            (34, 210, 446, 266),
+            (34, 274, 446, 302),
+            (34, 302, 446, 332),
+            (34, 390, 446, 430),
+        ):
+            with self.subTest(box=box):
+                self.assertTrue(any(
+                    pixel != (0, 0, 0)
+                    for pixel in opened.crop(box).get_flattened_data()
+                ))
+
+        self.assertNotEqual(searching.tobytes(), opened.tobytes())
+        self.assertNotEqual(opened.tobytes(), joining.tobytes())
+        self.assertNotEqual(joining.tobytes(), joined.tobytes())
 
     def test_provider_bars_are_segmented_with_locked_colors_and_marker(self):
         cases = (

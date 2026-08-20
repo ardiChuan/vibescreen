@@ -9,6 +9,7 @@ floor with a panel that will not join anything.
 
 import hashlib
 import re
+import struct
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
@@ -16,6 +17,8 @@ setup_c = (root / "components/torget_wifi/wifi_setup.c").read_text(encoding="utf
 main_c = (root / "main/main.c").read_text(encoding="utf-8")
 script = (root / "tools/wifi-here.sh").read_text(encoding="utf-8")
 slots_h = (root / "components/torget_wifi/wifi_slots.h").read_text(encoding="utf-8")
+readme = (root / "README.md").read_text(encoding="utf-8")
+wifi_doc = (root / "docs/wifi.md").read_text(encoding="utf-8")
 
 # --- The access point's identity must match on both sides ------------------
 # The script joins by name; a rename on one side alone strands the panel.
@@ -134,5 +137,26 @@ for line in setup_c.splitlines():
 assert "TG_WIFI_SETUP_WINDOW_US   (600LL" in slots_h, (
     "the setup window must stay bounded at ten minutes"
 )
+
+# --- Open-source onboarding must be visible, not only described ----------
+# The README and release reuse exact simulator frames. Pin both checked-in
+# files to the panel's native size without adding an image-library dependency
+# to this cross-language wiring test.
+for image_name in ("vibepulse-wifi-searching.png", "vibepulse-wifi-setup.png"):
+    image_path = root / "docs/img" / image_name
+    assert image_path.is_file(), f"missing WiFi onboarding image: {image_name}"
+    image_bytes = image_path.read_bytes()
+    assert image_bytes[:8] == b"\x89PNG\r\n\x1a\n", (
+        f"WiFi onboarding image is not PNG: {image_name}"
+    )
+    assert struct.unpack(">II", image_bytes[16:24]) == (480, 480), (
+        f"WiFi onboarding image is not native 480x480: {image_name}"
+    )
+    assert f"docs/img/{image_name}" in readme, (
+        f"README does not show WiFi onboarding image: {image_name}"
+    )
+    assert f"img/{image_name}" in wifi_doc, (
+        f"docs/wifi.md does not show WiFi onboarding image: {image_name}"
+    )
 
 print("OK: WiFi setup window, Mac script and consent model agree")
