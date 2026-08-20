@@ -56,6 +56,15 @@ typedef struct {
   uint8_t view_sha256[TK_IR_KEY_BYTES];
 } tk_ir_request_t;
 
+/* Minimal authenticated request state carried through the UI. The panel
+ * creates this only from a successfully decoded relay request; verdict wire
+ * bytes bind exactly these three immutable values. */
+typedef struct {
+  char request_id[TK_IR_REQUEST_ID_CAP];
+  uint8_t challenge[TK_IR_KEY_BYTES];
+  uint8_t view_sha256[TK_IR_KEY_BYTES];
+} tk_ir_verdict_binding_t;
+
 typedef bool (*tk_ir_random_fn)(void *context, uint8_t *out, size_t len);
 
 /* The device key must be exactly 64 hexadecimal characters. The mailbox is
@@ -99,6 +108,16 @@ tk_ir_error_t tk_ir_verdict_hmac(
 tk_ir_error_t tk_ir_encode_verdict(
     const tk_ir_keys_t *keys, const char *mailbox,
     const tk_ir_request_t *request, tk_ir_verdict_t verdict,
+    tk_ir_random_fn random_fill, void *random_context,
+    uint8_t *out, size_t out_cap, size_t *out_len,
+    uint8_t *work, size_t work_cap);
+
+/* Equivalent verdict encoder for the minimal binding copied through the UI.
+ * It does not accept plaintext view bytes and therefore cannot accidentally
+ * expose them on the tap path. */
+tk_ir_error_t tk_ir_encode_verdict_binding(
+    const tk_ir_keys_t *keys, const char *mailbox,
+    const tk_ir_verdict_binding_t *binding, tk_ir_verdict_t verdict,
     tk_ir_random_fn random_fill, void *random_context,
     uint8_t *out, size_t out_cap, size_t *out_len,
     uint8_t *work, size_t work_cap);

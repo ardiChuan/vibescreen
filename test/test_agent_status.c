@@ -155,6 +155,30 @@ int main(void) {
     free(fixture);
   }
 
+  static const char relay_view[] =
+      "{\"can_approve\":true,\"hold_ms\":120000,\"kind\":\"question\","
+      "\"marked\":true,\"options_total\":2,\"project\":\"Torget\","
+      "\"prompt\":\"How should Codex handle approvals?\","
+      "\"provider\":\"codex\","
+      "\"request_id\":\"ABEiM0RVZneImaq7zN3u_w\","
+      "\"subtitle\":\"Desktop + CLI, one setup\","
+      "\"title\":\"Use the trusted hook\"}";
+  tk_pending_interaction relay_pending = {0};
+  check("relävyn parsas utan att låtsas vara en agentstatuskropp",
+        tk_agent_status_parse_relay_view(
+            (const uint8_t *)relay_view, strlen(relay_view), 117000,
+            "df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d",
+            &relay_pending) && relay_pending.present &&
+        relay_pending.provider == TK_AGENT_PROVIDER_CODEX &&
+        relay_pending.expires_in_ms == 117000 &&
+        strcmp(relay_pending.request_id, "ABEiM0RVZneImaq7zN3u_w") == 0);
+  relay_pending.present = true;
+  check("relävyn kräver den autentiserade digesten",
+        !tk_agent_status_parse_relay_view(
+            (const uint8_t *)relay_view, strlen(relay_view), 117000,
+            "0f55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d",
+            &relay_pending) && !relay_pending.present);
+
   const char multi[] =
       "{\"v\":2,\"seq\":9,\"agents\":{" \
       "\"claude\":{\"active_count\":5,\"jobs\":[" WORKING_JOB "," \

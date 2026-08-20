@@ -6,6 +6,9 @@
 #include "lvgl.h"
 
 #include "needs_you_net.h"
+#if defined(ESP_PLATFORM) && CONFIG_TK_VIBEPULSE_INTERACTION_RELAY
+#include "interaction_relay_net.h"
+#endif
 #include "torget.h"
 #include "usage_screen.h"
 
@@ -110,6 +113,9 @@ static void create(lv_obj_t *root) {
   tokens_agent_net_start();
   tokens_github_net_start();
   tokens_needs_you_net_start();
+#if CONFIG_TK_VIBEPULSE_INTERACTION_RELAY
+  tokens_interaction_relay_net_start();
+#endif
 #endif
 }
 

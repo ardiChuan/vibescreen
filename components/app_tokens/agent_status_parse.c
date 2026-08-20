@@ -1,4 +1,5 @@
 #include "agent_status_parse.h"
+#include "interaction_relay_crypto.h"
 #include "needs_you_send_policy.h"
 
 #include <stdio.h>
@@ -909,6 +910,63 @@ static void parse_pending(const char *json, size_t len, const cJSON *root,
    * approving text you cannot see is the failure this whole feature must not
    * ship with. */
   out->present = true;
+}
+
+bool tk_agent_status_parse_relay_view(
+    const uint8_t *view, size_t view_len, uint32_t expires_in_ms,
+    const char view_sha256[TK_PENDING_VIEW_SHA256_CAP],
+    tk_pending_interaction *out) {
+  if (out != NULL) memset(out, 0, sizeof *out);
+  if (view == NULL || out == NULL || view_sha256 == NULL ||
+      view_len < 2 || view_len > TK_IR_MAX_VIEW_BYTES ||
+      expires_in_ms == 0 ||
+      view[0] != '{' || view[view_len - 1] != '}' ||
+      memchr(view, '\0', view_len) != NULL ||
+      !lowercase_sha256(view_sha256)) {
+    return false;
+  }
+
+  char calculated[TK_PENDING_VIEW_SHA256_CAP];
+  tk_needs_you_sha256_hex(calculated, (const char *)view, view_len);
+  unsigned difference = 0;
+  for (size_t i = 0; i < 64; ++i) {
+    difference |= (unsigned char)calculated[i] ^
+                  (unsigned char)view_sha256[i];
+  }
+  if (difference != 0) return false;
+
+  /* Add only transport fields that stable view_bytes() intentionally omits.
+   * parse_pending then enforces the same strict v2 fields, UTF-8 limits and
+   * canonical digest as the direct LAN path. */
+  char wrapped[TK_PENDING_CANONICAL_VIEW_CAP];
+  static const char prefix[] = "{\"pending\":";
+  int suffix_len = snprintf(
+      wrapped + sizeof prefix - 1 + view_len - 1,
+      sizeof wrapped - (sizeof prefix - 1 + view_len - 1),
+      ",\"expires_in_ms\":%lu,\"view_sha256\":\"%s\"}}",
+      (unsigned long)expires_in_ms, view_sha256);
+  if (suffix_len <= 0) return false;
+  size_t used = sizeof prefix - 1 + view_len - 1 + (size_t)suffix_len;
+  if (used >= sizeof wrapped) return false;
+  memcpy(wrapped, prefix, sizeof prefix - 1);
+  memcpy(wrapped + sizeof prefix - 1, view, view_len - 1);
+  wrapped[used] = '\0';
+
+  if (!json_lexically_valid(wrapped, used)) return false;
+  const char *parse_end = NULL;
+  cJSON *root = cJSON_ParseWithLengthOpts(wrapped, used, &parse_end, false);
+  if (root == NULL) return false;
+  bool ok = trailing_is_whitespace(wrapped, used, parse_end) &&
+            cJSON_IsObject(root);
+  if (ok) {
+    parse_pending(wrapped, used, root, out);
+    ok = out->present;
+  }
+  cJSON_Delete(root);
+  if (!ok) memset(out, 0, sizeof *out);
+  memset(wrapped, 0, sizeof wrapped);
+  memset(calculated, 0, sizeof calculated);
+  return ok;
 }
 
 static bool job_member(const char *json, size_t len, const cJSON *root,

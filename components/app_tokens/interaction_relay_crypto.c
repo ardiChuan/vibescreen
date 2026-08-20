@@ -508,9 +508,10 @@ static tk_ir_error_t validate_request(const tk_ir_request_t *request) {
   return result;
 }
 
-tk_ir_error_t tk_ir_verdict_hmac(
-    const tk_ir_keys_t *keys, const char *mailbox,
-    const tk_ir_request_t *request, tk_ir_verdict_t verdict,
+static tk_ir_error_t verdict_hmac_values(
+    const tk_ir_keys_t *keys, const char *mailbox, const char *request_id,
+    const uint8_t challenge[TK_IR_KEY_BYTES],
+    const uint8_t view_sha256[TK_IR_KEY_BYTES], tk_ir_verdict_t verdict,
     uint8_t out[TK_IR_KEY_BYTES]) {
   uint8_t message[160] = {0};
   uint8_t raw_id[16] = {0};
@@ -518,16 +519,15 @@ tk_ir_error_t tk_ir_verdict_hmac(
   tk_ir_error_t result = TK_IR_ERR_ARGUMENT;
   if (out != NULL) wipe(out, TK_IR_KEY_BYTES);
   const char *name = verdict_name(verdict);
-  if (keys == NULL || mailbox == NULL || request == NULL || out == NULL) {
+  if (keys == NULL || mailbox == NULL || request_id == NULL ||
+      challenge == NULL || view_sha256 == NULL || out == NULL) {
     goto done;
   }
   if (name == NULL || !mailbox_valid(mailbox)) {
     result = TK_IR_ERR_FORMAT;
     goto done;
   }
-  result = validate_request(request);
-  if (result != TK_IR_OK) goto done;
-  result = validate_request_id(request->request_id, raw_id);
+  result = validate_request_id(request_id, raw_id);
   if (result != TK_IR_OK) goto done;
   memcpy(message + offset, k_verdict_domain, sizeof k_verdict_domain);
   offset += sizeof k_verdict_domain;
@@ -538,11 +538,10 @@ tk_ir_error_t tk_ir_verdict_hmac(
   offset += mailbox_len;
   memcpy(message + offset, raw_id, sizeof raw_id);
   offset += sizeof raw_id;
-  memcpy(message + offset, request->challenge, sizeof request->challenge);
-  offset += sizeof request->challenge;
-  memcpy(message + offset, request->view_sha256,
-         sizeof request->view_sha256);
-  offset += sizeof request->view_sha256;
+  memcpy(message + offset, challenge, TK_IR_KEY_BYTES);
+  offset += TK_IR_KEY_BYTES;
+  memcpy(message + offset, view_sha256, TK_IR_KEY_BYTES);
+  offset += TK_IR_KEY_BYTES;
   message[offset++] = (uint8_t)verdict;
   const mbedtls_md_info_t *sha = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
   if (sha == NULL || mbedtls_md_hmac(
@@ -557,6 +556,19 @@ done:
   wipe(raw_id, sizeof raw_id);
   if (result != TK_IR_OK && out != NULL) wipe(out, TK_IR_KEY_BYTES);
   return result;
+}
+
+tk_ir_error_t tk_ir_verdict_hmac(
+    const tk_ir_keys_t *keys, const char *mailbox,
+    const tk_ir_request_t *request, tk_ir_verdict_t verdict,
+  uint8_t out[TK_IR_KEY_BYTES]) {
+  if (out != NULL) wipe(out, TK_IR_KEY_BYTES);
+  if (request == NULL) return TK_IR_ERR_ARGUMENT;
+  tk_ir_error_t result = validate_request(request);
+  if (result != TK_IR_OK) return result;
+  return verdict_hmac_values(keys, mailbox, request->request_id,
+                             request->challenge, request->view_sha256,
+                             verdict, out);
 }
 
 static tk_ir_error_t gcm_encrypt_verdict(
@@ -577,9 +589,9 @@ static tk_ir_error_t gcm_encrypt_verdict(
   return result == 0 ? TK_IR_OK : TK_IR_ERR_CRYPTO;
 }
 
-tk_ir_error_t tk_ir_encode_verdict(
+tk_ir_error_t tk_ir_encode_verdict_binding(
     const tk_ir_keys_t *keys, const char *mailbox,
-    const tk_ir_request_t *request, tk_ir_verdict_t verdict,
+    const tk_ir_verdict_binding_t *binding, tk_ir_verdict_t verdict,
     tk_ir_random_fn random_fill, void *random_context,
     uint8_t *out, size_t out_cap, size_t *out_len,
     uint8_t *work, size_t work_cap) {
@@ -596,9 +608,9 @@ tk_ir_error_t tk_ir_encode_verdict(
   if (out_len != NULL) *out_len = 0;
   if (out != NULL && out_cap != 0) wipe(out, out_cap);
   const char *name = verdict_name(verdict);
-  if (keys == NULL || mailbox == NULL || request == NULL || name == NULL ||
+  if (keys == NULL || mailbox == NULL || binding == NULL || name == NULL ||
       random_fill == NULL || out == NULL || out_len == NULL || work == NULL) {
-    if (name == NULL && keys != NULL && mailbox != NULL && request != NULL &&
+    if (name == NULL && keys != NULL && mailbox != NULL && binding != NULL &&
         random_fill != NULL && out != NULL && out_len != NULL && work != NULL) {
       result = TK_IR_ERR_FORMAT;
     }
@@ -608,18 +620,22 @@ tk_ir_error_t tk_ir_encode_verdict(
     result = TK_IR_ERR_CAPACITY;
     goto done;
   }
-  result = validate_request(request);
+  uint8_t raw_id[16];
+  result = validate_request_id(binding->request_id, raw_id);
+  wipe(raw_id, sizeof raw_id);
   if (result != TK_IR_OK || !mailbox_valid(mailbox)) {
     if (result == TK_IR_OK) result = TK_IR_ERR_FORMAT;
     goto done;
   }
-  result = tk_ir_verdict_hmac(keys, mailbox, request, verdict, mac);
+  result = verdict_hmac_values(keys, mailbox, binding->request_id,
+                               binding->challenge, binding->view_sha256,
+                               verdict, mac);
   if (result != TK_IR_OK) goto done;
-  result = tk_ir_b64url_encode(request->challenge, sizeof request->challenge,
+  result = tk_ir_b64url_encode(binding->challenge, sizeof binding->challenge,
                                challenge, sizeof challenge, &challenge_len);
   if (result != TK_IR_OK) goto done;
-  result = tk_ir_b64url_encode(request->view_sha256,
-                               sizeof request->view_sha256,
+  result = tk_ir_b64url_encode(binding->view_sha256,
+                               sizeof binding->view_sha256,
                                digest, sizeof digest, &digest_len);
   if (result != TK_IR_OK) goto done;
   result = tk_ir_b64url_encode(mac, sizeof mac, hmac, sizeof hmac, &hmac_len);
@@ -635,7 +651,7 @@ tk_ir_error_t tk_ir_encode_verdict(
       "{\"challenge\":\"%s\",\"hmac\":\"%s\","
       "\"requestId\":\"%s\",\"v\":1,\"verdict\":\"%s\","
       "\"viewSha256\":\"%s\"}",
-      challenge, hmac, request->request_id, name, digest);
+      challenge, hmac, binding->request_id, name, digest);
   if (json_len <= 0 || json_len > (int)TK_IR_VERDICT_FRAME_BYTES - 2) {
     result = TK_IR_ERR_CAPACITY;
     goto done;
@@ -648,7 +664,7 @@ tk_ir_error_t tk_ir_encode_verdict(
     result = TK_IR_ERR_RANDOM;
     goto done;
   }
-  result = make_aad(mailbox, request->request_id, "verdict",
+  result = make_aad(mailbox, binding->request_id, "verdict",
                     aad, sizeof aad, &aad_len);
   if (result != TK_IR_OK) goto done;
   result = gcm_encrypt_verdict(
@@ -684,5 +700,36 @@ done:
     if (out != NULL && out_cap != 0) wipe(out, out_cap);
     if (out_len != NULL) *out_len = 0;
   }
+  return result;
+}
+
+tk_ir_error_t tk_ir_encode_verdict(
+    const tk_ir_keys_t *keys, const char *mailbox,
+    const tk_ir_request_t *request, tk_ir_verdict_t verdict,
+    tk_ir_random_fn random_fill, void *random_context,
+    uint8_t *out, size_t out_cap, size_t *out_len,
+    uint8_t *work, size_t work_cap) {
+  if (request == NULL) {
+    if (out_len != NULL) *out_len = 0;
+    if (out != NULL && out_cap != 0) wipe(out, out_cap);
+    if (work != NULL) wipe(work, work_cap);
+    return TK_IR_ERR_ARGUMENT;
+  }
+  tk_ir_error_t result = validate_request(request);
+  if (result != TK_IR_OK) {
+    if (out_len != NULL) *out_len = 0;
+    if (out != NULL && out_cap != 0) wipe(out, out_cap);
+    if (work != NULL) wipe(work, work_cap);
+    return result;
+  }
+  tk_ir_verdict_binding_t binding = {0};
+  memcpy(binding.request_id, request->request_id, sizeof binding.request_id);
+  memcpy(binding.challenge, request->challenge, sizeof binding.challenge);
+  memcpy(binding.view_sha256, request->view_sha256,
+         sizeof binding.view_sha256);
+  result = tk_ir_encode_verdict_binding(
+      keys, mailbox, &binding, verdict, random_fill, random_context,
+      out, out_cap, out_len, work, work_cap);
+  wipe(&binding, sizeof binding);
   return result;
 }

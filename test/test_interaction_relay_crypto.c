@@ -195,6 +195,12 @@ static void test_verdicts(void) {
   assert(decode_case(&keys, VECTOR_MAILBOX, VECTOR_REQUEST_ID,
                      VECTOR_REQUEST_ENVELOPE, &request) == TK_IR_OK);
 
+  tk_ir_verdict_binding_t binding = {0};
+  memcpy(binding.request_id, request.request_id, sizeof binding.request_id);
+  memcpy(binding.challenge, request.challenge, sizeof binding.challenge);
+  memcpy(binding.view_sha256, request.view_sha256,
+         sizeof binding.view_sha256);
+
   for (size_t i = 0; i < sizeof verdicts / sizeof verdicts[0]; ++i) {
     assert(tk_ir_verdict_hmac(&keys, VECTOR_MAILBOX, &request,
                               verdicts[i], mac) == TK_IR_OK);
@@ -208,7 +214,24 @@ static void test_verdicts(void) {
     assert(all_zero(s_work, sizeof s_work));
     assert(envelope_len == strlen(expected_envelopes[i]));
     assert(memcmp(envelope, expected_envelopes[i], envelope_len) == 0);
+
+    memset(s_work, 0xcc, sizeof s_work);
+    assert(tk_ir_encode_verdict_binding(
+        &keys, VECTOR_MAILBOX, &binding, verdicts[i], deterministic_random,
+        NULL, envelope, sizeof envelope, &envelope_len, s_work,
+        sizeof s_work) == TK_IR_OK);
+    assert(all_zero(s_work, sizeof s_work));
+    assert(envelope_len == strlen(expected_envelopes[i]));
+    assert(memcmp(envelope, expected_envelopes[i], envelope_len) == 0);
   }
+
+  binding.request_id[0] = '!';
+  memset(s_work, 0xcc, sizeof s_work);
+  assert(tk_ir_encode_verdict_binding(
+      &keys, VECTOR_MAILBOX, &binding, TK_IR_VERDICT_APPROVE,
+      deterministic_random, NULL, envelope, sizeof envelope, &envelope_len,
+      s_work, sizeof s_work) == TK_IR_ERR_FORMAT);
+  assert(all_zero(s_work, sizeof s_work));
 
   memset(s_work, 0xcc, sizeof s_work);
   assert(tk_ir_encode_verdict(
