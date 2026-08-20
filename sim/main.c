@@ -616,7 +616,7 @@ static void capture_codex_question_variant(const char *tag,
 }
 
 typedef enum {
-  FIT_TITLE, FIT_SUBTITLE, FIT_DESCRIPTION, FIT_COMMAND, FIT_TOOL
+  FIT_TITLE, FIT_SUBTITLE, FIT_DESCRIPTION, FIT_COMMAND, FIT_TOOL, FIT_PROMPT
 } fit_field;
 
 static void capture_codex_fit_variant(const char *tag, fit_field field,
@@ -628,7 +628,11 @@ static void capture_codex_fit_variant(const char *tag, fit_field field,
   if (valid) {
     snprintf(snapshot.pending.request_id, sizeof snapshot.pending.request_id,
              "fit-%u-%s", (unsigned)field, tag + strlen(tag) - 8);
-    if (field == FIT_TITLE || field == FIT_SUBTITLE) {
+    if (field == FIT_PROMPT) {
+      snprintf(snapshot.pending.prompt, sizeof snapshot.pending.prompt,
+               "%s", value);
+      snapshot.pending.has_prompt = true;
+    } else if (field == FIT_TITLE || field == FIT_SUBTITLE) {
       char *target = field == FIT_TITLE ? snapshot.pending.title
                                         : snapshot.pending.subtitle;
       snprintf(target, TK_PENDING_TITLE_CAP, "%s", value);
@@ -692,6 +696,20 @@ static void capture_codex_fit_matrix(void) {
              names[i]);
     capture_codex_fit_variant(tag, (fit_field)i, missing[i]);
   }
+
+  capture_codex_fit_variant(
+      "vibepulse-needs-you-fit-prompt-27-boundary", FIT_PROMPT,
+      "WWWWWW WWWWWW");
+  capture_codex_fit_variant(
+      "vibepulse-needs-you-fit-prompt-21-fallback", FIT_PROMPT,
+      "Ship pricing now, or hold for tomorrow's review?");
+  capture_codex_fit_variant(
+      "vibepulse-needs-you-fit-prompt-21-overbound", FIT_PROMPT,
+      "Ship the pricing recalibration to production now, or hold it for "
+      "tomorrow's review window?");
+  capture_codex_fit_variant(
+      "vibepulse-needs-you-fit-prompt-missing-glyph", FIT_PROMPT,
+      "Approve \xE2\x82\xAC?");
 }
 
 /* Needs You v2, the interactive takeover in every stage the policy can put on
@@ -757,14 +775,45 @@ static void capture_needs_you_v2(void) {
 
   /* The provider belongs to the accepted verdict, not whichever snapshot
    * happens to arrive during the short payoff beat. */
-  apply_agent_file("agent-status-needs-you-codex-question.json");
-  tk_agent_monitor_needs_you_tap();
-  tk_agent_monitor_needs_you_press(TK_NEEDS_YOU_VERDICT_APPROVE);
-  dump_frame("vibepulse-needs-you-codex-payoff");
-  apply_agent_file("agent-status-idle.json");
-  dump_frame("vibepulse-needs-you-codex-payoff-empty");
-  apply_agent_file("agent-status-claude-working.json");
-  dump_frame("vibepulse-needs-you-codex-payoff-claude");
+  size_t codex_len = 0, idle_len = 0, working_len = 0, replacement_len = 0;
+  char *codex_json = read_fixture("agent-status-needs-you-codex-question.json",
+                                  &codex_len);
+  char *idle_json = read_fixture("agent-status-idle.json", &idle_len);
+  char *working_json = read_fixture("agent-status-claude-working.json",
+                                    &working_len);
+  char *replacement_json = read_fixture("agent-status-needs-you-question.json",
+                                        &replacement_len);
+  tk_agent_snapshot codex_payoff, idle, working, replacement;
+  bool payoff_valid = codex_json && idle_json && working_json &&
+      replacement_json &&
+      tk_agent_status_parse(codex_json, codex_len, &codex_payoff) &&
+      tk_agent_status_parse(idle_json, idle_len, &idle) &&
+      tk_agent_status_parse(working_json, working_len, &working) &&
+      tk_agent_status_parse(replacement_json, replacement_len, &replacement);
+  if (payoff_valid) {
+    int64_t base_us = torget_now_us() + 1000000LL;
+    usage_screen_apply_agent(&codex_payoff, base_us);
+    tk_agent_monitor_needs_you_tap();
+    tk_agent_monitor_needs_you_press(TK_NEEDS_YOU_VERDICT_APPROVE);
+    dump_frame("vibepulse-needs-you-codex-payoff");
+    usage_screen_apply_agent(&idle, base_us + 1000);
+    dump_frame("vibepulse-needs-you-codex-payoff-empty");
+    usage_screen_apply_agent(&working, base_us + 2000);
+    dump_frame("vibepulse-needs-you-codex-payoff-claude");
+    usage_screen_apply_agent(&replacement, base_us + 2499999LL);
+    dump_frame("vibepulse-needs-you-codex-payoff-replacement-pre-expiry");
+    usage_screen_tick(base_us + 2500000LL);
+    dump_frame("vibepulse-needs-you-codex-payoff-exact-expiry");
+    usage_screen_tick(base_us + 2500001LL);
+    dump_frame("vibepulse-needs-you-codex-payoff-post-expiry");
+  } else {
+    capture_failed("vibepulse-needs-you-codex-payoff",
+                   "payoff timing fixture rejected");
+  }
+  free(codex_json);
+  free(idle_json);
+  free(working_json);
+  free(replacement_json);
 
   /* Payoff owns the glass briefly, so it remains last. */
   sim_wifi_signal_bars = 3;

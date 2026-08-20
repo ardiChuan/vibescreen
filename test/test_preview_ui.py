@@ -111,6 +111,13 @@ EXPECTED_BMPS = {
     "torget-vibepulse-needs-you-fit-tool-boundary.bmp",
     "torget-vibepulse-needs-you-fit-tool-overbound.bmp",
     "torget-vibepulse-needs-you-fit-tool-missing-glyph.bmp",
+    "torget-vibepulse-needs-you-fit-prompt-27-boundary.bmp",
+    "torget-vibepulse-needs-you-fit-prompt-21-fallback.bmp",
+    "torget-vibepulse-needs-you-fit-prompt-21-overbound.bmp",
+    "torget-vibepulse-needs-you-fit-prompt-missing-glyph.bmp",
+    "torget-vibepulse-needs-you-codex-payoff-replacement-pre-expiry.bmp",
+    "torget-vibepulse-needs-you-codex-payoff-exact-expiry.bmp",
+    "torget-vibepulse-needs-you-codex-payoff-post-expiry.bmp",
 }
 EXPECTED_PNGS = {
     f"{Path(name).stem.removeprefix('torget-')}.png"

@@ -40,7 +40,26 @@ int main(void) {
   check("bars clamp to three", tg_wifi_signal_sample_commit(&state, current, 9));
   check("clamped RSSI is visible", tg_wifi_signal_bars(&state) == 3);
 
+  /* The last representable generation is absorbing: it cannot wrap back to a
+   * value held by a very old sampler (the 30-bit ABA case). */
+  atomic_store(&state.packed,
+               (TG_WIFI_SIGNAL_TERMINAL_GENERATION -
+                TG_WIFI_SIGNAL_GENERATION_STEP) | 2u);
+  unsigned near_max = tg_wifi_signal_sample_begin(&state);
+  tg_wifi_signal_event(&state, 0);
+  check("near-max event saturates generation",
+        atomic_load(&state.packed) == TG_WIFI_SIGNAL_TERMINAL_GENERATION);
+  check("pre-saturation sample cannot commit",
+        !tg_wifi_signal_sample_commit(&state, near_max, 3));
+  unsigned terminal = tg_wifi_signal_sample_begin(&state);
+  check("terminal generation rejects every sample",
+        !tg_wifi_signal_sample_commit(&state, terminal, 3));
+  tg_wifi_signal_event(&state, 1);
+  check("terminal GOT_IP still owns bars", tg_wifi_signal_bars(&state) == 1);
+  tg_wifi_signal_event(&state, 0);
+  check("terminal disconnect still owns bars", tg_wifi_signal_bars(&state) == 0);
+
   if (failures) return 1;
-  printf("OK: stale Wi-Fi samples never overwrite newer link events\n");
+  printf("OK: Wi-Fi events order samples without generation wrap\n");
   return 0;
 }

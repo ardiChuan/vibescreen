@@ -241,6 +241,13 @@ EXPECTED = {
     "torget-vibepulse-needs-you-fit-tool-boundary.bmp",
     "torget-vibepulse-needs-you-fit-tool-overbound.bmp",
     "torget-vibepulse-needs-you-fit-tool-missing-glyph.bmp",
+    "torget-vibepulse-needs-you-fit-prompt-27-boundary.bmp",
+    "torget-vibepulse-needs-you-fit-prompt-21-fallback.bmp",
+    "torget-vibepulse-needs-you-fit-prompt-21-overbound.bmp",
+    "torget-vibepulse-needs-you-fit-prompt-missing-glyph.bmp",
+    "torget-vibepulse-needs-you-codex-payoff-replacement-pre-expiry.bmp",
+    "torget-vibepulse-needs-you-codex-payoff-exact-expiry.bmp",
+    "torget-vibepulse-needs-you-codex-payoff-post-expiry.bmp",
 }
 
 
@@ -1108,6 +1115,13 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
 
     def test_every_semantic_field_must_physically_fit_before_approval(self):
         fields = ("title", "subtitle", "description", "command", "tool")
+        ink_fields = {
+            "title": (44, 174, 436, 208),
+            "subtitle": (44, 210, 436, 230),
+            "description": (148, 70, 448, 138),
+            "command": (24, 182, 456, 244),
+            "tool": (30, 150, 200, 168),
+        }
         private = self._ny("codex-private")
         for field in fields:
             boundary = self._ny(f"fit-{field}-boundary")
@@ -1117,10 +1131,36 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                 column = [boundary.getpixel((60, y)) == self.NY_CODEX
                           for y in range(240, 350)]
                 self.assertGreaterEqual(self._longest_run(column), 90)
+                # The semantic field itself must have visible ink inside its
+                # authoritative box; a blue button alone is not evidence.
+                ink = boundary.crop(ink_fields[field])
+                self.assertGreater(sum(
+                    1 for pixel in ink.get_flattened_data()
+                    if max(pixel) > 90), 35)
             with self.subTest(field=field, case="overbound"):
                 self.assertEqual(overbound.tobytes(), private.tobytes())
             with self.subTest(field=field, case="missing-glyph"):
                 self.assertEqual(missing.tobytes(), private.tobytes())
+
+    def test_prompt_font_steps_only_when_complete_ink_fits(self):
+        body = self._ny("fit-prompt-27-boundary")
+        smaller = self._ny("fit-prompt-21-fallback")
+        private = self._ny("codex-private")
+        for image in (body, smaller):
+            # Prove the semantic prompt itself is painted inside its exact
+            # x148..447/y70..137 field, not merely that a button exists.
+            prompt = image.crop((148, 70, 448, 138))
+            self.assertGreater(sum(
+                1 for pixel in prompt.get_flattened_data()
+                if min(pixel) > 180), 250)
+            approve = [image.getpixel((60, y)) == self.NY_CODEX
+                       for y in range(244, 340)]
+            self.assertGreaterEqual(self._longest_run(approve), 90)
+        self.assertNotEqual(body.tobytes(), smaller.tobytes())
+        self.assertEqual(self._ny("fit-prompt-21-overbound").tobytes(),
+                         private.tobytes())
+        self.assertEqual(self._ny("fit-prompt-missing-glyph").tobytes(),
+                         private.tobytes())
 
     def test_codex_payoff_keeps_provider_across_followup_snapshots(self):
         payoff = self._ny("codex-payoff")
@@ -1132,6 +1172,18 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
             self._count(payoff, (13, 210, 17, 270), self.NY_CODEX), 0)
         self.assertEqual(
             self._count(payoff, (0, 0, 480, 480), self.NY_CLAUDE), 0)
+
+    def test_payoff_provider_is_cached_until_but_not_past_exact_expiry(self):
+        payoff = self._ny("codex-payoff")
+        pre = self._ny("codex-payoff-replacement-pre-expiry")
+        exact = self._ny("codex-payoff-exact-expiry")
+        post = self._ny("codex-payoff-post-expiry")
+        self.assertEqual(pre.tobytes(), payoff.tobytes())
+        self.assertEqual(exact.tobytes(), post.tobytes())
+        self.assertGreater(self._count(exact, (0, 0, 480, 480),
+                                       self.NY_CLAUDE), 100)
+        self.assertEqual(self._count(exact, (0, 0, 480, 480),
+                                     self.NY_CODEX), 0)
 
 
 if __name__ == "__main__":

@@ -455,6 +455,8 @@ static bool ny_text_fits(const char *text, const lv_font_t *font,
   if (!text || !text[0]) return false;
   uint32_t offset = 0;
   int ink_top = 32767, ink_bottom = -32768;
+  int pen_x = 0, ink_left = 32767, ink_right = -32768;
+  int min_left_overhang = 0, max_right_overhang = 0;
   while (text[offset]) {
     uint32_t current = ny_utf8_next(text, &offset);
     uint32_t next_offset = offset;
@@ -469,17 +471,32 @@ static bool ny_text_fits(const char *text, const lv_font_t *font,
     if (glyph.box_h) {
       int bottom = (int)font->line_height - (int)font->base_line - glyph.ofs_y;
       int top = bottom - glyph.box_h;
+      int left = pen_x + glyph.ofs_x;
+      int right = left + glyph.box_w;
       if (top < ink_top) ink_top = top;
       if (bottom > ink_bottom) ink_bottom = bottom;
+      if (left < ink_left) ink_left = left;
+      if (right > ink_right) ink_right = right;
+      int overhang = glyph.ofs_x + glyph.box_w - glyph.adv_w;
+      if (glyph.ofs_x < min_left_overhang) min_left_overhang = glyph.ofs_x;
+      if (overhang > max_right_overhang) max_right_overhang = overhang;
     }
+    pen_x += glyph.adv_w;
     lv_font_glyph_release_draw_data(&glyph);
   }
   lv_point_t size;
   lv_text_get_size(&size, text, font, 0, 0,
                    one_line ? LV_COORD_MAX : max_w, LV_TEXT_FLAG_NONE);
-  int height = one_line && ink_bottom > ink_top ? ink_bottom - ink_top : size.y;
-  return size.x <= max_w && height <= max_h &&
-         (!one_line || size.y <= font->line_height);
+  int final_ink_bottom = size.y - (int)font->line_height + ink_bottom;
+  bool vertical_ink_inside = ink_top >= 0 &&
+                              ink_bottom <= (int)font->line_height &&
+                              final_ink_bottom <= max_h;
+  bool horizontal_ink_inside = one_line
+      ? ink_left >= 0 && ink_right <= max_w
+      : min_left_overhang >= 0 &&
+            size.x + max_right_overhang <= max_w;
+  return size.x <= max_w && size.y <= max_h && vertical_ink_inside &&
+         horizontal_ink_inside;
 }
 
 static ny_physical_fit ny_physical_fit_of(const tk_pending_interaction *p,
@@ -506,7 +523,7 @@ static ny_physical_fit ny_physical_fit_of(const tk_pending_interaction *p,
       return fit;
     }
     if (!p->has_title ||
-        !ny_text_fits(p->title, &plex_body_27, 392, 32, true)) return fit;
+        !ny_text_fits(p->title, &plex_body_27, 392, 34, true)) return fit;
     if (p->has_subtitle &&
         !ny_text_fits(p->subtitle, &plex_ui_16, 392, 20, true)) return fit;
     fit.private_fallback = false;
@@ -764,7 +781,7 @@ static void create_needs_you(lv_obj_t *app_root) {
   v->q_rec = ny_text(v->q_card, &plex_ui_14, COL_CLAUDE, 20, 14, 392, 1, L);
   lv_label_set_text(v->q_rec, "CLAUDE RECOMMENDS");
   v->q_title = ny_text(v->q_card, &plex_body_27, COL_WHITE, 20, 34, 392, 0, L);
-  lv_obj_set_height(v->q_title, 32);
+  lv_obj_set_height(v->q_title, 34);
   v->q_sub = ny_text(v->q_card, &plex_ui_16, COL_MUTED, 20, 70, 392, 0, L);
   lv_obj_set_height(v->q_sub, 20);
   v->q_footer = ny_text(v->q_group, &plex_ui_14, COL_DIM, 0, 440, 480, 1, C);
@@ -783,8 +800,8 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_obj_set_style_radius(v->p_chip, 7, 0);
   v->p_chip_lbl = label(v->p_chip, &plex_ui_14, COL_MUTED);
   lv_obj_center(v->p_chip_lbl);
-  v->p_cmd = ny_text(v->p_group, &plex_mono_40, COL_WHITE, 24, 174, 432, 0, L);
-  lv_obj_set_height(v->p_cmd, 62); /* ends y236: eight clear px before y244 */
+  v->p_cmd = ny_text(v->p_group, &plex_mono_40, COL_WHITE, 24, 182, 432, 0, L);
+  lv_obj_set_height(v->p_cmd, 62); /* ends y244: eight clear px before y252 */
 
   /* -- Shared buttons: APPROVE always filled, DENY the one restrained red -- */
   v->approve = ny_button(v->root, "APPROVE", &plex_attention_25, COL_BLACK,

@@ -286,8 +286,8 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (s_first_start) { s_first_start = false; return; } /* nättasken sköter första */
     if (!atomic_load(&s_sta_paused)) esp_wifi_connect();
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-    tg_wifi_signal_event(&s_wifi_signal, 0);
     xEventGroupClearBits(s_net_events, WIFI_GOT_IP);
+    tg_wifi_signal_event(&s_wifi_signal, 0);
     int reason = ((wifi_event_sta_disconnected_t *)data)->reason;
     wifi_note_reason(reason);
     char ssid[TG_WIFI_SSID_CAP];
@@ -315,6 +315,7 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (!atomic_load(&s_sta_paused)) esp_wifi_connect();
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
     /* GOT_IP is enough to say connected even before the first RSSI sample. */
+    xEventGroupSetBits(s_net_events, WIFI_GOT_IP);
     tg_wifi_signal_event(&s_wifi_signal, 1);
     char ssid[TG_WIFI_SSID_CAP];
     wifi_copy_current_ssid(ssid, sizeof ssid);
@@ -328,7 +329,6 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
      * blob på 600 byte — dels blockerar en flashskrivning event-loopen
      * (cachen suspenderas), dels ryms arrayen illa på dess lilla stack.
      * Nätvakten gör det i stället, på sin egen. */
-    xEventGroupSetBits(s_net_events, WIFI_GOT_IP);
   }
 }
 

@@ -14,6 +14,7 @@ agent_monitor = (root / "components/app_tokens/agent_monitor.c").read_text(
 target_main = (root / "main/main.c").read_text(encoding="utf-8")
 sim_main = (root / "sim/main.c").read_text(encoding="utf-8")
 platform_header = (root / "platform/torget.h").read_text(encoding="utf-8")
+wifi_state_header = (root / "main/wifi_signal_state.h").read_text(encoding="utf-8")
 
 # Scaling a dynamic label makes LVGL render the complete label into an
 # unsliceable ARGB transform layer.  The 436 px hero labels can then request
@@ -73,9 +74,22 @@ assert "ny_physical_fit_of" in agent_monitor
 assert agent_monitor.count("ny_physical_fit_of(p") >= 3
 assert "lv_font_get_glyph_dsc" in agent_monitor
 assert "300, 68" in agent_monitor
-assert "392, 32" in agent_monitor
+assert "392, 34" in agent_monitor
 assert "392, 20" in agent_monitor
 assert "432, 62" in agent_monitor
+assert "24, 182, 432" in agent_monitor
 assert "payoff_provider" in agent_monitor
+
+# Connectivity becomes public only after the EventGroup and compact signal
+# state agree; readers can never observe bars contradicting WIFI_GOT_IP.
+disconnect = target_main[target_main.index("WIFI_EVENT_STA_DISCONNECTED"):
+                         target_main.index("IP_EVENT_STA_GOT_IP")]
+got_ip = target_main[target_main.index("IP_EVENT_STA_GOT_IP"):
+                     target_main.index("/* Setupfönstrets krokar")]
+assert disconnect.index("xEventGroupClearBits") < disconnect.index(
+    "tg_wifi_signal_event")
+assert got_ip.index("xEventGroupSetBits") < got_ip.index(
+    "tg_wifi_signal_event")
+assert "TG_WIFI_SIGNAL_TERMINAL_GENERATION" in wifi_state_header
 
 print("OK: VibePulse labels and shared Needs You tree stay allocation-safe")
