@@ -17,6 +17,7 @@ interaction = read("docs/interaction-relay.md")
 worker = read("tools/interaction-relay/README.md")
 tokenserver = read("tools/tokenserver/README.md")
 setup = read("docs/agent-setup.md")
+secrets_example = read("secrets.h.example")
 runner = read("test/run.sh")
 workflow = read(".github/workflows/ci.yml")
 all_guides = "\n".join((readme, interaction, worker, tokenserver, setup))
@@ -85,6 +86,9 @@ assert "numbers transport never carries activity" in relay
 assert "docs/interaction-relay.md" in relay
 assert "--publish" in tokenserver and "numbers-only" in tokenserver
 assert "--interaction-relay" in tokenserver and "E2E ciphertext" in tokenserver
+assert "tools/vibepulse_setup.py relay install" in secrets_example
+assert "tools/vibepulse_setup.py relay setup" not in secrets_example
+assert "separata krypterade interaktionsreläet" in secrets_example
 
 for test_name in (
     "test_interaction_relay_boundary.py", "test_interaction_relay_docs.py",
