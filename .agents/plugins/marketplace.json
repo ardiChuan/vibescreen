@@ -8,7 +8,7 @@
       "name": "vibepulse",
       "source": {
         "source": "local",
-        "path": "./plugins/vibepulse"
+        "path": "./.agents/plugins/plugins/vibepulse"
       },
       "policy": {
         "installation": "AVAILABLE",

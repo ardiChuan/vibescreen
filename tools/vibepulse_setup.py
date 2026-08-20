@@ -79,7 +79,7 @@ def plan_codex_install(
                   "mcp_server.py")
     return [
         [codex_path, "plugin", "marketplace", "add",
-         str(marketplace_root)],
+         str(root)],
         [codex_path, "plugin", "add",
          f"vibepulse@{marketplace_name}"],
         [codex_path, "mcp", "remove", "vibepulse"],
@@ -318,7 +318,7 @@ def _plugin_installed(text: str) -> bool:
                item.get("pluginId") == "vibepulse@torget"]
     return len(matches) == 1 and all((
         matches[0].get("name") == "vibepulse",
-        matches[0].get("marketplace") == "torget",
+        matches[0].get("marketplaceName") == "torget",
         matches[0].get("installed") is True,
         matches[0].get("enabled") is True,
     ))

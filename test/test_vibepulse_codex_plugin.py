@@ -248,7 +248,7 @@ def plugin_listing(*, plugin_id="vibepulse@torget", name="vibepulse",
         "installed": [{
             "pluginId": plugin_id,
             "name": name,
-            "marketplace": marketplace,
+            "marketplaceName": marketplace,
             "installed": installed,
             "enabled": enabled,
         }],
@@ -1015,13 +1015,21 @@ class PluginPackageTests(unittest.TestCase):
             marketplace["interface"], {"displayName": "Torget Plugins"})
         self.assertEqual(marketplace["plugins"], [{
             "name": "vibepulse",
-            "source": {"source": "local", "path": "./plugins/vibepulse"},
+            "source": {
+                "source": "local",
+                "path": "./.agents/plugins/plugins/vibepulse",
+            },
             "policy": {
                 "installation": "AVAILABLE",
                 "authentication": "ON_INSTALL",
             },
             "category": "Developer Tools",
         }])
+        source = marketplace["plugins"][0]["source"]["path"]
+        self.assertEqual(
+            (ROOT / source).resolve(),
+            (ROOT / ".agents/plugins/plugins/vibepulse").resolve())
+        self.assertTrue((ROOT / source / ".codex-plugin/plugin.json").is_file())
         self.assertNotIn("products", marketplace["plugins"][0]["policy"])
 
     def test_manifest_has_real_supported_metadata_and_no_phantom_assets(self):
@@ -1116,7 +1124,7 @@ class SetupPlanTests(unittest.TestCase):
             marketplace_name="torget")
         self.assertEqual(commands, [
             ["/codex", "plugin", "marketplace", "add",
-             "/repo with spaces/.agents/plugins"],
+             "/repo with spaces"],
             ["/codex", "plugin", "add", "vibepulse@torget"],
             ["/codex", "mcp", "remove", "vibepulse"],
             ["/codex", "mcp", "add", "vibepulse", "--",
@@ -1124,6 +1132,8 @@ class SetupPlanTests(unittest.TestCase):
              "/repo with spaces/.agents/plugins/plugins/vibepulse/scripts/"
              "mcp_server.py"],
         ])
+        self.assertNotEqual(
+            commands[0][-1], "/repo with spaces/.agents/plugins")
 
     def test_provider_choices_and_detail_are_separate_explicit_opt_ins(self):
         setup = load_setup()
