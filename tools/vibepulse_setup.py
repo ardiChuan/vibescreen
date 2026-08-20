@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -31,16 +33,28 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MARKETPLACE_NAME = "torget"
 TOKEN_SERVER_URL = "http://127.0.0.1:8737/"
 MAX_DIAGNOSTIC_BYTES = 16 * 1024
+MAX_COMMAND_OUTPUT_BYTES = 16 * 1024
 COMMAND_TIMEOUT_SECONDS = 15
 NETWORK_TIMEOUT_SECONDS = 2
 _AUTO = object()
 
 _KNOWN_ABSENT = {
-    ("mcp", "remove"): "MCP server 'vibepulse' is not configured",
-    ("plugin", "remove"): "plugin 'vibepulse@torget' is not installed",
-    ("plugin", "marketplace", "remove"):
-        "marketplace 'torget' is not configured",
+    ("plugin", "marketplace", "remove", "torget"): re.compile(
+        r"\AError: marketplace `torget` is not configured or installed\Z"),
 }
+_CODEX_VERSION = re.compile(
+    r"\A(?:codex|codex-cli) [0-9]+\.[0-9]+\.[0-9]+"
+    r"(?:-[0-9A-Za-z.-]+)?\n?\Z")
+_PYTHON_PROBE = (
+    "import sys; print('vibepulse-python-3.11+' "
+    "if sys.version_info >= (3, 11) else 'unsupported')")
+
+
+@dataclass(frozen=True)
+class _CommandResult:
+    returncode: int
+    stdout: str
+    stderr: str
 
 
 def default_config_path() -> Path:
@@ -147,29 +161,53 @@ def _chosen_config(providers: str, detail: bool) -> VibePulseConfig:
     )
 
 
-def _save_choice(path: Path, config: VibePulseConfig) -> None:
-    with config_lock(path):
-        # Strictly validate existing state before replacing the three owned
-        # switches. This refuses malformed or symlinked state fail-closed.
-        load_config(path)
-        save_config(path, config)
+def _disabled_config(saved: VibePulseConfig, target: str) -> VibePulseConfig:
+    return VibePulseConfig(
+        claude_interactions=(saved.claude_interactions
+                             if target == "codex" else False),
+        codex_interactions=(saved.codex_interactions
+                            if target == "claude" else False),
+        interaction_detail=saved.interaction_detail,
+    )
 
 
 def _disable(path: Path, target: str) -> None:
     with config_lock(path):
         saved = load_config(path)
-        save_config(path, VibePulseConfig(
-            claude_interactions=(saved.claude_interactions
-                                 if target == "codex" else False),
-            codex_interactions=(saved.codex_interactions
-                                if target == "claude" else False),
-            interaction_detail=saved.interaction_detail,
-        ))
+        save_config(path, _disabled_config(saved, target))
 
 
 def _known_absent(argv: Sequence[str], stderr: str) -> bool:
-    command = tuple(argv[1:-1])
-    return _KNOWN_ABSENT.get(command) == stderr.strip()
+    command = tuple(argv[1:])
+    pattern = _KNOWN_ABSENT.get(command)
+    if pattern is None:
+        return False
+    normalized = stderr.replace("\r\n", "\n")
+    if normalized.endswith("\n"):
+        normalized = normalized[:-1]
+    return pattern.fullmatch(normalized) is not None
+
+
+def _invoke(argv: Sequence[str], run: Callable[..., object]) -> _CommandResult | None:
+    try:
+        completed = run(
+            [str(value) for value in argv], capture_output=True, text=True,
+            timeout=COMMAND_TIMEOUT_SECONDS, check=False, shell=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    returncode = getattr(completed, "returncode", None)
+    stdout = getattr(completed, "stdout", None)
+    stderr = getattr(completed, "stderr", None)
+    if (type(returncode) is not int or not isinstance(stdout, str) or
+            not isinstance(stderr, str)):
+        return None
+    try:
+        if (len(stdout.encode("utf-8")) > MAX_COMMAND_OUTPUT_BYTES or
+                len(stderr.encode("utf-8")) > MAX_COMMAND_OUTPUT_BYTES):
+            return None
+    except UnicodeError:
+        return None
+    return _CommandResult(returncode, stdout, stderr)
 
 
 def _run_commands(
@@ -177,17 +215,12 @@ def _run_commands(
         stdout, *, allow_absent: bool) -> bool:
     for argv_value in commands:
         argv = [str(value) for value in argv_value]
-        try:
-            completed = run(
-                argv, capture_output=True, text=True,
-                timeout=COMMAND_TIMEOUT_SECONDS, check=False, shell=False)
-        except (OSError, subprocess.SubprocessError):
+        completed = _invoke(argv, run)
+        if completed is None:
             print(f"FIX Command failed: {' '.join(argv[1:])}", file=stdout)
             return False
-        returncode = getattr(completed, "returncode", 1)
-        stderr = getattr(completed, "stderr", "") or ""
-        if returncode != 0 and not (
-                allow_absent and _known_absent(argv, stderr)):
+        if completed.returncode != 0 and not (
+                allow_absent and _known_absent(argv, completed.stderr)):
             print(f"FIX Command failed: {' '.join(argv[1:])}", file=stdout)
             return False
     return True
@@ -202,31 +235,114 @@ def _print_status(config: VibePulseConfig, stdout) -> None:
     print(f"Detail: {switch(config.interaction_detail)}", file=stdout)
 
 
-def _command_output(
-        argv: list[str], run: Callable[..., object]) -> tuple[bool, str]:
+def _reject_json_constant(value):
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def _strict_json(text: str):
+    if len(text.encode("utf-8")) > MAX_COMMAND_OUTPUT_BYTES:
+        raise ValueError("JSON output is too large")
+    return json.loads(
+        text, parse_constant=_reject_json_constant,
+        object_pairs_hook=_unique_json_object)
+
+
+def _expected_mcp_item(repo_root: Path, python: Path) -> dict:
+    script = (Path(repo_root).resolve() / ".agents" / "plugins" / "plugins" /
+              "vibepulse" / "scripts" / "mcp_server.py")
+    return {
+        "name": "vibepulse",
+        "enabled": True,
+        "disabled_reason": None,
+        "transport": {
+            "type": "stdio",
+            "command": str(Path(python).resolve()),
+            "args": [str(script)],
+            "env": None,
+            "env_vars": [],
+            "cwd": None,
+        },
+        "startup_timeout_sec": None,
+        "tool_timeout_sec": None,
+        "auth_status": "unsupported",
+    }
+
+
+def _mcp_listing(text: str) -> list[dict] | None:
     try:
-        completed = run(
-            argv, capture_output=True, text=True,
-            timeout=COMMAND_TIMEOUT_SECONDS, check=False, shell=False)
-    except (OSError, subprocess.SubprocessError):
-        return False, ""
-    if getattr(completed, "returncode", 1) != 0:
-        return False, ""
-    return True, getattr(completed, "stdout", "") or ""
+        value = _strict_json(text)
+    except (TypeError, ValueError, json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(value, list) or any(not isinstance(item, dict)
+                                          for item in value):
+        return None
+    return value
+
+
+def _owned_mcp_state(
+        text: str, repo_root: Path, python: Path) -> bool | None:
+    listing = _mcp_listing(text)
+    if listing is None:
+        return None
+    named = [item for item in listing if item.get("name") == "vibepulse"]
+    if not named:
+        return False
+    if len(named) != 1 or named[0] != _expected_mcp_item(repo_root, python):
+        return None
+    return True
+
+
+def _plugin_installed(text: str) -> bool:
+    try:
+        value = _strict_json(text)
+    except (TypeError, ValueError, json.JSONDecodeError, UnicodeError):
+        return False
+    if not isinstance(value, dict):
+        return False
+    installed = value.get("installed")
+    available = value.get("available")
+    if (not isinstance(installed, list) or
+            not isinstance(available, list) or
+            any(not isinstance(item, dict) for item in installed)):
+        return False
+    matches = [item for item in installed if isinstance(item, dict) and
+               item.get("pluginId") == "vibepulse@torget"]
+    return len(matches) == 1 and all((
+        matches[0].get("name") == "vibepulse",
+        matches[0].get("marketplace") == "torget",
+        matches[0].get("installed") is True,
+        matches[0].get("enabled") is True,
+    ))
 
 
 def _doctor(
         config: VibePulseConfig, *, python: Path | None, codex: Path | None,
-        run: Callable[..., object], urlopen: Callable[..., object], stdout,
+        repo_root: Path, run: Callable[..., object],
+        urlopen: Callable[..., object], stdout,
         ) -> bool:
     fixes = False
 
-    if python is None or not Path(python).is_file():
+    python_ok = False
+    if python is not None:
+        probe = _invoke([str(Path(python).resolve()), "-c", _PYTHON_PROBE], run)
+        python_ok = (probe is not None and probe.returncode == 0 and
+                     probe.stdout == "vibepulse-python-3.11+\n")
+    if not python_ok:
         print("FIX Python executable: install Python 3.11 or newer", file=stdout)
         fixes = True
     else:
         print("PASS Python executable", file=stdout)
 
+    codex_ok = False
     if not config.codex_interactions:
         print("OFF Codex executable: provider intentionally disabled",
               file=stdout)
@@ -234,42 +350,51 @@ def _doctor(
         print("FIX Codex executable: install or expose codex on PATH", file=stdout)
         fixes = True
     else:
-        print("PASS Codex executable", file=stdout)
+        probe = _invoke([str(Path(codex).resolve()), "--version"], run)
+        codex_ok = (probe is not None and probe.returncode == 0 and
+                    _CODEX_VERSION.fullmatch(probe.stdout) is not None)
+        if codex_ok:
+            print("PASS Codex executable", file=stdout)
+        else:
+            print("FIX Codex executable: candidate is not Codex", file=stdout)
+            fixes = True
 
     if not config.codex_interactions:
         print("OFF Codex plugin: provider intentionally disabled", file=stdout)
         print("OFF Codex MCP: provider intentionally disabled", file=stdout)
-        print("OFF Hook review: provider intentionally disabled", file=stdout)
-    elif codex is None:
+    elif not codex_ok or codex is None or python is None:
         print("FIX Codex plugin: cannot inspect without Codex", file=stdout)
         print("FIX Codex MCP: cannot inspect without Codex", file=stdout)
-        print("FIX Hook review: cannot inspect without Codex", file=stdout)
         fixes = True
     else:
         codex_text = str(Path(codex).resolve())
-        plugin_ok, plugin_output = _command_output(
-            [codex_text, "plugin", "list"], run)
-        if plugin_ok and "vibepulse" in plugin_output.lower():
+        plugin_result = _invoke(
+            [codex_text, "plugin", "list", "--json"], run)
+        plugin_ok = (plugin_result is not None and
+                     plugin_result.returncode == 0 and
+                     _plugin_installed(plugin_result.stdout))
+        if plugin_ok:
             print("PASS Codex plugin", file=stdout)
         else:
             print("FIX Codex plugin: install vibepulse@torget", file=stdout)
             fixes = True
 
-        mcp_ok, mcp_output = _command_output(
-            [codex_text, "mcp", "list"], run)
-        if mcp_ok and "vibepulse" in mcp_output.lower():
+        mcp_result = _invoke([codex_text, "mcp", "list", "--json"], run)
+        mcp_ok = (mcp_result is not None and mcp_result.returncode == 0 and
+                  _owned_mcp_state(
+                      mcp_result.stdout, repo_root, python) is True)
+        if mcp_ok:
             print("PASS Codex MCP", file=stdout)
         else:
             print("FIX Codex MCP: register the local bridge", file=stdout)
             fixes = True
 
-        if (plugin_ok and "vibepulse" in plugin_output.lower() and
-                "trusted" in plugin_output.lower()):
-            print("PASS Hook review", file=stdout)
-        else:
-            print("FIX Hook review: inspect and trust exact commands in /hooks",
-                  file=stdout)
-            fixes = True
+    if config.codex_interactions:
+        print("FIX hooks: open /hooks and review VibePulse; trust status is "
+              "not machine-readable", file=stdout)
+        fixes = True
+    else:
+        print("OFF Hook review: provider intentionally disabled", file=stdout)
 
     if not (config.claude_interactions or config.codex_interactions):
         print("OFF Tokenserver: all providers intentionally disabled",
@@ -280,19 +405,28 @@ def _doctor(
                 TOKEN_SERVER_URL, headers={"Accept": "application/json"})
             with urlopen(request, timeout=NETWORK_TIMEOUT_SECONDS) as response:
                 raw = response.read(MAX_DIAGNOSTIC_BYTES + 1)
-            if len(raw) > MAX_DIAGNOSTIC_BYTES:
+            if (not isinstance(raw, bytes) or
+                    len(raw) > MAX_DIAGNOSTIC_BYTES):
                 raise ValueError("oversized diagnostics")
-            payload = json.loads(raw.decode("utf-8", errors="strict"))
+            payload = json.loads(
+                raw.decode("utf-8", errors="strict"),
+                parse_constant=_reject_json_constant,
+                object_pairs_hook=_unique_json_object)
+            if not isinstance(payload, dict):
+                raise ValueError("diagnostics must be an object")
             interactions = payload.get("interactions")
             expected = {
                 "claude": config.claude_interactions,
                 "codex": config.codex_interactions,
                 "detail": config.interaction_detail,
+                "transport": "lan",
             }
             if (payload.get("service") != "torget-tokenserver" or
                     not isinstance(interactions, dict) or
                     any(interactions.get(key) is not value
-                        for key, value in expected.items())):
+                        for key, value in expected.items()
+                        if key != "transport") or
+                    interactions.get("transport") != "lan"):
                 raise ValueError("diagnostics mismatch")
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError,
                 TimeoutError):
@@ -313,6 +447,65 @@ def _resolve_executables(python, codex):
     else:
         codex_path = None if codex is None else Path(codex)
     return python_path, codex_path
+
+
+def _install_transaction(
+        *, path: Path, providers: str, detail: bool, repo_root: Path,
+        python: Path, codex: Path, run: Callable[..., object], stdout) -> bool:
+    """Validate state, mutate Codex, then atomically publish saved routing."""
+    with config_lock(path):
+        load_config(path)
+        target = _chosen_config(providers, detail)
+        codex_text = str(Path(codex).resolve())
+        preflight_argv = [codex_text, "mcp", "list", "--json"]
+        preflight = _invoke(preflight_argv, run)
+        if preflight is None or preflight.returncode != 0:
+            print("FIX Cannot inspect existing Codex MCP registration",
+                  file=stdout)
+            return False
+        owned_before = _owned_mcp_state(
+            preflight.stdout, repo_root, python)
+        if owned_before is None:
+            print("FIX Existing vibepulse MCP is foreign or unreadable; "
+                  "leaving it unchanged", file=stdout)
+            return False
+
+        commands = plan_codex_install(repo_root, python, codex)
+        for index, argv in enumerate(commands):
+            completed = _invoke(argv, run)
+            if completed is not None and completed.returncode == 0:
+                continue
+            if index == len(commands) - 1:
+                if owned_before:
+                    rollback = _invoke(argv, run)
+                    if rollback is not None and rollback.returncode == 0:
+                        print("FIX MCP add failed; previous owned registration "
+                              "restored", file=stdout)
+                    else:
+                        print("FIX MCP add failed; rollback also failed",
+                              file=stdout)
+                else:
+                    print("FIX MCP add failed; no previous registration to "
+                          "restore", file=stdout)
+            else:
+                print(f"FIX Command failed: {' '.join(argv[1:])}", file=stdout)
+            return False
+        save_config(path, target)
+        return True
+
+
+def _uninstall_transaction(
+        *, path: Path, codex: Path, run: Callable[..., object], stdout) -> bool:
+    """Disable Codex only after its owned registrations are removed."""
+    with config_lock(path):
+        saved = load_config(path)
+        target = _disabled_config(saved, "codex")
+        if not _run_commands(
+                plan_codex_uninstall(codex), run, stdout,
+                allow_absent=True):
+            return False
+        save_config(path, target)
+        return True
 
 
 def main(
@@ -338,8 +531,9 @@ def main(
         if args.command == "doctor":
             config = load_config(path)
             return 0 if _doctor(
-                config, python=python_path, codex=codex_path, run=run,
-                urlopen=urlopen, stdout=output) else 1
+                config, python=python_path, codex=codex_path,
+                repo_root=Path(repo_root), run=run, urlopen=urlopen,
+                stdout=output) else 1
 
         if args.command == "disable":
             _disable(path, args.target)
@@ -351,11 +545,9 @@ def main(
             if codex_path is None:
                 print("FIX Codex executable not found", file=output)
                 return 1
-            if not _run_commands(
-                    plan_codex_uninstall(codex_path), run, output,
-                    allow_absent=True):
+            if not _uninstall_transaction(
+                    path=path, codex=codex_path, run=run, stdout=output):
                 return 1
-            _disable(path, "codex")
             print("PASS Removed only VibePulse Codex registration", file=output)
             return 0
 
@@ -369,11 +561,11 @@ def main(
         if codex_path is None or python_path is None:
             print("FIX Python or Codex executable not found", file=output)
             return 1
-        commands = plan_codex_install(
-            Path(repo_root), python_path, codex_path)
-        if not _run_commands(commands, run, output, allow_absent=True):
+        if not _install_transaction(
+                path=path, providers=providers, detail=detail,
+                repo_root=Path(repo_root), python=python_path,
+                codex=codex_path, run=run, stdout=output):
             return 1
-        _save_choice(path, _chosen_config(providers, detail))
         print("PASS Installed the local VibePulse package", file=output)
         print("Review and trust the exact VibePulse commands in Codex /hooks.",
               file=output)
