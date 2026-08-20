@@ -1550,6 +1550,58 @@ class SetupPlanTests(unittest.TestCase):
         else:
             self.assertIsInstance(parsed, list)
 
+    def test_plugin_provenance_requires_exact_unaliased_real_paths(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "repo"
+            plugin = repo / ".agents/plugins/plugins/vibepulse"
+            plugin.mkdir(parents=True)
+            (repo / "spelling").mkdir()
+            (plugin.parent / "spelling").mkdir()
+
+            repo_alias = base / "repo-alias"
+            repo_alias.symlink_to(repo, target_is_directory=True)
+            plugin_alias = base / "plugin-alias"
+            plugin_alias.symlink_to(plugin, target_is_directory=True)
+            parent_alias = base / "parent-alias"
+            parent_alias.symlink_to(base, target_is_directory=True)
+            parent_repo = parent_alias / "repo"
+            parent_plugin = (
+                parent_repo / ".agents/plugins/plugins/vibepulse")
+
+            exact = json.dumps(plugin_listing(repo=repo))
+            self.assertTrue(setup._plugin_installed(exact, repo))
+
+            bad = {
+                "marketplace final symlink": plugin_listing(
+                    repo=repo, marketplace_root=repo_alias),
+                "plugin final symlink": plugin_listing(
+                    repo=repo, plugin_path=plugin_alias),
+                "marketplace parent symlink": plugin_listing(
+                    repo=repo, marketplace_root=parent_repo),
+                "plugin parent symlink": plugin_listing(
+                    repo=repo, plugin_path=parent_plugin),
+                "marketplace dotdot": plugin_listing(
+                    repo=repo, marketplace_root=repo / "spelling" / ".."),
+                "plugin dotdot": plugin_listing(
+                    repo=repo,
+                    plugin_path=plugin.parent / "spelling" / ".." /
+                    "vibepulse"),
+                "marketplace relative": plugin_listing(
+                    repo=repo, marketplace_root=os.path.relpath(repo, ROOT)),
+                "plugin relative": plugin_listing(
+                    repo=repo, plugin_path=os.path.relpath(plugin, ROOT)),
+                "marketplace trailing separator": plugin_listing(
+                    repo=repo, marketplace_root=str(repo) + os.sep),
+                "plugin trailing separator": plugin_listing(
+                    repo=repo, plugin_path=str(plugin) + os.sep),
+            }
+            for label, listing in bad.items():
+                with self.subTest(label=label):
+                    self.assertFalse(setup._plugin_installed(
+                        json.dumps(listing), repo))
+
     def test_doctor_rejects_every_plugin_false_green_transcript(self):
         setup = load_setup()
         with tempfile.TemporaryDirectory() as tmp:

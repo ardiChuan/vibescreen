@@ -310,16 +310,31 @@ def _owned_mcp_state(
     return True
 
 
-def _resolved_existing_path(value) -> Path | None:
+def _has_symlink_component(path: Path) -> bool:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def _is_exact_existing_directory(value, expected: Path) -> bool:
     if not isinstance(value, str) or not value:
-        return None
+        return False
     try:
         candidate = Path(value)
-        if not candidate.is_absolute():
-            return None
-        return candidate.resolve(strict=True)
+        canonical_expected = Path(expected).resolve(strict=True)
+        return all((
+            candidate.is_absolute(),
+            value == str(candidate),
+            value == str(canonical_expected),
+            candidate.is_dir(),
+            not _has_symlink_component(candidate),
+            candidate.resolve(strict=True) == canonical_expected,
+        ))
     except (OSError, RuntimeError, ValueError):
-        return None
+        return False
 
 
 def _plugin_installed(text: str, repo_root: Path) -> bool:
@@ -356,15 +371,17 @@ def _plugin_installed(text: str, repo_root: Path) -> bool:
     try:
         expected_root = Path(repo_root).resolve(strict=True)
         expected_plugin = (expected_root / ".agents" / "plugins" / "plugins" /
-                           "vibepulse").resolve(strict=True)
+                           "vibepulse")
+        if expected_plugin.resolve(strict=True) != expected_plugin:
+            return False
     except (OSError, RuntimeError, ValueError):
         return False
     return all((
         expected_root.is_dir(),
         expected_plugin.is_dir(),
-        _resolved_existing_path(marketplace_source.get("source")) ==
-        expected_root,
-        _resolved_existing_path(source.get("path")) == expected_plugin,
+        _is_exact_existing_directory(
+            marketplace_source.get("source"), expected_root),
+        _is_exact_existing_directory(source.get("path"), expected_plugin),
     ))
 
 
