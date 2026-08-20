@@ -2,6 +2,8 @@ import dataclasses
 import json
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +12,7 @@ from unittest import mock
 from tools.tokenserver.vibepulse_config import (
     ConfigError,
     VibePulseConfig,
+    config_lock,
     load,
     load_config,
     save,
@@ -91,6 +94,72 @@ class SavedConfigTests(unittest.TestCase):
 
         with self.assertRaises(ConfigError):
             load_config(self.path)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX symbolic links")
+    def test_symlink_is_rejected_without_o_nofollow_support(self):
+        target = Path(self.tmp.name) / "target.json"
+        target.write_text(
+            '{"codex_interactions":true}', encoding="utf-8")
+        self.path.parent.mkdir()
+        self.path.symlink_to(target)
+
+        with mock.patch.object(os, "O_NOFOLLOW", 0, create=True):
+            with self.assertRaises(ConfigError):
+                load_config(self.path)
+
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {
+            "codex_interactions": True,
+        })
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(os, "mkfifo"), "POSIX FIFOs")
+    def test_fifo_without_writer_is_rejected_without_blocking(self):
+        self.path.parent.mkdir()
+        os.mkfifo(self.path, 0o600)
+        program = (
+            "from pathlib import Path; "
+            "from tools.tokenserver.vibepulse_config import "
+            "ConfigError, load_config; "
+            "\ntry: load_config(Path(__import__('sys').argv[1]))"
+            "\nexcept ConfigError: raise SystemExit(0)"
+            "\nraise SystemExit(1)"
+        )
+
+        completed = subprocess.run(
+            [sys.executable, "-c", program, str(self.path)],
+            cwd=Path(__file__).resolve().parents[2],
+            timeout=2,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0)
+
+    def test_config_lock_is_private_and_released_after_an_error(self):
+        with self.assertRaisesRegex(RuntimeError, "inside transaction"):
+            with config_lock(self.path):
+                mode = stat.S_IMODE(
+                    self.path.with_name(
+                        f".{self.path.name}.lock").stat().st_mode)
+                if os.name == "posix":
+                    self.assertEqual(mode, 0o600)
+                raise RuntimeError("inside transaction")
+
+        with config_lock(self.path):
+            save_config(self.path, VibePulseConfig(codex_interactions=True))
+        self.assertTrue(load_config(self.path).codex_interactions)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX symbolic links")
+    def test_config_lock_never_follows_a_symlink(self):
+        self.path.parent.mkdir()
+        target = Path(self.tmp.name) / "unrelated"
+        target.write_bytes(b"do not touch")
+        self.path.with_name(f".{self.path.name}.lock").symlink_to(target)
+
+        with self.assertRaises(ConfigError):
+            with config_lock(self.path):
+                self.fail("unsafe lock was acquired")
+
+        self.assertEqual(target.read_bytes(), b"do not touch")
 
     @unittest.skipUnless(os.name == "posix", "POSIX file kinds")
     def test_non_regular_config_path_is_rejected(self):

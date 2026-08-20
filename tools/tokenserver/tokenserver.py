@@ -83,6 +83,7 @@ if __package__:
     from .vibepulse_config import (
         ConfigError,
         VibePulseConfig,
+        config_lock,
         load_config,
         save_config,
     )
@@ -105,6 +106,7 @@ else:  # direktkörning: python3 tools/tokenserver/tokenserver.py
     from vibepulse_config import (
         ConfigError,
         VibePulseConfig,
+        config_lock,
         load_config,
         save_config,
     )
@@ -2627,40 +2629,46 @@ def _build_arg_parser():
 
 
 def _resolve_interaction_config(args, path=None):
-    """Apply explicit tri-state CLI choices over saved switches and persist."""
+    """Atomically merge explicit CLI choices into the saved switches.
+
+    Explicit choices are persisted before later server startup (and therefore
+    remain saved even if that process subsequently cannot bind its port).
+    """
     config_path = (Path(path) if path is not None else
                    _state_dir() / "config.json")
-    invalid_saved = False
-    try:
-        saved = load_config(config_path)
-    except ConfigError:
-        log.error("ogiltig VibePulse-konfiguration i %s — sparade "
-                  "interaktioner stängs av", config_path, exc_info=True)
-        saved = VibePulseConfig()
-        invalid_saved = True
-    claude_override = True if args.interactions else args.claude_interactions
+    with config_lock(config_path):
+        invalid_saved = False
+        try:
+            saved = load_config(config_path)
+        except ConfigError:
+            log.error("ogiltig VibePulse-konfiguration i %s — sparade "
+                      "interaktioner stängs av", config_path, exc_info=True)
+            saved = VibePulseConfig()
+            invalid_saved = True
+        claude_override = (True if args.interactions else
+                           args.claude_interactions)
 
-    def chosen(saved_value, override):
-        return saved_value if override is None else override
+        def chosen(saved_value, override):
+            return saved_value if override is None else override
 
-    resolved = VibePulseConfig(
-        claude_interactions=chosen(
-            saved.claude_interactions, claude_override),
-        codex_interactions=chosen(
-            saved.codex_interactions, args.codex_interactions),
-        interaction_detail=chosen(
-            saved.interaction_detail, args.interaction_detail),
-    )
-    explicit = (claude_override is not None or
-                args.codex_interactions is not None or
-                args.interaction_detail is not None)
-    if explicit:
-        # An explicit, valid command-line choice may repair a bad saved file;
-        # without one the bad file is left untouched and safely disabled.
-        save_config(config_path, resolved)
-    elif invalid_saved:
-        return VibePulseConfig()
-    return resolved
+        resolved = VibePulseConfig(
+            claude_interactions=chosen(
+                saved.claude_interactions, claude_override),
+            codex_interactions=chosen(
+                saved.codex_interactions, args.codex_interactions),
+            interaction_detail=chosen(
+                saved.interaction_detail, args.interaction_detail),
+        )
+        explicit = (claude_override is not None or
+                    args.codex_interactions is not None or
+                    args.interaction_detail is not None)
+        if explicit:
+            # An explicit valid choice may repair a bad saved file. Keeping
+            # this save under the same lock as the read prevents lost merges.
+            save_config(config_path, resolved)
+        elif invalid_saved:
+            return VibePulseConfig()
+        return resolved
 
 
 def _configure_interactions(config, interaction_timeout, audit=None):

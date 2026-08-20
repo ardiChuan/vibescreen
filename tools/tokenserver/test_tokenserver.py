@@ -5,6 +5,7 @@ import io
 import inspect
 import json
 import logging
+import multiprocessing
 import socket
 import tempfile
 import threading
@@ -2969,6 +2970,75 @@ class ArgumentParsingTests(unittest.TestCase):
                 ]), path=path)
             self.assertEqual(all_off, VibePulseConfig())
             self.assertEqual(load_config(path), all_off)
+
+    @unittest.skipUnless(os.name == "posix", "forked lock regression")
+    def test_concurrent_independent_enables_merge_without_lost_update(self):
+        parser = tokenserver._build_arg_parser()
+        context = multiprocessing.get_context("fork")
+        first_loaded = context.Event()
+        second_loaded = context.Event()
+        second_saved = context.Event()
+
+        with tempfile.TemporaryDirectory(prefix="interaction-merge-") as tmp:
+            path = Path(tmp) / "config.json"
+
+            def resolve(role, cli):
+                real_load = load_config
+                real_save = save_config
+                saw_concurrent_load = False
+
+                def synchronized_load(config_path):
+                    nonlocal saw_concurrent_load
+                    loaded = real_load(config_path)
+                    if role == "claude":
+                        first_loaded.set()
+                        saw_concurrent_load = second_loaded.wait(1.0)
+                    else:
+                        second_loaded.set()
+                    return loaded
+
+                def ordered_save(config_path, config):
+                    if role == "claude" and saw_concurrent_load:
+                        if not second_saved.wait(2.0):
+                            raise RuntimeError("second config save did not finish")
+                    real_save(config_path, config)
+                    if role == "codex":
+                        second_saved.set()
+
+                with mock.patch.object(
+                        tokenserver, "load_config",
+                        side_effect=synchronized_load), mock.patch.object(
+                            tokenserver, "save_config",
+                            side_effect=ordered_save):
+                    tokenserver._resolve_interaction_config(
+                        parser.parse_args([cli]), path=path)
+
+            claude = context.Process(
+                target=resolve, args=("claude", "--claude-interactions"))
+            codex = context.Process(
+                target=resolve, args=("codex", "--codex-interactions"))
+
+            def stop_children():
+                for child in (claude, codex):
+                    if child.is_alive():
+                        child.terminate()
+                    if child.pid is not None:
+                        child.join()
+
+            self.addCleanup(stop_children)
+            claude.start()
+            self.assertTrue(first_loaded.wait(2.0))
+            codex.start()
+            claude.join(5.0)
+            codex.join(5.0)
+            stop_children()
+
+            self.assertEqual(claude.exitcode, 0)
+            self.assertEqual(codex.exitcode, 0)
+            self.assertEqual(load_config(path), VibePulseConfig(
+                claude_interactions=True,
+                codex_interactions=True,
+            ))
 
     def test_legacy_alias_conflicts_clearly_with_explicit_claude_opt_out(self):
         parser = tokenserver._build_arg_parser()

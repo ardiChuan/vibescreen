@@ -6,9 +6,20 @@ import json
 import os
 import stat
 import tempfile
+import threading
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Tuple
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # macOS/Linux
+    msvcrt = None
 
 
 _FIELDS = frozenset({
@@ -17,6 +28,8 @@ _FIELDS = frozenset({
     "interaction_detail",
 })
 _MAX_CONFIG_BYTES = 16 * 1024
+_PROCESS_LOCKS = {}
+_PROCESS_LOCKS_GUARD = threading.Lock()
 
 
 class ConfigError(ValueError):
@@ -47,20 +60,47 @@ def _strict_object(pairs: Iterable[Tuple[str, object]]) -> dict:
     return result
 
 
+def _same_file(first, second) -> bool:
+    try:
+        return os.path.samestat(first, second)
+    except (AttributeError, OSError):
+        return (getattr(first, "st_dev", None),
+                getattr(first, "st_ino", None)) == (
+                    getattr(second, "st_dev", None),
+                    getattr(second, "st_ino", None))
+
+
+def _safe_open_existing(path: Path) -> int:
+    """Open one unchanged, non-symlink path without blocking on file kinds."""
+    before = os.lstat(path)
+    if stat.S_ISLNK(before.st_mode):
+        raise ConfigError("configuration path must not be a symbolic link")
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
+    try:
+        descriptor = os.fstat(fd)
+        after = os.lstat(path)
+        if (stat.S_ISLNK(after.st_mode) or
+                not _same_file(before, descriptor) or
+                not _same_file(descriptor, after)):
+            raise ConfigError("configuration path changed while opening")
+        if not stat.S_ISREG(descriptor.st_mode):
+            raise ConfigError("configuration path must be a regular file")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def load_config(path: Path) -> VibePulseConfig:
     """Load a strict config file; a genuinely missing file means all off."""
     path = Path(path)
-    flags = os.O_RDONLY
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
     fd = None
     try:
-        fd = os.open(path, flags)
-        metadata = os.fstat(fd)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ConfigError("configuration path must be a regular file")
+        fd = _safe_open_existing(path)
         with os.fdopen(fd, "rb") as handle:
             fd = None
             raw_bytes = handle.read(_MAX_CONFIG_BYTES + 1)
@@ -96,6 +136,96 @@ def load_config(path: Path) -> VibePulseConfig:
         raise ConfigError("configuration values must be booleans")
     return VibePulseConfig(**payload)
 
+
+def _config_lock_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+def _process_lock(path: Path) -> threading.RLock:
+    key = os.path.abspath(os.fspath(path))
+    with _PROCESS_LOCKS_GUARD:
+        lock = _PROCESS_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PROCESS_LOCKS[key] = lock
+        return lock
+
+
+def _open_lock_file(path: Path) -> int:
+    directory = path.parent
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name == "posix":
+        os.chmod(directory, 0o700)
+    try:
+        before = os.lstat(path)
+    except FileNotFoundError:
+        before = None
+    if before is not None and stat.S_ISLNK(before.st_mode):
+        raise ConfigError("configuration lock must not be a symbolic link")
+    flags = os.O_RDWR | os.O_CREAT
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        descriptor = os.fstat(fd)
+        after = os.lstat(path)
+        if (not stat.S_ISREG(descriptor.st_mode) or
+                stat.S_ISLNK(after.st_mode) or
+                (before is not None and
+                 not _same_file(before, descriptor)) or
+                not _same_file(descriptor, after)):
+            raise ConfigError("configuration lock path is not safe")
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _acquire_file_lock(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    elif msvcrt is not None:
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\0")
+            os.fsync(fd)
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+
+
+def _release_file_lock(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    elif msvcrt is not None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+
+@contextmanager
+def config_lock(path: Path):
+    """Serialize one config transaction in this process and across peers."""
+    lock_path = _config_lock_path(Path(path))
+    with _process_lock(lock_path):
+        try:
+            fd = _open_lock_file(lock_path)
+            _acquire_file_lock(fd)
+        except ConfigError:
+            raise
+        except OSError as exc:
+            try:
+                os.close(fd)
+            except (UnboundLocalError, OSError):
+                pass
+            raise ConfigError("cannot lock configuration") from exc
+        try:
+            yield
+        finally:
+            try:
+                _release_file_lock(fd)
+            finally:
+                os.close(fd)
 
 def save_config(path: Path, config: VibePulseConfig) -> None:
     """Atomically write the public feature switches with private modes."""
