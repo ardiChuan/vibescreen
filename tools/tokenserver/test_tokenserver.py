@@ -1172,6 +1172,13 @@ class CodexLimitLogTests(unittest.TestCase):
                     limits, observed_at=1_800_000_000,
                     now_ts=1_800_000_000))
 
+    def test_30_day_window_is_never_published_as_weekly(self):
+        limits = self._limits(46.0, window_minutes=43200)
+
+        self.assertIsNone(tokenserver._codex_general_observation(
+            limits, observed_at=1_800_000_000,
+            now_ts=1_800_000_000))
+
     def test_empty_limit_name_remains_general_weekly(self):
         observation = tokenserver._codex_general_observation(
             self._limits(46.0, name=""), observed_at=1_800_000_000,

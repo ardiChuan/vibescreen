@@ -1171,6 +1171,7 @@ def get_limits():
 CODEX_SESSIONS = Path(os.path.expanduser("~/.codex/sessions"))
 CODEX_LIMITS_EVERY_S = 30
 CODEX_LIMIT_SCAN_BYTES = 1024 * 1024
+CODEX_WEEK_MINUTES = 10080
 _codex_limits_lock = threading.Lock()
 _last_codex_limits = None
 _last_codex_read = 0.0
@@ -1222,7 +1223,7 @@ def _codex_general_observation(rate_limits, observed_at, now_ts):
         if parsed is None:
             continue
         pct, _reset_min, window_minutes = parsed
-        if window_minutes <= 600:
+        if window_minutes != CODEX_WEEK_MINUTES:
             continue
         reset_at = int(rate_limits[key]["resets_at"])
         raw_identity = rate_limits.get("limit_id")
