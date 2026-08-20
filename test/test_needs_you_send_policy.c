@@ -47,6 +47,29 @@ int main(void) {
                                        "approve", 1000) == 16);
   expect("message bytes", message, "abc|approve|1000");
 
+  check("v2 canonical bytes",
+        tk_needs_you_canonical_message_v2(
+            message, sizeof message, "codex", "ABEiM0RVZneImaq7zN3u_w",
+            "df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d",
+            "approve", 1787097720ULL) > 0);
+  expect("v2 canonical exact", message,
+         "v2|codex|ABEiM0RVZneImaq7zN3u_w|"
+         "df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d|"
+         "approve|1787097720");
+  tk_needs_you_hmac_hex(mac, key64, message);
+  expect("v2 Python cross-vector", mac,
+         "49357b233c81c9979606a52b94aaab578c18fc95c16d0037949b1018c298bbbf");
+  check("v2 body length",
+        tk_needs_you_answer_body_v2(
+            body, sizeof body, "codex",
+            "df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d",
+            "approve", 1787097720ULL, mac) > 0);
+  expect("v2 body exact", body,
+         "{\"provider\":\"codex\",\"view_sha256\":"
+         "\"df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d\","
+         "\"verdict\":\"approve\",\"ts\":1787097720,\"hmac\":"
+         "\"49357b233c81c9979606a52b94aaab578c18fc95c16d0037949b1018c298bbbf\"}");
+
   /* HMAC vectors — byte-for-byte with interactions.sign_answer("a"*64, ...). */
   tk_needs_you_hmac_hex(mac, key64, "abc|approve|1000");
   expect("sign_answer abc/approve/1000", mac,
@@ -103,6 +126,31 @@ int main(void) {
   check("message overflow refused",
         tk_needs_you_canonical_message(message, 4, "abc", "approve", 1000) ==
             -1);
+  check("v2 message overflow refused",
+        tk_needs_you_canonical_message_v2(
+            message, 8, "codex", "ABEiM0RVZneImaq7zN3u_w",
+            "9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a",
+            "approve", 1787097720ULL) == -1);
+  check("v2 body overflow refused",
+        tk_needs_you_answer_body_v2(
+            body, 8, "codex",
+            "9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a",
+            "approve", 1787097720ULL, mac) == -1);
+  check("v2 provider är exakt lowercase",
+        tk_needs_you_canonical_message_v2(
+            message, sizeof message, "CODEX", "ABEiM0RVZneImaq7zN3u_w",
+            "9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a",
+            "approve", 1787097720ULL) == -1);
+  check("v2 digest är exakt lowercase hex",
+        tk_needs_you_canonical_message_v2(
+            message, sizeof message, "codex", "ABEiM0RVZneImaq7zN3u_w",
+            "9F4F6EC7A3519DF610BE969B66100FC0FEFBE53A54CC59A82FB49DC70BA6E22A",
+            "approve", 1787097720ULL) == -1);
+  check("v2 id kan inte injicera kanoniska fält",
+        tk_needs_you_canonical_message_v2(
+            message, sizeof message, "codex", "abc|claude",
+            "9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a",
+            "approve", 1787097720ULL) == -1);
   check("body overflow refused",
         tk_needs_you_answer_body(body, 8, "approve", 1000, "x") == -1);
   check("null args refused",

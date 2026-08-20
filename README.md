@@ -6,13 +6,16 @@
 
 **A little always-on screen for your shelf that shows what your AI coding
 agents are doing — taps you on the shoulder when one is stuck waiting for
-you, and (if you want) lets you answer it with a tap on the glass.**
+you, and (if you want) lets you answer it with a tap on the glass. It packs
+too: one command moves it onto whatever WiFi you are on today.**
 
 Claude Code and Codex usage, live agent activity, and a full-screen
 **NEEDS YOU** alert you can answer with a tap. A ~$30 ESP32-S3 panel plus a
-pure-stdlib Python service on your Mac. No cloud, no accounts, no API keys on the device. Agent data
-never leaves your LAN; the optional public-repository module makes only
-anonymous GitHub API reads from the Mac.
+pure-stdlib Python service on your Mac or Windows PC. Local mode needs no
+VibePulse account and keeps agent activity on your LAN. The optional
+numbers-only relay can carry quota data across isolated WiFi; a separate,
+default-off encrypted interaction relay can carry supported Needs You
+decisions without requiring the panel and computer to share a LAN.
 
 ## The problem
 
@@ -109,11 +112,17 @@ accent colour:
 
 ![Claude Max Tracker](docs/img/vibepulse-max-tracker-claude.png)
 
-### Answer Claude from the panel
+### Answer Claude or Codex from the panel
 
 The panel becomes an *input device*. With the opt-in Needs You bridge, when
-Claude Code blocks on a question or a permission the takeover appears and
-**a tap answers it in the same live session** — no window to switch to.
+Claude Code or Codex blocks on a supported question or permission, the
+takeover appears and **a tap answers it in the same live session** — no window
+to switch to. The computer must be awake and the tokenserver must be running.
+Direct mode uses the LAN. The separate encrypted interaction relay works when
+the panel and computer use unrelated ordinary internet Wi-Fi: both sides make
+outbound HTTPS connections, so there is no router reconfiguration, inbound
+port, public Mac, or VPN. Cloudflare handles only fixed-size ciphertext; see
+the [privacy and setup guide](docs/interaction-relay.md).
 
 <table>
 <tr>
@@ -124,13 +133,40 @@ Claude Code blocks on a question or a permission the takeover appears and
 </table>
 
 **Attract → decision → done.** A held prompt surfaces as a mascot in a
-depleting countdown ring; a tap reveals it; **APPROVE** commits Claude's
-recommended option (or **LEAVE IT** hands it back to the terminal), and the
-flow closes on a short "ON IT" beat. The panel signs every verdict with a
-device key that lives only on the glass — it can answer a prompt this Mac was
+depleting countdown ring; a tap reveals it; **APPROVE** commits the agent's
+explicitly recommended option (or **LEAVE IT** hands it back to the computer),
+and the flow closes on a short "ON IT" beat. The panel signs every verdict with a
+key shared only with your computer — it can answer a prompt that computer was
 already going to ask about, and nothing more. Walking away always costs
 nothing: an unanswered prompt just falls back to the terminal. Setup is in
 [docs/agent-setup.md](docs/agent-setup.md).
+
+For Codex, only its narrow safe-command tier can show **ALLOW ONCE**. Unknown,
+mutating, secret-bearing, or text that does not fit stays on the computer;
+silence never means approval. Recommended questions are equally strict: Codex
+must mark one of two or three options itself. VibePulse never guesses.
+
+### Independent switches
+
+VibePulse is open source, so installing one part never silently enables
+another. Each row is an independent switch and every interaction/cloud choice
+starts off:
+
+| Switch | What it does | Default |
+|---|---|---|
+| **Claude interactions** | Lets Claude Code questions and permissions reach the panel | Off |
+| **Codex interactions** | Lets supported Codex questions and permissions reach the panel | Off |
+| **Numbers relay** | Publishes only quota, reset, Max Tracker, and optional public GitHub numbers | Off |
+| **Interaction relay** | End-to-end encrypted question/verdict mailbox for unrelated WiFi | Off |
+| **GitHub** | Shows one public repository's page and/or star notification | Off |
+
+Installing the Codex plugin does not enable Codex interactions. Setup asks
+whether to enable Claude, Codex, both, or neither, and whether bounded detail
+may reach the panel. The old `--interactions` is a legacy alias for Claude only;
+use the explicit setup command for new installations. The numbers relay and
+interaction relay are different privacy choices and neither is enabled by the
+plugin. Installing the Codex plugin does not enable the encrypted interaction
+relay.
 
 ### Optional GitHub project pulse
 
@@ -239,17 +275,24 @@ the figure to a dash rather than being silently free.
      pure Python stdlib                polled every 30 s
 ```
 
-A tiny Python service on your Mac reads your local Claude Code / Codex logs
+A tiny Python service on your Mac or Windows PC reads your local Claude Code / Codex logs
 and rate-limit headers, and serves plain numbers over your LAN. The screen
-polls it every 30 seconds. Your OAuth token never leaves the Mac; the screen
+polls it every 30 seconds. Your OAuth token never leaves the computer; the screen
 only ever receives percentages, counts and coarse status.
+
+The computer must be on for fresh local data. It does not have to stay in the
+same house when a relay is enabled, but it does have to run the tokenserver so
+there is something to publish. A phone hotspot is fine after it has been taught
+to the panel; captive portals and 5 GHz-only networks are not.
 
 ## What you need
 
 - **[Waveshare ESP32-S3-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-s3-touch-amoled-2.16.htm)**
   (~$30). No soldering, just a USB-C cable. It's the same board Clawdmeter
   uses, so if you already own one you're 10 minutes away.
-- **A Mac** on the same WiFi (the log-reading service is macOS-only for now)
+- **A Mac or PC** running the tokenserver. Direct LAN mode needs the panel to
+  reach that computer; the optional relays remove the same-WiFi requirement.
+  Claude quota log reading remains macOS-only for now.
 - **Claude Code and/or Codex.** Either alone is fine.
 - **2.4 GHz WiFi.** The ESP32-S3 can't see 5 GHz networks.
 
@@ -316,7 +359,9 @@ opens a ten-minute maintenance window (the glass shows an UPDATES ON ring
 with the lease draining clockwise), a **64-hex token** from `secrets.h`
 authenticates the upload, and the window **closes itself** — a short KEY3
 press closes it early. No button, no update; a script can never open the
-window for you.
+window for you. (The same hold on a panel *without* a network opens the
+WiFi setup window instead — the window that can actually help there. See
+[Take it with you](#take-it-with-you).)
 
 ```
 idf.py build
@@ -344,6 +389,64 @@ where `partitions.csv` still has a single `factory` partition. The OTA
 foundation replaced that table (A/B slots + `otadata`) — check the branch
 you are on before concluding anything, and never assume the flash layout
 without reading `partitions.csv` in the checkout you are actually building.
+
+## Take it with you
+
+The panel remembers up to six places. Arrive somewhere new and it needs the
+network once; every visit after that it joins by itself.
+
+```
+tools/wifi-here.sh                 # on the Mac. That is the whole thing.
+```
+
+The script reads the network your Mac is already on, takes that password
+out of your keychain (macOS asks you — that prompt is the consent), hands
+it to the panel over its own access point, and gives your WiFi back. About
+twenty seconds offline, nothing typed.
+
+No Mac at hand? The panel raises **VibePulse-setup** and puts the password
+on the glass. Join it from your phone, the captive portal opens by itself,
+and you pick from what the *panel's* radio can see — which is the list that
+matters, since the ESP32-S3 cannot hear 5 GHz no matter how many bars your
+phone shows.
+
+The setup window opens on its own after 90 seconds without a network, or
+immediately on a 3-second KEY3 hold. Before that, at 60 seconds, the glass
+stops being coy: it names the network it is hunting and what the radio
+actually answered ("NOT SEEN - 2.4 GHZ ONLY", "WRONG PASSWORD") instead of
+showing dashes and letting you guess.
+
+On a panel that already *has* a network, hold twice: the first 3-second
+hold opens the update window, a second full hold switches it to WIFI
+SETUP. That is how you pre-load the phone hotspot at home before a trip —
+no need to wait until the panel is stranded somewhere.
+
+Two things stay true by design. The networks in `secrets.h` remain an
+**immutable floor** — setup can add places, never remove your home network,
+so a bad entry can never cost you a USB rescue. And the setup window
+**cannot write firmware**: it touches the network list and nothing else,
+while OTA keeps its own token and its own gate.
+
+Honest limits: captive portals (the panel cannot click "I agree"), guest
+networks with client isolation, and WPA2-Enterprise are all still out of
+reach. The network that always works on the road is the one you bring —
+your phone's hotspot, with *Maximize Compatibility* on. Teach the panel
+that one once and it follows you everywhere. Full reference:
+[docs/wifi.md](docs/wifi.md).
+
+And for the networks that *do* connect but wall the panel off from your
+machine (client isolation, IoT VLANs): the optional **relay** puts the
+numbers in a tiny mailbox on the internet — a ~150-line Cloudflare Worker
+on your own account — and the panel falls back to it whenever the LAN
+does not answer. Quota, burn rate, Max Tracker and the GitHub pulse
+follow you anywhere with WiFi. Agent activity stays local unless you separately
+opt in to the encrypted interaction relay; then only a bounded panel view and
+verdict cross its user-owned mailbox as fixed-size end-to-end ciphertext.
+Cloudflare never receives question, command, project, or verdict content in
+plaintext. Several machines can feed the numbers mailbox
+(a Mac that sleeps, an always-on PC) and the freshest source wins per
+number. Numbers setup: [docs/relay.md](docs/relay.md). Encrypted decisions:
+[docs/interaction-relay.md](docs/interaction-relay.md).
 
 ## No hardware? Run the simulator
 

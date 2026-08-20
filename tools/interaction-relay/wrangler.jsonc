@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vibepulse-interaction-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "INTERACTION_MAILBOX",
+        "class_name": "InteractionMailbox"
+      }
+    ]
+  },
+  "exports": {
+    "InteractionMailbox": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "secrets": {
+    "required": ["MAC_TOKEN", "PANEL_TOKEN"]
+  },
+  "vars": {
+    "MAILBOX_ID": "vp_A1b2C3d4E5f6G7h8"
+  }
+}

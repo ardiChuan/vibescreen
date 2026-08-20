@@ -63,7 +63,8 @@ typedef struct {
  * the bridge and waiting for a tap. Optional on the wire — an older service
  * simply never sends it, and a malformed one is ignored rather than allowed to
  * take the agent list down with it (see tk_agent_status_parse). */
-#define TK_PENDING_ID_CAP 33     /* 32 hex + NUL */
+#define TK_PENDING_ID_CAP 33     /* <=32 legacy hex/base64url + NUL */
+#define TK_PENDING_VIEW_SHA256_CAP 65 /* 64 lowercase hex + NUL */
 #define TK_PENDING_PROMPT_CAP 97 /* server bound 96 + NUL */
 #define TK_PENDING_TITLE_CAP 65  /* server bound 64 + NUL */
 #define TK_PENDING_TOOL_CAP 25
@@ -73,8 +74,22 @@ typedef enum {
   TK_PENDING_APPROVAL,
 } tk_pending_kind;
 
+/* Pending decisions arrive independently from the direct LAN status feed and
+ * the optional encrypted relay. NONE is the parser/default value until the
+ * owning monitor assigns the slot. */
+typedef enum {
+  TK_PENDING_SOURCE_NONE = 0,
+  TK_PENDING_SOURCE_LAN,
+  TK_PENDING_SOURCE_RELAY,
+} tk_pending_source;
+
 typedef struct {
   bool present;
+  tk_pending_source source;
+  /* Missing on legacy Claude payloads. Codex is never accepted without an
+   * explicit provider and view digest, so it can never fall back to v1. */
+  tk_agent_provider provider;
+  bool has_view_sha256;
   tk_pending_kind kind;
   /* can_approve is the server's verdict, never the panel's guess: it is false
    * for anything truncated, anything outside the approvable tier, and for
@@ -87,6 +102,11 @@ typedef struct {
   bool has_subtitle;
   bool has_tool;
   bool has_project;
+  /* Authenticated relay binding retained when the LAN and relay slots mirror
+   * the same exact public view. It is binary to avoid a second decode in the
+   * UI path. Never sufficient on its own: source selection and digest equality
+   * are enforced by interaction_relay_policy. */
+  bool has_relay_binding;
   uint8_t options_total;
   uint32_t expires_in_ms;
   /* The interaction's original hold duration. The countdown ring is
@@ -94,11 +114,14 @@ typedef struct {
    * time. 0 when an older service does not send it (ring reads as full). */
   uint32_t hold_ms;
   char request_id[TK_PENDING_ID_CAP];
+  char view_sha256[TK_PENDING_VIEW_SHA256_CAP];
   char project[TK_AGENT_PROJECT_CAP];
   char prompt[TK_PENDING_PROMPT_CAP];
   char title[TK_PENDING_TITLE_CAP];
   char subtitle[TK_PENDING_TITLE_CAP];
   char tool[TK_PENDING_TOOL_CAP];
+  uint8_t relay_challenge[32];
+  uint8_t relay_view_sha256[32];
 } tk_pending_interaction;
 
 typedef struct {

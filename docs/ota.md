@@ -36,6 +36,16 @@ Nothing can write firmware to the screen without three independent factors:
    compromised Mac cannot open it remotely. On the takeover, the UPDATE
    pill is the *only* yes — a tap anywhere else (including LATER)
    snoozes, so an accidental touch always lands on the safe side.
+
+   Since the WiFi setup window landed (`docs/wifi.md`), the hold opens
+   *the window that can actually help*: **with an IP** it opens this OTA
+   window, exactly as always; **without an IP** it opens the WiFi setup
+   window instead, because an OTA window with no network can never
+   receive an upload. A **second full 3 s hold** while this window is
+   open switches to the WiFi setup window (hold–hold: update window,
+   then network window); any release before three seconds still just
+   closes. The consent model is unchanged — both windows open only from
+   the device.
 2. **Knowledge** — the upload must carry `Authorization: Bearer <token>`,
    64 lowercase hex from `secrets.h` (`TG_OTA_TOKEN`), never committed.
 3. **Time** — the window closes itself after ten minutes; a short KEY3
@@ -76,6 +86,15 @@ compares against its own running version:
   calms down) until the update is installed.
 - **Match** → silence. The notice can never nag about nothing.
 - A busy device (open window, running transfer) is never taken over.
+
+Two windows, one port: the OTA window and the WiFi setup window both
+serve HTTP on port 80, so only one can exist at a time. If the setup
+window needs to open while an OTA window is standing open, it closes the
+OTA window first (an OTA window with no network could never receive an
+upload anyway) — the log says so. On the glass the OTA overlay always
+outranks the network screens: after an OTA reboot with no network, the
+re-armed READY ring owns the display and the network-search screen waits
+for the window to close.
 
 The nag rhythm lives in `components/torget_ota/notice_policy.c`, a pure
 host-tested module (`test/test_ota_notice_policy.c`).

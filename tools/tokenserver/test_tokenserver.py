@@ -1,14 +1,19 @@
 import contextlib
 import fcntl
+import http.client
 import io
+import inspect
 import json
 import logging
+import multiprocessing
+import socket
 import tempfile
 import threading
 import time
 import unittest
 import urllib.error
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from unittest import mock
 import os
@@ -17,6 +22,11 @@ from tools.tokenserver import codex_usage, tokenserver
 from tools.tokenserver.max_tracker import MaxTrackerStore
 from tools.tokenserver.quota_cache import CachedQuota, QuotaCache
 from tools.tokenserver.usage_history import Forecast, UsageHistory
+from tools.tokenserver.vibepulse_config import (
+    VibePulseConfig,
+    load_config,
+    save_config,
+)
 
 
 class StubHistory:
@@ -1989,6 +1999,166 @@ class UsageSnapshotTests(unittest.TestCase):
         self.assertFalse(snapshot["codexWeekStale"])
 
 
+class JsonBodyReadSafetyTests(unittest.TestCase):
+    class StubConnection:
+        def __init__(self, timeout=7.0):
+            self.timeout = timeout
+            self.set_calls = []
+
+        def gettimeout(self):
+            return self.timeout
+
+        def settimeout(self, value):
+            self.timeout = value
+            self.set_calls.append(value)
+
+    def handler(self, raw, advertised=None):
+        handler = tokenserver.Handler.__new__(tokenserver.Handler)
+        handler.headers = {
+            "Content-Length": str(len(raw) if advertised is None else
+                                  advertised),
+        }
+        handler.rfile = io.BytesIO(raw)
+        handler.connection = self.StubConnection()
+        handler.json_body_timeout_s = 0.25
+        return handler
+
+    def test_incomplete_framing_is_not_parsed_as_a_complete_object(self):
+        handler = self.handler(b"{}", advertised=100)
+
+        self.assertIsNone(handler._read_json_body())
+
+    def test_body_read_sets_a_short_deadline_then_restores_socket_timeout(self):
+        class TimedOutReader:
+            def read(self, _length):
+                raise TimeoutError("slow peer")
+
+        handler = self.handler(b"{}")
+        handler.rfile = TimedOutReader()
+
+        self.assertIsNone(handler._read_json_body())
+        self.assertEqual(handler.connection.set_calls, [0.25, 7.0])
+
+    def test_deep_and_huge_integer_json_are_bounded_failures(self):
+        adversarial = (
+            b"[" * 10000 + b"0" + b"]" * 10000,
+            b'{"value":' + b"9" * 5000 + b"}",
+        )
+        for raw in adversarial:
+            with self.subTest(size=len(raw)):
+                handler = self.handler(raw)
+                try:
+                    result = handler._read_json_body()
+                except (RecursionError, ValueError) as exc:
+                    self.fail(f"JSON parser exception escaped: {exc}")
+                self.assertIsNone(result)
+
+
+class BoundedHTTPServerTests(unittest.TestCase):
+    def test_worker_cap_rejects_promptly_then_recovers_after_completion(self):
+        release = threading.Event()
+        both_entered = threading.Event()
+        state_lock = threading.Lock()
+        state = {"active": 0, "peak": 0}
+
+        class BlockingHandler(BaseHTTPRequestHandler):
+            def do_GET(inner_self):
+                with state_lock:
+                    state["active"] += 1
+                    state["peak"] = max(state["peak"], state["active"])
+                    if state["active"] == 2:
+                        both_entered.set()
+                try:
+                    release.wait(timeout=5)
+                    inner_self.send_response(200)
+                    inner_self.send_header("Content-Length", "0")
+                    inner_self.end_headers()
+                finally:
+                    with state_lock:
+                        state["active"] -= 1
+
+            def log_message(self, _format, *args):
+                del args
+
+        server = tokenserver.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), BlockingHandler, max_workers=2)
+        server_thread = threading.Thread(
+            target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        def request():
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.server_address[1], timeout=2)
+            try:
+                connection.request("GET", "/")
+                response = connection.getresponse()
+                response.read()
+                return response.status
+            finally:
+                connection.close()
+
+        results = []
+        workers = [threading.Thread(
+            target=lambda: results.append(request()), daemon=True)
+            for _ in range(2)]
+        try:
+            for worker in workers:
+                worker.start()
+            self.assertTrue(both_entered.wait(timeout=2))
+
+            self.assertEqual(request(), 503)
+            self.assertEqual(state["peak"], 2)
+
+            release.set()
+            for worker in workers:
+                worker.join(timeout=2)
+            self.assertEqual(sorted(results), [200, 200])
+            deadline = time.monotonic() + 2
+            while not server._worker_slots.acquire(blocking=False):
+                self.assertLess(time.monotonic(), deadline)
+                threading.Event().wait(0.01)
+            server._worker_slots.release()
+            self.assertEqual(request(), 200)
+        finally:
+            release.set()
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=2)
+
+    def test_thread_start_failure_releases_its_worker_slot(self):
+        server = tokenserver.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), BaseHTTPRequestHandler, max_workers=1)
+        server_side, client_side = socket.socketpair()
+        try:
+            with mock.patch(
+                    "socketserver.threading.Thread.start",
+                    side_effect=RuntimeError("thread start failed")):
+                with self.assertRaisesRegex(RuntimeError, "thread start"):
+                    server.process_request(server_side, ("127.0.0.1", 1))
+
+            self.assertTrue(server._worker_slots.acquire(blocking=False))
+            server._worker_slots.release()
+            self.assertTrue(server.daemon_threads)
+            self.assertFalse(server.block_on_close)
+        finally:
+            server_side.close()
+            client_side.close()
+            server.server_close()
+
+    def test_default_capacity_leaves_headroom_above_held_hook_limit(self):
+        server = tokenserver.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), BaseHTTPRequestHandler)
+        try:
+            self.assertGreaterEqual(
+                server.max_workers,
+                tokenserver.interactions.MAX_PENDING + 16)
+            self.assertIn(
+                "srv = BoundedThreadingHTTPServer(",
+                inspect.getsource(tokenserver.main))
+        finally:
+            server.server_close()
+
+
 class HandlerPrivacyTests(unittest.TestCase):
     def _handler(self, path):
         handler = tokenserver.Handler.__new__(tokenserver.Handler)
@@ -2028,6 +2198,74 @@ class HandlerPrivacyTests(unittest.TestCase):
         self.assertEqual(payload["ratelimitHeaders"], [
             "anthropic-ratelimit-unified-7d-utilization"])
         self.assertEqual(payload["unknownRateLimitBuckets"], ["7d_haiku"])
+
+    def test_root_diagnostics_report_only_safe_interaction_switches(self):
+        handler = self._handler("/")
+        saved = (
+            tokenserver.Handler.claude_interactions,
+            tokenserver.Handler.codex_interactions,
+            tokenserver.Handler.interaction_detail,
+            getattr(tokenserver.Handler, "legacy_claude_panel_v1", False),
+            getattr(tokenserver.Handler, "interaction_relay_status", "off"),
+            getattr(tokenserver.Handler, "interaction_relay_reason", None),
+        )
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "claude_interactions", saved[0])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "codex_interactions", saved[1])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "interaction_detail", saved[2])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "legacy_claude_panel_v1", saved[3])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "interaction_relay_status", saved[4])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "interaction_relay_reason", saved[5])
+        tokenserver.Handler.claude_interactions = False
+        tokenserver.Handler.codex_interactions = True
+        tokenserver.Handler.interaction_detail = True
+        tokenserver.Handler.legacy_claude_panel_v1 = True
+        tokenserver.Handler.interaction_relay_status = "off"
+        tokenserver.Handler.interaction_relay_reason = None
+
+        handler.do_GET()
+
+        payload = handler._send.call_args.args[1]
+        self.assertEqual(payload["interactions"], {
+            "claude": False,
+            "codex": True,
+            "detail": True,
+            "legacyClaudePanelV1": True,
+            "relay": {"status": "off"},
+            "transport": "lan",
+        })
+        serialized = json.dumps(payload["interactions"])
+        self.assertNotIn("secret", serialized.lower())
+        self.assertNotIn("key", serialized.lower())
+
+    def test_root_reports_ready_or_generic_relay_failure_without_values(self):
+        handler = self._handler("/")
+        saved = (
+            getattr(tokenserver.Handler, "interaction_relay_status", "off"),
+            getattr(tokenserver.Handler, "interaction_relay_reason", None),
+        )
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "interaction_relay_status", saved[0])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "interaction_relay_reason", saved[1])
+
+        tokenserver.Handler.interaction_relay_status = "ready"
+        tokenserver.Handler.interaction_relay_reason = None
+        ready = handler._root_payload()["interactions"]
+        self.assertEqual(ready["relay"], {"status": "ready"})
+        self.assertEqual(ready["transport"], "lan+encrypted-relay")
+
+        tokenserver.Handler.interaction_relay_status = "disabled"
+        tokenserver.Handler.interaction_relay_reason = "mac-token-missing"
+        disabled = handler._root_payload()["interactions"]
+        self.assertEqual(disabled["relay"], {
+            "status": "disabled", "reason": "mac-token-missing"})
+        self.assertEqual(disabled["transport"], "lan")
 
 
 class HandlerErrorLoggingTests(unittest.TestCase):
@@ -2722,6 +2960,472 @@ class ArgumentParsingTests(unittest.TestCase):
         args = parser.parse_args([])
         self.assertIsNone(args.claude_plan)
         self.assertIsNone(args.codex_plan)
+
+    def test_interaction_switches_are_independent_and_default_off(self):
+        parser = tokenserver._build_arg_parser()
+        defaults = parser.parse_args([])
+        self.assertFalse(defaults.interactions)
+        self.assertIsNone(defaults.claude_interactions)
+        self.assertIsNone(defaults.codex_interactions)
+        self.assertIsNone(defaults.interaction_detail)
+        self.assertIsNone(defaults.legacy_claude_panel_v1)
+        self.assertIsNone(defaults.interaction_relay)
+
+        claude = parser.parse_args(["--claude-interactions"])
+        codex = parser.parse_args(["--codex-interactions"])
+        legacy = parser.parse_args(["--interactions"])
+        legacy_panel = parser.parse_args(["--legacy-claude-panel-v1"])
+        modern_panel = parser.parse_args(["--no-legacy-claude-panel-v1"])
+        relay = parser.parse_args([
+            "--interaction-relay", "https://relay.example"])
+        relay_off = parser.parse_args(["--no-interaction-relay"])
+        self.assertTrue(claude.claude_interactions)
+        self.assertFalse(claude.codex_interactions)
+        self.assertTrue(codex.codex_interactions)
+        self.assertFalse(codex.claude_interactions)
+        self.assertTrue(legacy.interactions)
+        self.assertIsNone(legacy.codex_interactions)
+        self.assertTrue(legacy_panel.legacy_claude_panel_v1)
+        self.assertFalse(modern_panel.legacy_claude_panel_v1)
+        self.assertEqual(relay.interaction_relay, "https://relay.example")
+        self.assertIs(relay_off.interaction_relay, False)
+
+    def test_saved_true_switches_can_be_disabled_and_persisted(self):
+        parser = tokenserver._build_arg_parser()
+        all_on = VibePulseConfig(
+            claude_interactions=True,
+            codex_interactions=True,
+            interaction_detail=True,
+            legacy_claude_panel_v1=True,
+            interaction_relay=True,
+            interaction_relay_url="https://relay.example",
+            interaction_mailbox="vp_A1b2C3d4E5f6G7h8",
+        )
+        with tempfile.TemporaryDirectory(prefix="interaction-optout-") as tmp:
+            path = Path(tmp) / "config.json"
+            save_config(path, all_on)
+
+            codex_off = tokenserver._resolve_interaction_config(
+                parser.parse_args(["--no-codex-interactions"]), path=path)
+            self.assertEqual(codex_off, VibePulseConfig(
+                claude_interactions=True,
+                codex_interactions=False,
+                interaction_detail=True,
+                legacy_claude_panel_v1=True,
+                interaction_relay=True,
+                interaction_relay_url="https://relay.example",
+                interaction_mailbox="vp_A1b2C3d4E5f6G7h8",
+            ))
+            self.assertEqual(load_config(path), codex_off)
+
+            save_config(path, all_on)
+            all_off = tokenserver._resolve_interaction_config(
+                parser.parse_args([
+                    "--no-claude-interactions",
+                    "--no-codex-interactions",
+                    "--no-interaction-detail",
+                    "--no-legacy-claude-panel-v1",
+                    "--no-interaction-relay",
+                ]), path=path)
+            self.assertEqual(all_off, VibePulseConfig(
+                interaction_relay_url="https://relay.example",
+                interaction_mailbox="vp_A1b2C3d4E5f6G7h8"))
+            self.assertEqual(load_config(path), all_off)
+
+    @unittest.skipUnless(os.name == "posix", "forked lock regression")
+    def test_concurrent_independent_enables_merge_without_lost_update(self):
+        parser = tokenserver._build_arg_parser()
+        context = multiprocessing.get_context("fork")
+        first_loaded = context.Event()
+        second_loaded = context.Event()
+        second_saved = context.Event()
+
+        with tempfile.TemporaryDirectory(prefix="interaction-merge-") as tmp:
+            path = Path(tmp) / "config.json"
+
+            def resolve(role, cli):
+                real_load = load_config
+                real_save = save_config
+                saw_concurrent_load = False
+
+                def synchronized_load(config_path):
+                    nonlocal saw_concurrent_load
+                    loaded = real_load(config_path)
+                    if role == "claude":
+                        first_loaded.set()
+                        saw_concurrent_load = second_loaded.wait(1.0)
+                    else:
+                        second_loaded.set()
+                    return loaded
+
+                def ordered_save(config_path, config):
+                    if role == "claude" and saw_concurrent_load:
+                        if not second_saved.wait(2.0):
+                            raise RuntimeError("second config save did not finish")
+                    real_save(config_path, config)
+                    if role == "codex":
+                        second_saved.set()
+
+                with mock.patch.object(
+                        tokenserver, "load_config",
+                        side_effect=synchronized_load), mock.patch.object(
+                            tokenserver, "save_config",
+                            side_effect=ordered_save):
+                    tokenserver._resolve_interaction_config(
+                        parser.parse_args([cli]), path=path)
+
+            claude = context.Process(
+                target=resolve, args=("claude", "--claude-interactions"))
+            codex = context.Process(
+                target=resolve, args=("codex", "--codex-interactions"))
+
+            def stop_children():
+                for child in (claude, codex):
+                    if child.is_alive():
+                        child.terminate()
+                    if child.pid is not None:
+                        child.join()
+
+            self.addCleanup(stop_children)
+            claude.start()
+            self.assertTrue(first_loaded.wait(2.0))
+            codex.start()
+            claude.join(5.0)
+            codex.join(5.0)
+            stop_children()
+
+            self.assertEqual(claude.exitcode, 0)
+            self.assertEqual(codex.exitcode, 0)
+            self.assertEqual(load_config(path), VibePulseConfig(
+                claude_interactions=True,
+                codex_interactions=True,
+            ))
+
+    def test_legacy_alias_conflicts_clearly_with_explicit_claude_opt_out(self):
+        parser = tokenserver._build_arg_parser()
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+            parser.parse_args([
+                "--interactions", "--no-claude-interactions"])
+        self.assertIn("not allowed with argument", stderr.getvalue())
+
+    def test_interaction_help_explains_saved_state_and_opt_outs(self):
+        help_text = tokenserver._build_arg_parser().format_help()
+
+        for flag in (
+                "--no-claude-interactions", "--no-codex-interactions",
+                "--no-interaction-detail", "--legacy-claude-panel-v1",
+                "--no-legacy-claude-panel-v1", "--interaction-relay",
+                "--no-interaction-relay"):
+            self.assertIn(flag, help_text)
+        self.assertIn("saved", help_text.lower())
+        self.assertIn("disable", help_text.lower())
+
+    def test_handler_provider_defaults_are_strictly_off(self):
+        self.assertIs(tokenserver.Handler.claude_interactions, False)
+        self.assertIs(tokenserver.Handler.codex_interactions, False)
+        self.assertIs(tokenserver.Handler.legacy_claude_panel_v1, False)
+        self.assertEqual(tokenserver.Handler.interaction_relay_status, "off")
+
+    def test_relay_cli_enable_and_disable_merge_without_touching_providers(self):
+        parser = tokenserver._build_arg_parser()
+        with tempfile.TemporaryDirectory(prefix="interaction-relay-") as tmp:
+            path = Path(tmp) / "config.json"
+            original = VibePulseConfig(
+                claude_interactions=True,
+                interaction_detail=True,
+                interaction_mailbox="vp_A1b2C3d4E5f6G7h8")
+            save_config(path, original)
+
+            enabled = tokenserver._resolve_interaction_config(
+                parser.parse_args([
+                    "--interaction-relay", "https://relay.example"]),
+                path=path)
+            self.assertEqual(enabled, VibePulseConfig(
+                claude_interactions=True,
+                interaction_detail=True,
+                interaction_relay=True,
+                interaction_relay_url="https://relay.example",
+                interaction_mailbox="vp_A1b2C3d4E5f6G7h8"))
+
+            disabled = tokenserver._resolve_interaction_config(
+                parser.parse_args(["--no-interaction-relay"]), path=path)
+            self.assertFalse(disabled.interaction_relay)
+            self.assertTrue(disabled.claude_interactions)
+            self.assertTrue(disabled.interaction_detail)
+            self.assertEqual(
+                disabled.interaction_relay_url, "https://relay.example")
+            self.assertEqual(
+                disabled.interaction_mailbox, "vp_A1b2C3d4E5f6G7h8")
+
+    def test_legacy_claude_panel_v1_choice_persists_without_changing_others(self):
+        parser = tokenserver._build_arg_parser()
+        with tempfile.TemporaryDirectory(prefix="interaction-config-") as tmp:
+            path = Path(tmp) / "config.json"
+            original = VibePulseConfig(
+                claude_interactions=True, codex_interactions=True,
+                interaction_detail=True)
+            save_config(path, original)
+
+            enabled = tokenserver._resolve_interaction_config(
+                parser.parse_args(["--legacy-claude-panel-v1"]), path=path)
+            self.assertEqual(enabled, VibePulseConfig(
+                claude_interactions=True, codex_interactions=True,
+                interaction_detail=True, legacy_claude_panel_v1=True))
+            self.assertEqual(load_config(path), enabled)
+
+            disabled = tokenserver._resolve_interaction_config(
+                parser.parse_args(["--no-legacy-claude-panel-v1"]),
+                path=path)
+            self.assertEqual(disabled, original)
+            self.assertEqual(load_config(path), original)
+
+    def test_saved_choices_persist_and_legacy_alias_enables_only_claude(self):
+        parser = tokenserver._build_arg_parser()
+        with tempfile.TemporaryDirectory(prefix="interaction-config-") as tmp:
+            path = Path(tmp) / "config.json"
+            codex = tokenserver._resolve_interaction_config(
+                parser.parse_args([
+                    "--codex-interactions", "--interaction-detail"]),
+                path=path)
+            self.assertEqual(codex, VibePulseConfig(
+                codex_interactions=True, interaction_detail=True))
+            self.assertEqual(load_config(path), codex)
+
+            persisted = tokenserver._resolve_interaction_config(
+                parser.parse_args([]), path=path)
+            self.assertEqual(persisted, codex)
+
+            path.unlink()
+            legacy = tokenserver._resolve_interaction_config(
+                parser.parse_args(["--interactions"]), path=path)
+            self.assertEqual(legacy, VibePulseConfig(
+                claude_interactions=True))
+            self.assertFalse(legacy.codex_interactions)
+
+    def test_explicit_cli_survives_invalid_saved_config_fail_closed(self):
+        parser = tokenserver._build_arg_parser()
+        with tempfile.TemporaryDirectory(prefix="interaction-config-") as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text('{"codex_interactions":"yes"}',
+                            encoding="utf-8")
+
+            with self.assertLogs("tokenserver", level="ERROR"):
+                resolved = tokenserver._resolve_interaction_config(
+                    parser.parse_args(["--claude-interactions"]), path=path)
+
+            self.assertEqual(resolved, VibePulseConfig(
+                claude_interactions=True))
+            self.assertEqual(load_config(path), resolved)
+
+    def test_store_exists_if_and_only_if_a_provider_is_enabled(self):
+        handler = tokenserver.Handler
+        saved = (
+            handler.interaction_store,
+            handler.interaction_timeout_s,
+            handler.claude_interactions,
+            handler.codex_interactions,
+            handler.interaction_detail,
+            getattr(handler, "legacy_claude_panel_v1", False),
+        )
+
+        def restore():
+            (handler.interaction_store, handler.interaction_timeout_s,
+             handler.claude_interactions, handler.codex_interactions,
+             handler.interaction_detail,
+             handler.legacy_claude_panel_v1) = saved
+
+        self.addCleanup(restore)
+        cases = (
+            (VibePulseConfig(), False),
+            (VibePulseConfig(interaction_detail=True), False),
+            (VibePulseConfig(claude_interactions=True), True),
+            (VibePulseConfig(codex_interactions=True), True),
+            (VibePulseConfig(claude_interactions=True,
+                             codex_interactions=True), True),
+        )
+        with mock.patch.object(
+                tokenserver.interactions, "read_device_key",
+                return_value="a" * 64):
+            for config, expected_store in cases:
+                with self.subTest(config=config):
+                    tokenserver._configure_interactions(
+                        config, interaction_timeout=30.0)
+                    self.assertEqual(handler.interaction_store is not None,
+                                     expected_store)
+                    self.assertEqual(handler.claude_interactions,
+                                     config.claude_interactions)
+                    self.assertEqual(handler.codex_interactions,
+                                     config.codex_interactions)
+                    self.assertEqual(handler.interaction_detail,
+                                     config.interaction_detail)
+                    self.assertEqual(
+                        handler.legacy_claude_panel_v1,
+                        config.legacy_claude_panel_v1)
+
+
+class RepositoryRunnerTests(unittest.TestCase):
+    def test_default_runner_includes_config_and_codex_route_suites_once(self):
+        runner = (Path(__file__).resolve().parents[2] / "test" / "run.sh")
+        contents = runner.read_text(encoding="utf-8")
+
+        self.assertEqual(
+            contents.count("tools.tokenserver.test_vibepulse_config"), 1)
+        self.assertEqual(
+            contents.count("tools.tokenserver.test_codex_interactions"), 1)
+        self.assertEqual(
+            contents.count("tools.tokenserver.test_interaction_relay "), 1)
+        self.assertEqual(contents.count(
+            "tools.tokenserver.test_interaction_relay_integration"), 1)
+
+
+class InteractionRelayConfigTests(unittest.TestCase):
+    MAILBOX = "vp_A1b2C3d4E5f6G7h8"
+    TOKEN = "ERERERERERERERERERERERERERERERERERERERERERE"
+    SECRET = "a" * 64
+
+    class FakeRelay:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.started = False
+            self.stopped = False
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+    def setUp(self):
+        self.saved = (
+            tokenserver.Handler.interaction_store,
+            getattr(tokenserver.Handler, "interaction_relay_status", "off"),
+            getattr(tokenserver.Handler, "interaction_relay_reason", None),
+        )
+        tokenserver.Handler.interaction_store = mock.Mock()
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        (tokenserver.Handler.interaction_store,
+         tokenserver.Handler.interaction_relay_status,
+         tokenserver.Handler.interaction_relay_reason) = self.saved
+
+    def config(self, **changes):
+        values = {
+            "claude_interactions": True,
+            "interaction_detail": True,
+            "interaction_relay": True,
+            "interaction_relay_url": "https://relay.example",
+            "interaction_mailbox": self.MAILBOX,
+        }
+        values.update(changes)
+        return VibePulseConfig(**values)
+
+    def configure(self, config=None, secret=SECRET, environ=None,
+                  relay_factory=None):
+        return tokenserver._configure_interaction_relay(
+            config or self.config(), secret,
+            environ={"VIBEPULSE_INTERACTION_MAC_TOKEN": self.TOKEN}
+            if environ is None else environ,
+            relay_factory=relay_factory or self.FakeRelay,
+        )
+
+    def test_default_off_does_not_load_optional_crypto_or_change_store(self):
+        store = tokenserver.Handler.interaction_store
+        adapter = self.configure(
+            VibePulseConfig(),
+            relay_factory=lambda **_kwargs: self.fail(
+                "relay dependency loaded while off"))
+
+        self.assertIsNone(adapter)
+        self.assertIs(tokenserver.Handler.interaction_store, store)
+        self.assertEqual(tokenserver.Handler.interaction_relay_status, "off")
+        self.assertIsNone(tokenserver.Handler.interaction_relay_reason)
+
+    def test_ready_relay_starts_with_only_required_public_and_secret_values(self):
+        adapter = self.configure()
+
+        self.assertTrue(adapter.started)
+        self.assertEqual(adapter.kwargs["base_url"], "https://relay.example")
+        self.assertEqual(adapter.kwargs["mailbox"], self.MAILBOX)
+        self.assertEqual(adapter.kwargs["mac_token"], self.TOKEN)
+        self.assertEqual(adapter.kwargs["device_key_hex"], self.SECRET)
+        self.assertIs(adapter.kwargs["store"],
+                      tokenserver.Handler.interaction_store)
+        self.assertEqual(tokenserver.Handler.interaction_relay_status, "ready")
+        self.assertIsNone(tokenserver.Handler.interaction_relay_reason)
+
+    def test_each_missing_requirement_disables_only_the_relay(self):
+        cases = (
+            (self.config(claude_interactions=False), self.SECRET, {},
+             "provider-required"),
+            (self.config(interaction_detail=False), self.SECRET, {},
+             "detail-required"),
+            (self.config(), None, {}, "device-key-missing"),
+            (self.config(interaction_relay_url=None), self.SECRET, {},
+             "url-missing"),
+            (self.config(interaction_mailbox=None), self.SECRET, {},
+             "mailbox-missing"),
+            (self.config(), self.SECRET, {}, "mac-token-missing"),
+        )
+        store = tokenserver.Handler.interaction_store
+        for config, secret, environ, reason in cases:
+            with self.subTest(reason=reason):
+                adapter = self.configure(
+                    config, secret=secret, environ=environ)
+                self.assertIsNone(adapter)
+                self.assertIs(tokenserver.Handler.interaction_store, store)
+                self.assertEqual(
+                    tokenserver.Handler.interaction_relay_status, "disabled")
+                self.assertEqual(
+                    tokenserver.Handler.interaction_relay_reason, reason)
+
+    def test_missing_optional_dependency_is_a_non_secret_disabled_reason(self):
+        def missing(**_kwargs):
+            raise ImportError("cryptography missing /private/path")
+
+        adapter = self.configure(relay_factory=missing)
+
+        self.assertIsNone(adapter)
+        self.assertEqual(tokenserver.Handler.interaction_relay_status,
+                         "disabled")
+        self.assertEqual(tokenserver.Handler.interaction_relay_reason,
+                         "crypto-unavailable")
+        self.assertNotIn("private", tokenserver.Handler.interaction_relay_reason)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX mode enforcement")
+    def test_token_file_requires_exact_private_mode(self):
+        with tempfile.TemporaryDirectory(prefix="relay-token-") as tmp:
+            path = Path(tmp) / "token"
+            path.write_text(self.TOKEN + "\n", encoding="utf-8")
+            path.chmod(0o644)
+            self.assertIsNone(tokenserver._read_interaction_mac_token(
+                path=path, environ={}))
+            path.chmod(0o600)
+            self.assertEqual(tokenserver._read_interaction_mac_token(
+                path=path, environ={}), self.TOKEN)
+
+    def test_noncanonical_role_tokens_are_rejected_before_factory(self):
+        invalid = (
+            "short",
+            self.TOKEN + "=",
+            "A" * 42,
+            "A" * 44,
+            "é" * 43,
+        )
+        for value in invalid:
+            with self.subTest(value=value):
+                adapter = self.configure(
+                    environ={"VIBEPULSE_INTERACTION_MAC_TOKEN": value},
+                    relay_factory=lambda **_kwargs: self.fail(
+                        "invalid token reached relay factory"))
+                self.assertIsNone(adapter)
+                self.assertEqual(
+                    tokenserver.Handler.interaction_relay_status,
+                    "disabled")
+                self.assertEqual(
+                    tokenserver.Handler.interaction_relay_reason,
+                    "mac-token-missing")
 
 
 class ValueMultipleIntegrationTests(unittest.TestCase):

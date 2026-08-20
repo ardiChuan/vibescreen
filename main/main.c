@@ -14,6 +14,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "esp_app_desc.h"
@@ -45,6 +46,11 @@
 #include "rotation.h"
 #include "secrets.h"
 #include "torget.h"
+#include "wifi_creds.h"
+#include "wifi_setup.h"
+#include "wifi_setup_ui.h"
+#include "wifi_signal_state.h"
+#include "wifi_slots.h"
 
 static const char *TAG = "torget";
 
@@ -79,6 +85,10 @@ static EventGroupHandle_t s_net_events;
 #define WIFI_GOT_IP BIT0
 #define NET_READY   BIT1 /* IP + SNTP: TLS kräver rimlig tid */
 
+/* Lock-free presentation input only. The network task owns radio sampling;
+ * LVGL merely reads the last 0..3 value through torget_wifi_signal_bars(). */
+static tg_wifi_signal_state s_wifi_signal = TG_WIFI_SIGNAL_STATE_INIT;
+
 /* ------------------------------------------------- plattforms-API:t (torget.h) */
 
 /*
@@ -102,6 +112,10 @@ void torget_net_wait(void) {
   xEventGroupWaitBits(s_net_events, NET_READY, pdFALSE, pdTRUE, portMAX_DELAY);
 }
 
+uint8_t torget_wifi_signal_bars(void) {
+  return tg_wifi_signal_bars(&s_wifi_signal);
+}
+
 void torget_keep_awake(void) { s_last_activity_us = esp_timer_get_time(); }
 
 void torget_update_available(const char *version) {
@@ -119,10 +133,10 @@ void torget_data_alive(void) { atomic_store(&s_data_alive, true); }
 /* Bootdiagnostik, medvetet permanent: skanna EN gång från nättasken (inte
  * event-loopen — dess stack sväljer varken blockering eller AP-listan)
  * innan första connect. S3:an är 2,4 GHz-only, så ett nät som saknas i
- * listan finns inte i dess värld oavsett vad telefonen ser. En hyllpryl
- * utan skärmtangentbord kan inte felsöka WiFi på annat sätt än att berätta
- * vad den ser; 2,5 s extra vid boot är priset. */
-static void scan_debug(void) {
+ * listan finns inte i dess värld oavsett vad telefonen ser. 2,5 s extra vid
+ * boot är priset; sedan setupfönstret finns (components/torget_wifi) står
+ * samma sanning också på glaset, inte bara i en logg ingen läser. */
+static void scan_debug(const char *target) {
   static wifi_ap_record_t ap[20]; /* 1,6 kB — på .bss, inte på stacken */
   ESP_LOGI(TAG, "skannar 2,4 GHz-banden...");
   if (esp_wifi_scan_start(NULL, true) != ESP_OK) {
@@ -134,7 +148,7 @@ static void scan_debug(void) {
     for (int i = 0; i < n; i++)
       ESP_LOGI(TAG, "  ser: \"%s\" kanal %d, %d dBm, auth %d",
                (const char *)ap[i].ssid, ap[i].primary, ap[i].rssi, ap[i].authmode);
-    ESP_LOGI(TAG, "  (%d nät totalt; vårt mål: \"%s\")", n, TG_WIFI_SSID);
+    ESP_LOGI(TAG, "  (%d nät totalt; vårt mål: \"%s\")", n, target);
   }
 }
 
@@ -147,52 +161,215 @@ static bool s_first_start = true;
 #define TG_WIFI2_PASS ""
 #endif
 
-static const char *const s_ssid[2] = { TG_WIFI_SSID, TG_WIFI2_SSID };
-static const char *const s_pass[2] = { TG_WIFI_PASS, TG_WIFI2_PASS };
-static int s_nat;         /* vilket av näten vi jagar just nu             */
-static int s_nat_missar;  /* missar i rad på DET nätet                    */
+/*
+ * Kandidatlistan: näten panelen minns (NVS, components/torget_wifi) först —
+ * det som senast fungerade överst — och secrets.h sist som en OFÖRÄNDERLIG
+ * botten. Botten är hela poängen: setupfönstret kan lägga till platser men
+ * aldrig ta bort hemnätet, så ingen felkonfiguration kan göra panelen
+ * ounderhållbar och kräva en USB-flashning för att komma tillbaka.
+ *
+ * Listan skrivs av setupvakten (efter nya uppgifter) och läses av
+ * event-loopen — därför ett kort mutexhåll runt varje åtkomst.
+ */
+static tg_wifi_slot s_cand[TG_WIFI_SLOTS + 2];
+static int s_cand_n;
+static int s_cand_i;      /* vilket nät vi jagar just nu */
+static int s_cand_misses; /* missar i rad på DET nätet   */
+static SemaphoreHandle_t s_cand_lock;
 
-/* 4 missar ≈ 10-15 s per nät innan vi provar det andra — snabbt nog för
- * bilen, trögt nog att inte fladdra när hemmanätet har en dålig stund. */
-#define NAT_MISSAR_INNAN_BYTE 4
+/* Medan setupfönstret äger radion (skanning + accesspunkt) ska
+ * event-handlern INTE ropa esp_wifi_connect: en connect mitt i en skanning
+ * ger bara ESP_ERR_WIFI_STATE och ett brus av misslyckanden i loggen. */
+static atomic_bool s_sta_paused;
 
-static void wifi_apply(int idx) {
+/* Senaste frånkopplingsorsaken i klartext, för den ärliga nätsidan. */
+static char s_reason_text[40];
+
+static void cand_lock(void)   { xSemaphoreTake(s_cand_lock, portMAX_DELAY); }
+static void cand_unlock(void) { xSemaphoreGive(s_cand_lock); }
+
+/* Bygger om listan ur NVS + secrets.h. prefer != NULL ställer jakten direkt
+ * på det nätet (setupfönstret har just fått dess lösenord). */
+static void wifi_reload_candidates(const char *prefer) {
+  static tg_wifi_slot remembered[TG_WIFI_SLOTS];
+  static tg_wifi_slot fixed[2];
+  const tg_wifi_slot *order[TG_WIFI_SLOTS + 2];
+
+  tg_wifi_creds_load(remembered);
+
+  memset(fixed, 0, sizeof fixed);
+  snprintf(fixed[0].ssid, sizeof fixed[0].ssid, "%s", TG_WIFI_SSID);
+  snprintf(fixed[0].pass, sizeof fixed[0].pass, "%s", TG_WIFI_PASS);
+  snprintf(fixed[1].ssid, sizeof fixed[1].ssid, "%s", TG_WIFI2_SSID);
+  snprintf(fixed[1].pass, sizeof fixed[1].pass, "%s", TG_WIFI2_PASS);
+
+  int n = tg_wifi_candidates(remembered, TG_WIFI_SLOTS, fixed, 2, order,
+                             TG_WIFI_SLOTS + 2);
+
+  cand_lock();
+  s_cand_n = n;
+  for (int i = 0; i < n; i++) s_cand[i] = *order[i];
+  s_cand_i = 0;
+  s_cand_misses = 0;
+  if (prefer) {
+    for (int i = 0; i < n; i++)
+      if (strcmp(s_cand[i].ssid, prefer) == 0) { s_cand_i = i; break; }
+  }
+  cand_unlock();
+
+  ESP_LOGI(TAG, "%d nät i jaktlistan (%d ihågkomna + secrets.h)", n,
+           tg_wifi_creds_count());
+}
+
+/* Nätet vi jagar just nu, kopierat till anroparens egen buffert så listan
+ * aldrig läses utan lås. */
+static void wifi_copy_current_ssid(char *out, size_t cap) {
+  if (!cap) return;
+  cand_lock();
+  if (s_cand_n > 0) snprintf(out, cap, "%s", s_cand[s_cand_i].ssid);
+  else out[0] = '\0';
+  cand_unlock();
+}
+
+/* Krokens variant. Bufferten är statisk och därför BARA för setupvakten —
+ * den är hookens enda anropare. Event-loopen och nättasken tar egna lokala
+ * buffertar; två taskar som skriver samma static hade kunnat rita ett
+ * hopblandat nätnamn på glaset just när någon felsöker sitt nät. */
+static const char *wifi_current_ssid(void) {
+  static char ssid[TG_WIFI_SSID_CAP];
+  wifi_copy_current_ssid(ssid, sizeof ssid);
+  return ssid;
+}
+
+static const char *wifi_last_reason(void) {
+  return s_reason_text[0] ? s_reason_text : NULL;
+}
+
+static void wifi_apply_current(void) {
   wifi_config_t cfg = { 0 };
-  strlcpy((char *)cfg.sta.ssid, s_ssid[idx], sizeof cfg.sta.ssid);
-  strlcpy((char *)cfg.sta.password, s_pass[idx], sizeof cfg.sta.password);
-  cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+  cand_lock();
+  if (s_cand_n > 0) {
+    strlcpy((char *)cfg.sta.ssid, s_cand[s_cand_i].ssid, sizeof cfg.sta.ssid);
+    strlcpy((char *)cfg.sta.password, s_cand[s_cand_i].pass,
+            sizeof cfg.sta.password);
+  }
+  cand_unlock();
+  /* Tröskeln följer nätet, inte en global gissning: ett öppet café-nät har
+   * ingen PSK och skulle avvisas tyst av en fast WPA2-tröskel — det var
+   * exakt vad den gamla koden gjorde på resa. */
+  cfg.sta.threshold.authmode =
+      cfg.sta.password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
+}
+
+static void wifi_note_reason(int reason) {
+  /* Orsakskoden är diagnosen: 201 = nätet syns inte alls (fel namn, eller
+   * bara 5 GHz — S3:an hör enbart 2,4 GHz), 15/204 = fel lösenord. Samma
+   * sanning som loggen burit sedan 2026-08-06, nu också på glaset. */
+  switch (reason) {
+    case 201:
+      snprintf(s_reason_text, sizeof s_reason_text, "NOT SEEN - 2.4 GHZ ONLY");
+      break;
+    case 15:
+    case 204:
+      snprintf(s_reason_text, sizeof s_reason_text, "WRONG PASSWORD");
+      break;
+    default:
+      snprintf(s_reason_text, sizeof s_reason_text, "RADIO REASON %d", reason);
+      break;
+  }
 }
 
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
   (void)arg;
   if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
     if (s_first_start) { s_first_start = false; return; } /* nättasken sköter första */
-    esp_wifi_connect();
+    if (!atomic_load(&s_sta_paused)) esp_wifi_connect();
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
     xEventGroupClearBits(s_net_events, WIFI_GOT_IP);
-    /* Orsakskoden är diagnosen: 201 = nätet syns inte alls (fel namn, eller
-     * bara 5 GHz — S3:an hör enbart 2,4 GHz), 15/204 = fel lösenord. */
-    ESP_LOGW(TAG, "WiFi tappat (\"%s\", orsak %d), återansluter",
-             s_ssid[s_nat], ((wifi_event_sta_disconnected_t *)data)->reason);
-    /* Växelbruk hem/hotspot: efter NAT_MISSAR_INNAN_BYTE missar i rad provas
-     * det andra nätet (om ifyllt). Ingen prioritet — det som svarar vinner,
-     * och tappas det börjar jakten om. */
-    if (s_ssid[1][0] != '\0' && ++s_nat_missar >= NAT_MISSAR_INNAN_BYTE) {
-      s_nat = !s_nat;
-      s_nat_missar = 0;
-      ESP_LOGI(TAG, "provar \"%s\" i stället", s_ssid[s_nat]);
-      wifi_apply(s_nat);
+    tg_wifi_signal_event(&s_wifi_signal, 0);
+    int reason = ((wifi_event_sta_disconnected_t *)data)->reason;
+    wifi_note_reason(reason);
+    char ssid[TG_WIFI_SSID_CAP];
+    wifi_copy_current_ssid(ssid, sizeof ssid);
+    ESP_LOGW(TAG, "WiFi tappat (\"%s\", orsak %d), återansluter", ssid, reason);
+    /* Setupfönstret äger radion: ingen återanslutning förrän det släppt. */
+    if (atomic_load(&s_sta_paused)) return;
+    /* Växelbruk över hela listan: efter fyra missar i rad provas nästa
+     * kandidat. Ingen prioritet — det som svarar vinner, och tappas det
+     * börjar jakten om från samma plats i listan. */
+    bool switched = false;
+    cand_lock();
+    if (s_cand_n > 1 && tg_wifi_should_switch(++s_cand_misses)) {
+      s_cand_i = (s_cand_i + 1) % s_cand_n;
+      s_cand_misses = 0;
+      switched = true;
+    }
+    cand_unlock();
+    if (switched) {
+      wifi_copy_current_ssid(ssid, sizeof ssid);
+      ESP_LOGI(TAG, "provar \"%s\" i stället", ssid);
+      wifi_apply_current();
     }
     vTaskDelay(pdMS_TO_TICKS(2000));
-    esp_wifi_connect();
+    if (!atomic_load(&s_sta_paused)) esp_wifi_connect();
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-    ESP_LOGI(TAG, "WiFi uppe (\"%s\")", s_ssid[s_nat]);
-    torget_boot_screen_stage(TG_BOOT_WIFI_UP);
-    s_nat_missar = 0;
+    /* GOT_IP is enough to say connected even before the first RSSI sample. */
     xEventGroupSetBits(s_net_events, WIFI_GOT_IP);
+    tg_wifi_signal_event(&s_wifi_signal, 1);
+    char ssid[TG_WIFI_SSID_CAP];
+    wifi_copy_current_ssid(ssid, sizeof ssid);
+    ESP_LOGI(TAG, "WiFi uppe (\"%s\")", ssid);
+    torget_boot_screen_stage(TG_BOOT_WIFI_UP);
+    s_reason_text[0] = '\0';
+    cand_lock();
+    s_cand_misses = 0;
+    cand_unlock();
+    /* INGEN NVS här. Att flytta upp nätet i listan läser och skriver en
+     * blob på 600 byte — dels blockerar en flashskrivning event-loopen
+     * (cachen suspenderas), dels ryms arrayen illa på dess lilla stack.
+     * Nätvakten gör det i stället, på sin egen. */
   }
 }
+
+/* Setupfönstrets krokar in i värdlagret. Fönstret äger aldrig radion
+ * själv — det ber om pausen och lämnar tillbaka den. */
+static bool hook_have_ip(void) {
+  return (xEventGroupGetBits(s_net_events) & WIFI_GOT_IP) != 0;
+}
+
+static void hook_sta_pause(bool paused) {
+  atomic_store(&s_sta_paused, paused);
+  if (!paused) esp_wifi_connect();
+}
+
+static void hook_creds_changed(const char *ssid) {
+  wifi_reload_candidates(ssid);
+  wifi_apply_current();
+  esp_wifi_connect();
+}
+
+/* Kallas av nätvakten när en uppkoppling just lyckats — den har stacken
+ * och friheten att röra flashen som event-loopen saknar. Nätet som gav IP
+ * flyter upp i listan så det provas först nästa gång. No-op för
+ * secrets.h-botten: den bor aldrig i NVS. */
+static void hook_ip_acquired(void) {
+  char ssid[TG_WIFI_SSID_CAP];
+  wifi_copy_current_ssid(ssid, sizeof ssid);
+  if (ssid[0]) tg_wifi_creds_mark_ok(ssid);
+}
+
+static const tg_wifi_setup_hooks s_setup_hooks = {
+  /* Flushens DMA-behov: golvet setupfönstrets grindar mäter mot —
+   * samma tal som heap-larmet i tick_cb vaktar. */
+  .flush_dma_bytes = (size_t)DISPLAY_FLUSH_ROWS * 480u * 2u,
+  .have_ip = hook_have_ip,
+  .ip_acquired = hook_ip_acquired,
+  .sta_pause = hook_sta_pause,
+  .creds_changed = hook_creds_changed,
+  .current_ssid = wifi_current_ssid,
+  .last_reason = wifi_last_reason,
+};
 
 static void wifi_start(void) {
   ESP_ERROR_CHECK(esp_netif_init());
@@ -207,7 +384,8 @@ static void wifi_start(void) {
     IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL, NULL));
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-  wifi_apply(0);                  /* hemmanätet först; växelbruket tar över */
+  wifi_reload_candidates(NULL); /* NVS överst, secrets.h som botten */
+  wifi_apply_current();
   ESP_ERROR_CHECK(esp_wifi_start());
 }
 
@@ -228,13 +406,33 @@ static void time_sync(void) {
 static void net_task(void *arg) {
   (void)arg;
   vTaskDelay(pdMS_TO_TICKS(500)); /* låt STA-läget starta klart */
-  scan_debug();
+  char target[TG_WIFI_SSID_CAP];
+  wifi_copy_current_ssid(target, sizeof target);
+  scan_debug(target);
   esp_wifi_connect();
   xEventGroupWaitBits(s_net_events, WIFI_GOT_IP, pdFALSE, pdTRUE, portMAX_DELAY);
   time_sync();
   torget_boot_screen_stage(TG_BOOT_TIME_OK);
   xEventGroupSetBits(s_net_events, NET_READY);
   vTaskDelete(NULL);
+}
+
+/* RSSI is sampled away from the LVGL task.  Five seconds is deliberate:
+ * signal strength is orientation context, not a live transport-health meter,
+ * and a low-priority periodic query must never contend with display work. */
+static void wifi_signal_task(void *arg) {
+  (void)arg;
+  for (;;) {
+    unsigned sampled = tg_wifi_signal_sample_begin(&s_wifi_signal);
+    wifi_ap_record_t ap;
+    uint8_t bars = 0;
+    if ((xEventGroupGetBits(s_net_events) & WIFI_GOT_IP) != 0 &&
+        esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+      bars = ap.rssi >= -55 ? 3 : ap.rssi >= -70 ? 2 : 1;
+    }
+    (void)tg_wifi_signal_sample_commit(&s_wifi_signal, sampled, bars);
+    vTaskDelay(pdMS_TO_TICKS(5000));
+  }
 }
 
 /* ------------------------------------------------------- LVGL-tasken, 10 Hz */
@@ -309,17 +507,36 @@ static void tick_cb(lv_timer_t *t) {
   tg_button_action key3_action = tg_button_update(&key3, key3_down, now);
   if (key3_down)
     s_last_touch_us = now; /* knappkontakt är aktivitet, precis som touch */
-  if (torget_ota_service_maintenance_open()) {
-    /* While the update window owns the glass, KEY3 has exactly one job: close
-     * it. ANY release does — a short tap or the panic-window hold — so the
-     * nödutgången never depends on out-tapping the panic threshold (a real
-     * trap found on hardware 2026-08-16: a ~2 s press panicked instead of
-     * closing, leaving the window stuck). Ten minutes without an escape once
-     * made a healthy device look hung. The 3 s hold that would open the
-     * window is a harmless no-op here — it is already open. No panic fires
-     * while the window is up. */
+  if (torget_wifi_setup_is_open()) {
+    /* Samma nödutgång som OTA-fönstret: medan setupfönstret äger glaset
+     * stänger VILKET släpp som helst det. Ingen appväxling, ingen panik —
+     * ett fönster man inte kan stänga fick en frisk panel att se hängd ut
+     * (hårdvaruläxan 2026-08-16). */
     if (key3_action == TG_BUTTON_NEXT_APP || key3_action == TG_BUTTON_PANIC)
+      torget_wifi_setup_request_close();
+  } else if (torget_ota_service_maintenance_open()) {
+    /* While the update window owns the glass, ANY release closes it — a
+     * short tap or the panic-window hold — so the nödutgången never depends
+     * on out-tapping the panic threshold (a real trap found on hardware
+     * 2026-08-16: a ~2 s press panicked instead of closing, leaving the
+     * window stuck). Ten minutes without an escape once made a healthy
+     * device look hung. No panic fires while the window is up.
+     *
+     * Ett NYTT fullt 3 s-håll byter fönster: OTA-fönstret stängs och
+     * setupfönstret öppnar. Det är vägen att nå WIFI SETUP på en panel som
+     * HAR nät (håll–håll: först uppdateringsfönstret, sen nätfönstret) —
+     * utan den kunde ett nytt nät bara läras ut när panelen redan var
+     * strandad. Nödutgången är intakt: varje släpp FÖRE tre sekunder
+     * stänger, bara ett medvetet fullbordat håll byter. */
+    if (key3_action == TG_BUTTON_NEXT_APP || key3_action == TG_BUTTON_PANIC) {
       torget_ota_service_close_maintenance();
+    } else if (key3_action == TG_BUTTON_OPEN_MAINTENANCE) {
+      /* Bara begäran härifrån: setupvaktens window_open äger överlämningen
+       * av port 80 (stänger OTA-fönstret och väntar ut dess httpd-stopp).
+       * Att stänga HÄR hade gjort portbytet till en kapplöpning mellan två
+       * vakter som pollar var 500:e ms. */
+      torget_wifi_setup_request_open();
+    }
   } else if (key3_action == TG_BUTTON_NEXT_APP) {
     torget_app_next();
   } else if (key3_action == TG_BUTTON_PANIC) {
@@ -328,7 +545,13 @@ static void tick_cb(lv_timer_t *t) {
      * svarskanal (ingen enhetsnyckel) gör det till en no-op. */
     tk_needs_you_send_panic();
   } else if (key3_action == TG_BUTTON_OPEN_MAINTENANCE) {
-    torget_ota_service_open_maintenance();
+    /* Ett håll betyder det ENDA som kan hjälpa just nu. Utan IP kan ett
+     * OTA-fönster aldrig ta emot en uppladdning — då är nätet problemet,
+     * och hållet öppnar setupfönstret i stället. Med IP är allt som förut.
+     * OTA:s samtyckesmodell är oförändrad: fönstret öppnas fortfarande
+     * bara från enheten, aldrig av ett skript. */
+    if (hook_have_ip()) torget_ota_service_open_maintenance();
+    else torget_wifi_setup_request_open();
   }
 
   int target = ((now - s_last_activity_us) > NIGHT_AFTER_US
@@ -506,6 +729,11 @@ void app_main(void) {
    * 2026-08-06). Ordningen är en del av kontraktet, inte en detalj. */
   s_net_events = xEventGroupCreate();
 
+  /* Kandidatlistans lås FÖRE wifi_start: event-handlern kan ta emot sitt
+   * första DISCONNECTED innan app_main hunnit längre. */
+  s_cand_lock = xSemaphoreCreateMutex();
+  ESP_ERROR_CHECK(s_cand_lock ? ESP_OK : ESP_ERR_NO_MEM);
+
   /* Panelen först, nätet sedan: initsekvensen tar ~1,2 s och skärmen ska
    * visa sina streck medan WiFi:t kopplar upp, inte stå svart i tio
    * sekunder. Egen start med små flushbitar — se display_start ovan. */
@@ -540,6 +768,11 @@ void app_main(void) {
   torget_ui_create(); /* bygger apparna via registret + launchern */
   /* UI-beviset: registret, apparnas create() och launchern överlevde. */
   torget_boot_health_mark(TG_HEALTH_UI);
+  /* Nätlagret EFTER apparna men FÖRE OTA-overlayn: båda bor på topplagret
+   * och hämtar sig längst fram i sin egen set(), så skapelseordningen
+   * avgör vem som vinner när båda vill synas. READY-ringen ska alltid
+   * vinna — den skapas därför sist. */
+  torget_wifi_ui_create();
   /* OTA-overlayn EFTER det delade UI:t, på topplagret, dold tills KEY3-
    * hållet öppnar underhållsfönstret — appträdet rörs aldrig. */
   torget_ota_ui_create();
@@ -557,9 +790,15 @@ void app_main(void) {
    * bana och får aldrig stå bakom en valfri funktion i minneskön. */
   if (xTaskCreate(net_task, "torget-net", 4096, NULL, 5, NULL) != pdPASS)
     ESP_LOGE(TAG, "torget-net kunde inte skapas — apparna får aldrig data");
+  if (xTaskCreate(wifi_signal_task, "wifi-signal", 2048, NULL, 2, NULL) != pdPASS)
+    ESP_LOGW(TAG, "wifi-signal kunde inte skapas — ikonen visar frånkopplad");
   /* OTA-ytan är LAT: vid boot startar bara den lilla fönstervakten.
    * Http-servern och dess minneskostnad existerar först när ett KEY3-håll
    * öppnat underhållsfönstret — en boot utan uppdatering ska ha samma
    * minnesprofil som en build helt utan OTA (frysläxan 2026-08-14). */
   torget_ota_service_start();
+  /* Nätvakten sist och lika lat: accesspunkten, http-servern och
+   * DNS-tasken existerar först när setupfönstret öppnats. En panel som
+   * hittar sitt nät betalar ingenting för att funktionen finns. */
+  torget_wifi_setup_start(&s_setup_hooks);
 }

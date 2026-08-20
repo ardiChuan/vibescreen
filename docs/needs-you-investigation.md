@@ -1,4 +1,4 @@
-# VibePulse "Needs You" — technical investigation
+# VibePulse "Needs You" — Claude and Codex technical investigation
 
 **Written:** 2026-08-15. **Status:** research and architecture only. No
 implementation, no authorization, no flash implied, no capability promoted in
@@ -33,6 +33,42 @@ This document supersedes nothing. It is the deeper follow-up to the "Can the
 screen answer back?" section of the brainstorm, which reached the same
 conclusion from the permissions side and whose verification work is reused here
 rather than repeated.
+
+## Current implementation addendum (2026-08-20)
+
+The Claude-first investigation below is kept as the design record. The current
+local implementation now supports both providers through one interaction store
+and one LVGL object tree:
+
+- Claude keeps its loopback HTTP question/permission hooks. The old
+  `--interactions` flag is a legacy alias for Claude only.
+- Codex uses a packaged `PermissionRequest` command hook plus a local stdio MCP
+  question tool. Installation and enablement are separate; installing the
+  plugin leaves Codex interactions off by default.
+- Claude, Codex, detail-on-panel, legacy compatibility, numbers relay, the
+  future interaction relay, and GitHub are independent choices. The guided
+  lifecycle is `python3 tools/vibepulse_setup.py install`, then `status`,
+  `doctor`, `disable`, or `uninstall` as needed.
+- Every current Codex verdict is signed over protocol version, provider,
+  request id, the SHA-256 digest of the exact rendered view, verdict, and
+  timestamp. A legacy Claude v1 answer cannot resolve a Codex request.
+- Codex offers **ALLOW ONCE** only inside a narrow safe-command tier. Unknown,
+  mutating, secret-bearing, malformed, or visually incomplete requests use the
+  computer fallback. Questions need two or three options with exactly one
+  recommendation explicitly marked by Codex; VibePulse does not invent one.
+- The computer must be on. The currently implemented activity/answer path is
+  direct LAN, while the existing public relay remains numbers-only. A future
+  encrypted interaction relay is a separate default-off design: end-to-end
+  encrypt prompt content between computer and panel, keep a short TTL, and bind
+  one-time signed verdicts to request id, view digest, and timestamp. It is not
+  enabled by installing either provider adapter.
+
+For Codex hook trust, run `/hooks`, review VibePulse's `SessionStart` and
+`PermissionRequest` hooks, explicitly trust them, and **Start a new Codex task**.
+The setup tool's doctor reports the state but never bypasses that review.
+Uninstalling the Codex adapter preserves Claude, relays, GitHub, the device key,
+and unrelated Codex settings. Legacy Claude v1 is insecure, Claude-only, and
+off by default.
 
 ---
 
@@ -443,16 +479,20 @@ that actually matters — the answer — is the POST, which is immediate. A seco
 transport with reconnect logic and new firmware surface is not worth sub-second
 gains on a 120 s window.
 
-### What is built (stage 1)
+### What is built locally
 
 `tools/tokenserver/interactions.py` holds the store and the pure logic;
-`tokenserver.py` exposes it. Off unless `--interactions` is passed.
+`tokenserver.py` exposes it. Independent saved switches gate Claude and Codex;
+both are off in a fresh clone. `--interactions` remains a Claude-only legacy
+alias, while `tools/vibepulse_setup.py` is the supported guided setup.
 
 | Route | Who calls it | Behaviour |
 |---|---|---|
 | `POST /api/hook/question` | Claude Code, loopback only | parks a question, holds the connection, returns the answer |
 | `POST /api/hook/permission` | Claude Code, loopback only | same, for approvals |
-| `POST /api/interaction/<id>` | the device, over the LAN | one signed answer: `approve` / `deny` / `leave_it` |
+| `POST /api/codex/question` | local Codex MCP adapter, loopback only | normalizes one bounded question and returns its exact recommended answer or computer fallback |
+| `POST /api/codex/permission` | local Codex command hook, loopback only | normalizes one permission and returns allow/deny or computer fallback |
+| `POST /api/interaction/<id>` | the device, over the LAN | one v2 signed, provider/view-bound answer: `approve` / `deny` / `leave_it` |
 | `POST /api/panic` | the device | signed panic stop: denies everything parked |
 | `GET /api/agent-status` | the device | unchanged, plus an optional `pending` object |
 
@@ -502,7 +542,7 @@ Proportionate: a maker device on a home LAN whose worst honest failure must be
 | Risk | Mitigation |
 |---|---|
 | Device approves something dangerous | **Layer 0 is Claude Code itself**: `permissions.deny` and managed policies are evaluated regardless of hook output. Ship a deny baseline; the device cannot approve past it. |
-| LAN peer forges an answer | Today `:8737` is unauthenticated and GET-only — fine for percentages, not verdicts. Answer POSTs need HMAC-SHA256 over `(request_id, verdict, ts)` with a per-device key, single-use `request_id` (replay-proof), ~90 s freshness. Read endpoints unchanged. |
+| LAN peer forges an answer | Current v2 answer POSTs use HMAC-SHA256 over protocol version, provider, request id, exact view digest, verdict, and timestamp with a per-device key. Request ids are single-use and short-lived. Read endpoints remain unauthenticated local status data. |
 | Approving unreadable text | If the command does not fit at 480 x 480, render it truncated and **disable APPROVE**. DENY always works. The honesty invariant, applied to a button. |
 | Passer-by taps APPROVE | Risk tiers below, asymmetric buttons, optionally a KEY3 press to arm APPROVE (reusing the OTA consent language). |
 | ESP32 stolen or compromised | Blast radius is WiFi credentials plus one device key. No Anthropic, GitHub or OAuth secrets ever reach the device. Revocation is deleting the key server-side. Worst case with a live key is approving tier-2 prompts until revoked. |
@@ -603,7 +643,7 @@ ever say no.
 | **3 — approvals and safety** | risk tiers, deny baseline doc, truncation disables APPROVE, privacy switch, "don't ask again" via `permission_suggestions` |
 | **4 — completion** | `Stop` / `StopFailure` states with debouncing, then `vibepulse_handoff` plus the skill |
 | **5 — plugin packaging** | `.claude-plugin/`, `marketplace.json`, SessionStart bridge health, userConfig pairing, `docs/agent-setup.md` update |
-| **6 — multi-session and polish** | per-session interaction queue, session names, headless `defer` + resume, then Codex (its hook contract is near-identical) |
+| **6 — multi-session and polish** | provider-neutral queue and Codex adapters are now built; richer session naming and headless `defer` + resume remain later work |
 
 ---
 

@@ -65,6 +65,13 @@ endif()
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(torget)
 
+# sdkconfig.defaults only seeds a new sdkconfig; it does not update an old
+# generated file. A stale 96 KiB LVGL pool wedges the LVGL task in its default
+# out-of-memory assert while rendering the 164 px quota glyphs. Refuse to
+# produce that image instead of discovering the mismatch on the glass.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/torget_lvgl_memory_guard.cmake")
+torget_require_lvgl_pool("${CONFIG_LV_MEM_SIZE_KILOBYTES}")
+
 # LVGL:s minnespool till PSRAM (frysfix 2026-08-16, se docs/lessons.md och
 # main/lv_psram_pool.c). LVGL:s inbyggda allokator lägger annars sin
 # LV_MEM_SIZE-pool i internt BSS; på panelen tryckte det största

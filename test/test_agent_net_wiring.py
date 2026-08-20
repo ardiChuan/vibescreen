@@ -15,6 +15,15 @@ target_cmake = (root / "components/app_tokens/CMakeLists.txt").read_text(
     encoding="utf-8"
 )
 sim_cmake = (root / "sim/CMakeLists.txt").read_text(encoding="utf-8")
+needs_you_net = (root / "components/app_tokens/needs_you_net.c").read_text(
+    encoding="utf-8"
+)
+agent_monitor = (root / "components/app_tokens/agent_monitor.c").read_text(
+    encoding="utf-8"
+)
+agent_monitor_header = (
+    root / "components/app_tokens/agent_monitor.h"
+).read_text(encoding="utf-8")
 
 assert '"agent_net.c"' in target_cmake, "target must compile agent_net.c"
 assert "../components/app_tokens/agent_net.c" not in sim_cmake, (
@@ -70,5 +79,34 @@ assert re.search(
     r"torget_ui_unlock\(\);",
     source,
 ), "a valid snapshot must be applied under the UI lock"
+
+# The callback gets one copied source-aware decision while the exact item is
+# still visible. The UI callback only copies it into the bounded sender queue;
+# direct/relay routing happens on that worker.
+assert "const tk_ir_decision_context *context" in agent_monitor_header
+assert "mon.tk_needs_you_cb(verdict, &context);" in agent_monitor
+for binding_copy in (
+    "item.context = *context;",
+    "tk_ir_delivery_initial(&item.context)",
+    "tk_ir_delivery_after_direct(",
+    "tk_interaction_relay_queue_verdict(item.verdict, &item.context)",
+):
+    assert binding_copy in needs_you_net, f"missing queued binding: {binding_copy}"
+assert "tk_needs_you_canonical_message_v2(" in needs_you_net
+assert "tk_needs_you_answer_body_v2(" in needs_you_net
+assert re.search(
+    r"context->provider\s*==\s*TK_AGENT_PROVIDER_CODEX\s*&&\s*"
+    r"!context->has_view_sha256",
+    needs_you_net,
+), "Codex must be dropped, never downgraded, when its view binding is absent"
+
+ui_callback = needs_you_net[
+    needs_you_net.index("static void needs_you_send_cb"):
+    needs_you_net.index("void tk_needs_you_send_panic")
+]
+for forbidden in ("esp_http", "mbedtls", "tk_ir_encode", "torget_cloud_io"):
+    assert forbidden not in ui_callback, (
+        f"the LVGL callback must only copy to a queue, found {forbidden}"
+    )
 
 print("OK: agentnätets targetkoppling och klientlivscykel är inkopplade")

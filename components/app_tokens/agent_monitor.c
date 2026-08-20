@@ -7,6 +7,7 @@
 #include "agent_completion_policy.h"
 #include "agent_monitor_policy.h"
 #include "needs_you_policy.h"
+#include "interaction_relay_policy.h"
 #include "torget.h"
 #include "vibepulse_layout.generated.h"
 
@@ -65,6 +66,7 @@ typedef struct {
   lv_obj_t *a_group;
   lv_obj_t *a_ring;
   lv_obj_t *a_mascot;
+  lv_obj_t *a_codex_icon;
   lv_obj_t *a_word;       /* NEEDS YOU */
   lv_obj_t *a_project;
   lv_obj_t *a_tap;        /* TAP TO ANSWER */
@@ -73,7 +75,14 @@ typedef struct {
   lv_obj_t *h_group;
   lv_obj_t *h_ring;
   lv_obj_t *h_mascot;
-  lv_obj_t *h_eyebrow;    /* CLAUDE NEEDS YOU · PROJECT */
+  lv_obj_t *h_codex_icon;
+  lv_obj_t *h_eyebrow;    /* PROVIDER NEEDS YOU · PROJECT */
+
+  /* Wi-Fi context, not transport/relay health: one shared 28px top-right
+   * object containing three arcs and their dot. */
+  lv_obj_t *wifi_group;
+  lv_obj_t *wifi_arc[3];
+  lv_obj_t *wifi_dot;
 
   /* QUESTION body */
   lv_obj_t *q_group;
@@ -93,6 +102,7 @@ typedef struct {
 
   /* Shared buttons */
   lv_obj_t *approve;
+  lv_obj_t *approve_label;
   lv_obj_t *deny;
   lv_obj_t *leave;
 
@@ -100,6 +110,7 @@ typedef struct {
   lv_obj_t *pv_group;
   lv_obj_t *pv_ring;
   lv_obj_t *pv_mascot;
+  lv_obj_t *pv_codex_icon;
   lv_obj_t *pv_title;
   lv_obj_t *pv_sub;
   lv_obj_t *pv_tap;
@@ -107,6 +118,7 @@ typedef struct {
   /* PAYOFF */
   lv_obj_t *po_group;
   lv_obj_t *po_mascot;
+  lv_obj_t *po_codex_icon;
   lv_obj_t *po_word;      /* ON IT. */
   lv_obj_t *po_echo;      /* the verbatim approved item */
   lv_obj_t *po_spark[5];
@@ -123,6 +135,8 @@ typedef struct {
   uint8_t kind;
   uint8_t stage;
   uint8_t options_total;
+  uint8_t provider;
+  uint8_t wifi_bars;
   uint16_t ring_permille;
   char request_id[TK_PENDING_ID_CAP];
 } needs_you_key;
@@ -131,12 +145,15 @@ static struct {
   completion_view completion;
   needs_you_view needs_you;
   tk_needs_you_state needs_you_state;
+  tk_ir_policy interaction_policy;
   needs_you_key needs_you_rendered;
   bool needs_you_visible; /* read by render_completion to yield the screen */
   ny_stage stage;
   char stage_id[TK_PENDING_ID_CAP]; /* the interaction the stage belongs to */
   char echo[TK_PENDING_TITLE_CAP];  /* the approved item, for the payoff beat */
   int64_t payoff_until_us;
+  tk_agent_provider payoff_provider;
+  bool has_payoff_provider;
   tk_agent_monitor_needs_you_cb tk_needs_you_cb;
   tk_agent_snapshot snapshot;
   tk_completion_queue queue;
@@ -400,23 +417,185 @@ static void ny_ascii_lower(const char *source, char *destination, size_t cap) {
   destination[i] = '\0';
 }
 
+typedef struct {
+  bool private_fallback;
+  bool can_approve;
+  const lv_font_t *prompt_font;
+  const lv_font_t *command_font;
+  int tool_chip_width;
+} ny_physical_fit;
+
+/* The status parser has already validated UTF-8. Keep glyph validation
+ * independent of LVGL private headers nevertheless: this bounded iterator
+ * consumes one validated scalar and never reads beyond its terminating NUL. */
+static uint32_t ny_utf8_next(const char *text, uint32_t *offset) {
+  const unsigned char *s = (const unsigned char *)text + *offset;
+  uint32_t cp;
+  unsigned count;
+  if (s[0] < 0x80) { cp = s[0]; count = 1; }
+  else if ((s[0] & 0xe0) == 0xc0) {
+    cp = s[0] & 0x1f;
+    count = 2;
+  } else if ((s[0] & 0xf0) == 0xe0) {
+    cp = s[0] & 0x0f;
+    count = 3;
+  } else {
+    cp = s[0] & 0x07;
+    count = 4;
+  }
+  for (unsigned i = 1; i < count; i++) cp = (cp << 6) | (s[i] & 0x3f);
+  *offset += count;
+  return cp;
+}
+
+/* A verdict is only actionable when the exact bytes which give it meaning can
+ * be painted. This is deliberately the same actual-font predicate used by the
+ * renderer: no placeholder glyph, dot-mode clipping, or hidden field can
+ * remain approvable. */
+static bool ny_text_fits(const char *text, const lv_font_t *font,
+                         int max_w, int max_h, bool one_line) {
+  if (!text || !text[0]) return false;
+  uint32_t offset = 0;
+  int ink_top = 32767, ink_bottom = -32768;
+  int pen_x = 0, ink_left = 32767, ink_right = -32768;
+  int min_left_overhang = 0, max_right_overhang = 0;
+  while (text[offset]) {
+    uint32_t current = ny_utf8_next(text, &offset);
+    uint32_t next_offset = offset;
+    uint32_t next = text[next_offset]
+                        ? ny_utf8_next(text, &next_offset) : 0;
+    lv_font_glyph_dsc_t glyph;
+    bool found = lv_font_get_glyph_dsc(font, &glyph, current, next);
+    if (!found || glyph.is_placeholder) {
+      if (found) lv_font_glyph_release_draw_data(&glyph);
+      return false;
+    }
+    if (glyph.box_h) {
+      int bottom = (int)font->line_height - (int)font->base_line - glyph.ofs_y;
+      int top = bottom - glyph.box_h;
+      int left = pen_x + glyph.ofs_x;
+      int right = left + glyph.box_w;
+      if (top < ink_top) ink_top = top;
+      if (bottom > ink_bottom) ink_bottom = bottom;
+      if (left < ink_left) ink_left = left;
+      if (right > ink_right) ink_right = right;
+      int overhang = glyph.ofs_x + glyph.box_w - glyph.adv_w;
+      if (glyph.ofs_x < min_left_overhang) min_left_overhang = glyph.ofs_x;
+      if (overhang > max_right_overhang) max_right_overhang = overhang;
+    }
+    pen_x += glyph.adv_w;
+    lv_font_glyph_release_draw_data(&glyph);
+  }
+  lv_point_t size;
+  lv_text_get_size(&size, text, font, 0, 0,
+                   one_line ? LV_COORD_MAX : max_w, LV_TEXT_FLAG_NONE);
+  int final_ink_bottom = size.y - (int)font->line_height + ink_bottom;
+  bool vertical_ink_inside = ink_top >= 0 &&
+                              ink_bottom <= (int)font->line_height &&
+                              final_ink_bottom <= max_h;
+  bool horizontal_ink_inside = one_line
+      ? ink_left >= 0 && ink_right <= max_w
+      : min_left_overhang >= 0 &&
+            size.x + max_right_overhang <= max_w;
+  return size.x <= max_w && size.y <= max_h && vertical_ink_inside &&
+         horizontal_ink_inside;
+}
+
+static ny_physical_fit ny_physical_fit_of(const tk_pending_interaction *p,
+                                           const tk_needs_you_view *decision) {
+  ny_physical_fit fit = {.private_fallback = true,
+                         .prompt_font = &plex_body_27,
+                         .command_font = &plex_mono_40,
+                         .tool_chip_width = 58};
+  if (!p || !decision || !decision->visible) return fit;
+
+  if (decision->kind == TK_PENDING_QUESTION) {
+    bool prompt_ok = p->has_prompt &&
+        ny_text_fits(p->prompt, &plex_body_27, 300, 68, false);
+    if (!prompt_ok && p->has_prompt &&
+        ny_text_fits(p->prompt, &plex_ui_21, 300, 68, false)) {
+      prompt_ok = true;
+      fit.prompt_font = &plex_ui_21;
+    }
+    if (!prompt_ok) return fit;
+    /* An unmarked prompt is intentionally alert-only, but it is not private
+     * when the complete prompt itself is readable. */
+    if (!p->marked) {
+      fit.private_fallback = false;
+      return fit;
+    }
+    if (!p->has_title ||
+        !ny_text_fits(p->title, &plex_body_27, 392, 34, true)) return fit;
+    if (p->has_subtitle &&
+        !ny_text_fits(p->subtitle, &plex_ui_16, 392, 20, true)) return fit;
+    fit.private_fallback = false;
+    fit.can_approve = decision->offer_approve;
+    return fit;
+  }
+
+  if (!p->has_title) return fit;
+  bool command_ok = ny_text_fits(p->title, &plex_mono_40, 432, 62, false);
+  if (!command_ok && ny_text_fits(p->title, &plex_mono_24, 432, 62, false)) {
+    command_ok = true;
+    fit.command_font = &plex_mono_24;
+  }
+  if (!command_ok) return fit;
+  if (p->has_subtitle &&
+      !ny_text_fits(p->subtitle, &plex_body_27, 300, 68, false)) return fit;
+  if (p->has_tool) {
+    char tool[TK_PENDING_TOOL_CAP];
+    ny_ascii_lower(p->tool, tool, sizeof tool);
+    lv_point_t tool_size;
+    lv_text_get_size(&tool_size, tool, &plex_ui_14, 0, 0, LV_COORD_MAX,
+                     LV_TEXT_FLAG_NONE);
+    if (!ny_text_fits(tool, &plex_ui_14, 192, 18, true)) return fit;
+    fit.tool_chip_width = tool_size.x + 16;
+    if (fit.tool_chip_width < 58) fit.tool_chip_width = 58;
+    if (fit.tool_chip_width > 208) return fit;
+  }
+  fit.private_fallback = false;
+  fit.can_approve = decision->offer_approve;
+  return fit;
+}
+
 /* One signed verdict leaving the glass. Every decision is re-checked against
  * the policy here; the render layer never decides. An APPROVE opens the static
  * payoff beat, echoing the verbatim item it just committed. */
 static void needs_you_resolve(tk_needs_you_verdict verdict) {
   const tk_pending_interaction *p = &mon.snapshot.pending;
   tk_needs_you_view decision = tk_needs_you_view_of(&mon.needs_you_state, p);
+  ny_physical_fit fit = ny_physical_fit_of(p, &decision);
+  if ((fit.private_fallback && verdict != TK_NEEDS_YOU_VERDICT_LEAVE_IT) ||
+      (verdict == TK_NEEDS_YOU_VERDICT_APPROVE && !fit.can_approve)) return;
   if (!tk_needs_you_allows(p, &decision, verdict)) return;
-  if (mon.tk_needs_you_cb) mon.tk_needs_you_cb(verdict, p->request_id);
   if (verdict == TK_NEEDS_YOU_VERDICT_APPROVE) {
     size_t n = 0;
     for (; p->title[n] && n + 1 < sizeof mon.echo; n++) mon.echo[n] = p->title[n];
     mon.echo[n] = '\0';
     mon.stage = NY_PAYOFF;
     mon.payoff_until_us = mon.rendered_at_us + 2500LL * 1000LL;
+    mon.payoff_provider = p->provider;
+    mon.has_payoff_provider = true;
+  }
+  uint64_t now_ms = mon.rendered_at_us > 0
+                        ? (uint64_t)mon.rendered_at_us / 1000u : 0;
+  tk_ir_decision_context context;
+  bool has_context = tk_ir_policy_capture_visible(
+      &mon.interaction_policy, now_ms, &context);
+  if (has_context &&
+      strncmp(context.request_id, p->request_id, TK_PENDING_ID_CAP) == 0 &&
+      mon.tk_needs_you_cb) {
+    mon.tk_needs_you_cb(verdict, &context);
   }
   /* Drop it at the tap, not a poll later, so a second tap can not double-answer. */
   tk_needs_you_mark_answered(&mon.needs_you_state, p);
+  (void)tk_ir_policy_mark_answered(&mon.interaction_policy, p, now_ms);
+  tk_pending_interaction next;
+  if (tk_ir_policy_current(&mon.interaction_policy, now_ms, &next)) {
+    mon.snapshot.pending = next;
+  } else {
+    memset(&mon.snapshot.pending, 0, sizeof mon.snapshot.pending);
+  }
   render_needs_you();
 }
 
@@ -436,7 +615,10 @@ static void needs_you_root_event(lv_event_t *event) {
     render_needs_you();
     return;
   }
-  if (mon.stage == NY_DECISION && !mon.snapshot.pending.has_title) {
+  const tk_pending_interaction *p = &mon.snapshot.pending;
+  tk_needs_you_view decision = tk_needs_you_view_of(&mon.needs_you_state, p);
+  ny_physical_fit fit = ny_physical_fit_of(p, &decision);
+  if (mon.stage == NY_DECISION && fit.private_fallback) {
     needs_you_resolve(TK_NEEDS_YOU_VERDICT_LEAVE_IT);
   }
 }
@@ -482,7 +664,8 @@ static void ny_ring_set(lv_obj_t *arc, uint16_t permille) {
 static lv_obj_t *ny_button(lv_obj_t *parent, const char *text,
                            const lv_font_t *font, lv_color_t text_color,
                            lv_color_t accent, bool filled,
-                           tk_needs_you_verdict verdict) {
+                           tk_needs_you_verdict verdict,
+                           lv_obj_t **label_out) {
   lv_obj_t *btn = bare(parent);
   lv_obj_set_style_radius(btn, 18, 0);
   if (filled) {
@@ -500,6 +683,7 @@ static lv_obj_t *ny_button(lv_obj_t *parent, const char *text,
   lv_obj_t *lbl = label(btn, font, text_color);
   lv_label_set_text(lbl, text);
   lv_obj_center(lbl);
+  if (label_out) *label_out = lbl;
   return btn;
 }
 
@@ -508,6 +692,27 @@ static lv_obj_t *ny_group(lv_obj_t *parent) {
   lv_obj_set_pos(group, 0, 0);
   lv_obj_set_size(group, VP_SCREEN_W, VP_SCREEN_H);
   return group;
+}
+
+static lv_obj_t *ny_codex_icon(lv_obj_t *parent, int x, int y) {
+  lv_obj_t *icon = lv_image_create(parent);
+  lv_image_set_src(icon, &tk_img_codex_64);
+  lv_obj_set_pos(icon, x, y);
+  lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+  return icon;
+}
+
+static lv_obj_t *ny_wifi_arc(needs_you_view *v, int size, int offset) {
+  lv_obj_t *arc = lv_arc_create(v->wifi_group);
+  lv_obj_remove_style_all(arc);
+  lv_obj_set_size(arc, size, size);
+  lv_obj_set_pos(arc, offset, offset);
+  lv_arc_set_rotation(arc, 225);
+  lv_arc_set_bg_angles(arc, 0, 90);
+  lv_obj_set_style_arc_width(arc, 3, LV_PART_MAIN);
+  lv_obj_set_style_arc_rounded(arc, true, LV_PART_MAIN);
+  lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+  return arc;
 }
 
 static void create_needs_you(lv_obj_t *app_root) {
@@ -533,6 +738,20 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_obj_set_style_border_width(v->frame, 2, 0);
   lv_obj_set_style_radius(v->frame, 40, 0);
 
+  /* A fixed lane shared by every Needs You stage. It describes the local
+   * Wi-Fi association only; no relay or server-health claim is encoded. */
+  v->wifi_group = bare(v->root);
+  lv_obj_set_pos(v->wifi_group, 418, 38);
+  lv_obj_set_size(v->wifi_group, 28, 28);
+  v->wifi_arc[0] = ny_wifi_arc(v, 28, 0);
+  v->wifi_arc[1] = ny_wifi_arc(v, 20, 4);
+  v->wifi_arc[2] = ny_wifi_arc(v, 12, 8);
+  v->wifi_dot = bare(v->wifi_group);
+  lv_obj_set_pos(v->wifi_dot, 12, 22);
+  lv_obj_set_size(v->wifi_dot, 4, 4);
+  lv_obj_set_style_radius(v->wifi_dot, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_opa(v->wifi_dot, LV_OPA_COVER, 0);
+
   /* -- ATTRACT: the across-the-room alert, ring carrying the countdown ------ */
   v->a_group = ny_group(v->root);
   v->a_ring = ny_ring(v->a_group, 240, 150, 78, 9);
@@ -540,6 +759,7 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_image_set_src(v->a_mascot, &tk_img_mascot_alert_8);
   lv_obj_set_pos(v->a_mascot, 176, 96);
   lv_obj_remove_flag(v->a_mascot, LV_OBJ_FLAG_CLICKABLE);
+  v->a_codex_icon = ny_codex_icon(v->a_group, 208, 118);
   v->a_word = ny_text(v->a_group, &plex_headline_48, COL_WHITE, 0, 278, 480, 0, C);
   lv_label_set_text(v->a_word, "NEEDS YOU");
   v->a_project = ny_text(v->a_group, &plex_text_21, COL_CLAUDE, 0, 332, 480, 3, C);
@@ -553,9 +773,11 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_image_set_src(v->h_mascot, &tk_img_mascot_asking_4);
   lv_obj_set_pos(v->h_mascot, 48, 49);
   lv_obj_remove_flag(v->h_mascot, LV_OBJ_FLAG_CLICKABLE);
+  v->h_codex_icon = ny_codex_icon(v->h_group, 48, 48);
   /* 14 px keeps CLAUDE NEEDS YOU · PROJECT on one line beside the ring; the
    * design's 15 px has no full-ASCII raster and 16 px wrapped. */
-  v->h_eyebrow = ny_text(v->h_group, &plex_ui_14, COL_CLAUDE, 148, 46, 312, 1, L);
+  v->h_eyebrow = ny_text(v->h_group, &plex_ui_14, COL_CLAUDE, 148, 46, 260, 1, L);
+  lv_label_set_long_mode(v->h_eyebrow, LV_LABEL_LONG_DOT);
 
   /* -- QUESTION body ------------------------------------------------------- */
   v->q_group = ny_group(v->root);
@@ -577,12 +799,15 @@ static void create_needs_you(lv_obj_t *app_root) {
   v->q_rec = ny_text(v->q_card, &plex_ui_14, COL_CLAUDE, 20, 14, 392, 1, L);
   lv_label_set_text(v->q_rec, "CLAUDE RECOMMENDS");
   v->q_title = ny_text(v->q_card, &plex_body_27, COL_WHITE, 20, 34, 392, 0, L);
+  lv_obj_set_height(v->q_title, 34);
   v->q_sub = ny_text(v->q_card, &plex_ui_16, COL_MUTED, 20, 70, 392, 0, L);
+  lv_obj_set_height(v->q_sub, 20);
   v->q_footer = ny_text(v->q_group, &plex_ui_14, COL_DIM, 0, 440, 480, 1, C);
 
   /* -- APPROVAL body: the command is the hero, in mono --------------------- */
   v->p_group = ny_group(v->root);
   v->p_desc = ny_text(v->p_group, &plex_body_27, COL_WHITE, 148, 70, 300, 0, L);
+  lv_obj_set_height(v->p_desc, 68);
   v->p_chip = bare(v->p_group);
   lv_obj_set_pos(v->p_chip, 24, 146);
   lv_obj_set_size(v->p_chip, 58, 26);
@@ -594,14 +819,16 @@ static void create_needs_you(lv_obj_t *app_root) {
   v->p_chip_lbl = label(v->p_chip, &plex_ui_14, COL_MUTED);
   lv_obj_center(v->p_chip_lbl);
   v->p_cmd = ny_text(v->p_group, &plex_mono_40, COL_WHITE, 24, 182, 432, 0, L);
+  lv_obj_set_height(v->p_cmd, 62); /* ends y244: eight clear px before y252 */
 
   /* -- Shared buttons: APPROVE always filled, DENY the one restrained red -- */
   v->approve = ny_button(v->root, "APPROVE", &plex_attention_25, COL_BLACK,
-                         COL_CLAUDE, true, TK_NEEDS_YOU_VERDICT_APPROVE);
+                         COL_CLAUDE, true, TK_NEEDS_YOU_VERDICT_APPROVE,
+                         &v->approve_label);
   v->deny = ny_button(v->root, "DENY", &plex_attention_25, COL_RED, COL_RED,
-                      false, TK_NEEDS_YOU_VERDICT_DENY);
+                      false, TK_NEEDS_YOU_VERDICT_DENY, NULL);
   v->leave = ny_button(v->root, "LEAVE IT", &plex_attention_25, COL_MUTED,
-                       COL_DIM, false, TK_NEEDS_YOU_VERDICT_LEAVE_IT);
+                       COL_DIM, false, TK_NEEDS_YOU_VERDICT_LEAVE_IT, NULL);
 
   /* -- PRIVATE: no buttons; the mascot holds the secret at 60% ------------- */
   v->pv_group = ny_group(v->root);
@@ -611,6 +838,8 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_obj_set_pos(v->pv_mascot, 184, 96);
   lv_obj_set_style_image_opa(v->pv_mascot, 153, 0); /* 60%: private reads dim */
   lv_obj_remove_flag(v->pv_mascot, LV_OBJ_FLAG_CLICKABLE);
+  v->pv_codex_icon = ny_codex_icon(v->pv_group, 208, 120);
+  lv_obj_set_style_image_opa(v->pv_codex_icon, 153, 0);
   v->pv_title = ny_text(v->pv_group, &plex_body_27, COL_WHITE, 0, 274, 480, 1, C);
   lv_label_set_text(v->pv_title, "SOMETHING IS WAITING");
   v->pv_sub = ny_text(v->pv_group, &plex_ui_16, COL_MUTED, 0, 324, 480, 0, C);
@@ -624,6 +853,7 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_image_set_src(v->po_mascot, &tk_img_mascot_happy_8);
   lv_obj_set_pos(v->po_mascot, 176, 120);
   lv_obj_remove_flag(v->po_mascot, LV_OBJ_FLAG_CLICKABLE);
+  v->po_codex_icon = ny_codex_icon(v->po_group, 208, 152);
   const int spark[5][3] = {{150, 110, 10}, {322, 96, 12}, {346, 180, 8},
                            {128, 196, 8}, {306, 236, 10}};
   for (int i = 0; i < 5; i++) {
@@ -655,6 +885,47 @@ static void ny_hide_all_groups(needs_you_view *v) {
   ny_show(v->leave, false);
 }
 
+static void ny_set_wifi(needs_you_view *v, uint8_t bars, lv_color_t accent) {
+  if (bars > 3) bars = 3;
+  lv_color_t color = bars == 0 ? COL_MUTED : accent;
+  lv_obj_set_style_bg_color(v->wifi_dot, color, 0);
+  for (int i = 0; i < 3; i++) {
+    /* Stored outer-to-inner; one bar therefore exposes only the innermost
+     * arc, while disconnected keeps the complete silhouette in muted grey. */
+    bool visible = bars == 0 || (uint8_t)(3 - i) <= bars;
+    ny_show(v->wifi_arc[i], visible);
+    lv_obj_set_style_arc_color(v->wifi_arc[i], color, LV_PART_MAIN);
+  }
+}
+
+static void ny_set_provider(needs_you_view *v, bool codex,
+                            lv_color_t accent, uint8_t wifi_bars) {
+  lv_obj_set_style_border_color(v->frame, accent, 0);
+  lv_obj_set_style_arc_color(v->a_ring, accent, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(v->h_ring, accent, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(v->pv_ring, accent, LV_PART_INDICATOR);
+  lv_obj_set_style_text_color(v->a_project, accent, 0);
+  lv_obj_set_style_text_color(v->h_eyebrow, accent, 0);
+  lv_obj_set_style_text_color(v->q_rec, accent, 0);
+  lv_obj_set_style_bg_color(v->approve, accent, 0);
+  lv_label_set_text(v->q_rec,
+                    codex ? "CODEX RECOMMENDS" : "CLAUDE RECOMMENDS");
+  lv_label_set_text(v->pv_sub, codex ? "Details stay on your computer"
+                                     : "Details stay on the Mac");
+  for (int i = 0; i < 5; i++)
+    lv_obj_set_style_bg_color(v->po_spark[i], accent, 0);
+
+  ny_show(v->a_mascot, !codex);
+  ny_show(v->a_codex_icon, codex);
+  ny_show(v->h_mascot, !codex);
+  ny_show(v->h_codex_icon, codex);
+  ny_show(v->pv_mascot, !codex);
+  ny_show(v->pv_codex_icon, codex);
+  ny_show(v->po_mascot, !codex);
+  ny_show(v->po_codex_icon, codex);
+  ny_set_wifi(v, wifi_bars, accent);
+}
+
 /* Paint the stage the policy and the human's tap put us in. Reads
  * tk_needs_you_view_of; decides nothing. Repaints only when what is on the
  * glass actually changes, so ticks between polls are free. */
@@ -662,6 +933,14 @@ static void render_needs_you(void) {
   needs_you_view *v = &mon.needs_you;
   const tk_pending_interaction *p = &mon.snapshot.pending;
   int64_t now_us = mon.rendered_at_us;
+  tk_agent_provider paint_provider =
+      mon.stage == NY_PAYOFF && now_us < mon.payoff_until_us &&
+              mon.has_payoff_provider
+          ? mon.payoff_provider : p->provider;
+  bool codex = paint_provider == TK_AGENT_PROVIDER_CODEX;
+  lv_color_t accent = codex ? COL_CODEX : COL_CLAUDE;
+  const char *provider = codex ? "CODEX" : "CLAUDE";
+  uint8_t wifi_bars = torget_wifi_signal_bars();
 
   /* PAYOFF is a device-side beat that outlives the answered interaction; it
    * owns the glass for its short static window, then falls back to the page. */
@@ -671,10 +950,13 @@ static void render_needs_you(void) {
     memset(&key, 0, sizeof key);
     key.valid = true;
     key.stage = (uint8_t)NY_PAYOFF;
+    key.provider = (uint8_t)paint_provider;
+    key.wifi_bars = wifi_bars;
     if (!mon.needs_you_rendered.valid ||
         memcmp(&mon.needs_you_rendered, &key, sizeof key) != 0) {
       memcpy(&mon.needs_you_rendered, &key, sizeof key);
       ny_hide_all_groups(v);
+      ny_set_provider(v, codex, accent, wifi_bars);
       lv_label_set_text(v->po_echo, mon.echo);
       ny_show(v->po_echo, mon.echo[0] != '\0');
       ny_show(v->po_group, true);
@@ -686,9 +968,11 @@ static void render_needs_you(void) {
   if (mon.stage == NY_PAYOFF) { /* the static window elapsed */
     mon.stage = NY_ATTRACT;
     mon.stage_id[0] = '\0';
+    mon.has_payoff_provider = false;
   }
 
   tk_needs_you_view decision = tk_needs_you_view_of(&mon.needs_you_state, p);
+  ny_physical_fit fit = ny_physical_fit_of(p, &decision);
   mon.needs_you_visible = decision.visible;
 
   if (!decision.visible) {
@@ -707,8 +991,8 @@ static void render_needs_you(void) {
   }
 
   bool is_question = decision.kind == TK_PENDING_QUESTION;
-  bool is_private = !p->has_title;   /* nothing readable to decide on the glass */
-  bool offer_approve = decision.offer_approve;
+  bool is_private = fit.private_fallback;
+  bool offer_approve = decision.offer_approve && fit.can_approve;
   /* DENY is the one restrained-red control: the approval flow only, and only
    * where the service allowed approving — never a blind deny (design law). */
   bool offer_deny = !is_question && offer_approve;
@@ -724,6 +1008,8 @@ static void render_needs_you(void) {
   key.kind = (uint8_t)decision.kind;
   key.stage = (uint8_t)mon.stage;
   key.options_total = p->options_total;
+  key.provider = (uint8_t)p->provider;
+  key.wifi_bars = wifi_bars;
   key.ring_permille = decision.ring_permille;
   memcpy(key.request_id, p->request_id, sizeof key.request_id);
   if (mon.needs_you_rendered.valid &&
@@ -734,6 +1020,7 @@ static void render_needs_you(void) {
   memcpy(&mon.needs_you_rendered, &key, sizeof key);
 
   ny_hide_all_groups(v);
+  ny_set_provider(v, codex, accent, wifi_bars);
 
   char project[TK_AGENT_PROJECT_CAP];
   tk_agent_monitor_project_label(p->has_project ? p->project : "", project,
@@ -765,22 +1052,20 @@ static void render_needs_you(void) {
                                             : &tk_img_mascot_neutral_4);
   char eyebrow[80];
   if (project[0])
-    snprintf(eyebrow, sizeof eyebrow, "CLAUDE NEEDS YOU \xC2\xB7 %s", project);
+    snprintf(eyebrow, sizeof eyebrow, "%s NEEDS YOU \xC2\xB7 %s", provider,
+             project);
   else
-    snprintf(eyebrow, sizeof eyebrow, "CLAUDE NEEDS YOU");
+    snprintf(eyebrow, sizeof eyebrow, "%s NEEDS YOU", provider);
   lv_label_set_text(v->h_eyebrow, eyebrow);
   ny_show(v->h_group, true);
 
   if (is_question) {
+    lv_label_set_text(v->approve_label, "APPROVE");
     lv_label_set_text(v->q_prompt, p->has_prompt ? p->prompt : "");
     /* Keep the question inside its 68px band: 27px for a short ask (<=2 lines),
      * else step to 21px so a longer one stays two readable lines above the
      * card instead of overrunning it. LONG_DOT ellipsizes the truly enormous. */
-    lv_point_t qsz;
-    lv_text_get_size(&qsz, p->has_prompt ? p->prompt : "", &plex_body_27, 0, 0,
-                     300, LV_TEXT_FLAG_NONE);
-    lv_obj_set_style_text_font(v->q_prompt,
-                               qsz.y > 68 ? &plex_ui_21 : &plex_body_27, 0);
+    lv_obj_set_style_text_font(v->q_prompt, fit.prompt_font, 0);
     ny_show(v->q_prompt, p->has_prompt);
     /* The recommendation card exists only when Claude marked an option; an
      * unmarked question arrives here alert-only (can_approve already false). */
@@ -793,28 +1078,31 @@ static void render_needs_you(void) {
     int more = (int)p->options_total - 1;
     if (more >= 1) {
       char footer[48];
-      snprintf(footer, sizeof footer,
-               more == 1 ? "%d MORE OPTION IN TERMINAL"
-                         : "%d MORE OPTIONS IN TERMINAL", more);
+      if (codex)
+        snprintf(footer, sizeof footer,
+                 more == 1 ? "%d MORE OPTION ON COMPUTER"
+                           : "%d MORE OPTIONS ON COMPUTER", more);
+      else
+        snprintf(footer, sizeof footer,
+                 more == 1 ? "%d MORE OPTION IN TERMINAL"
+                           : "%d MORE OPTIONS IN TERMINAL", more);
       lv_label_set_text(v->q_footer, footer);
     }
     ny_show(v->q_footer, more >= 1);
     ny_show(v->q_group, true);
   } else {
+    lv_label_set_text(v->approve_label, codex ? "ALLOW ONCE" : "APPROVE");
     lv_label_set_text(v->p_desc, p->has_subtitle ? p->subtitle : "");
     ny_show(v->p_desc, p->has_subtitle);
     char tool[TK_PENDING_TOOL_CAP];
     ny_ascii_lower(p->has_tool ? p->tool : "", tool, sizeof tool);
     lv_label_set_text(v->p_chip_lbl, tool);
+    lv_obj_set_width(v->p_chip, fit.tool_chip_width);
     ny_show(v->p_chip, p->has_tool);
     /* Payload is the hero: mono, verbatim, one stepwise shrink so the longest
      * approvable command still fits at 432 px before truncation would kick in. */
     lv_label_set_text(v->p_cmd, p->title);
-    lv_point_t measured;
-    lv_text_get_size(&measured, p->title, &plex_mono_40, 0, 0, LV_COORD_MAX,
-                     LV_TEXT_FLAG_NONE);
-    lv_obj_set_style_text_font(
-        v->p_cmd, measured.x > 432 ? &plex_mono_24 : &plex_mono_40, 0);
+    lv_obj_set_style_text_font(v->p_cmd, fit.command_font, 0);
     ny_show(v->p_group, true);
   }
 
@@ -853,8 +1141,13 @@ void tk_agent_monitor_needs_you_tap(void) {
   if (mon.stage == NY_ATTRACT) {
     mon.stage = NY_DECISION;
     render_needs_you();
-  } else if (mon.stage == NY_DECISION && !mon.snapshot.pending.has_title) {
-    needs_you_resolve(TK_NEEDS_YOU_VERDICT_LEAVE_IT);
+  } else {
+    const tk_pending_interaction *p = &mon.snapshot.pending;
+    tk_needs_you_view decision = tk_needs_you_view_of(&mon.needs_you_state, p);
+    ny_physical_fit fit = ny_physical_fit_of(p, &decision);
+    if (mon.stage == NY_DECISION && fit.private_fallback) {
+      needs_you_resolve(TK_NEEDS_YOU_VERDICT_LEAVE_IT);
+    }
   }
 }
 
@@ -864,19 +1157,36 @@ void tk_agent_monitor_needs_you_press(tk_needs_you_verdict verdict) {
 
 void tk_agent_monitor_create(lv_obj_t *app_root) {
   memset(&mon, 0, sizeof mon);
+  tk_ir_policy_init(&mon.interaction_policy);
   create_completion(app_root);
   create_needs_you(app_root);
+}
+
+static uint64_t monitor_now_ms(int64_t now_us) {
+  return now_us > 0 ? (uint64_t)now_us / 1000u : 0;
+}
+
+static void select_pending(uint64_t now_ms) {
+  tk_pending_interaction selected;
+  if (tk_ir_policy_current(&mon.interaction_policy, now_ms, &selected)) {
+    mon.snapshot.pending = selected;
+  } else {
+    memset(&mon.snapshot.pending, 0, sizeof mon.snapshot.pending);
+  }
 }
 
 void tk_agent_monitor_apply(const tk_agent_snapshot *snapshot,
                             int64_t now_us) {
   if (!snapshot) return;
   mon.snapshot = *snapshot;
+  uint64_t now_ms = monitor_now_ms(now_us);
+  (void)tk_ir_policy_update_lan(&mon.interaction_policy, &snapshot->pending,
+                                now_ms);
+  select_pending(now_ms);
   mon.applied_at_us = now_us;
   mon.rendered_at_us = now_us;
   mon.has_snapshot = true;
-  tk_completion_queue_apply(&mon.queue, snapshot,
-                            now_us > 0 ? (uint64_t)now_us / 1000ULL : 0);
+  tk_completion_queue_apply(&mon.queue, &mon.snapshot, now_ms);
   render_needs_you(); /* first: it decides whether completion yields the glass */
   render_completion(now_us > 0 ? (uint64_t)now_us / 1000ULL : 0);
 
@@ -894,9 +1204,20 @@ void tk_agent_monitor_apply(const tk_agent_snapshot *snapshot,
   }
 }
 
+void tk_agent_monitor_apply_relay(const tk_pending_interaction *pending,
+                                  int64_t now_us) {
+  uint64_t now_ms = monitor_now_ms(now_us);
+  (void)tk_ir_policy_update_relay(&mon.interaction_policy, pending, now_ms);
+  select_pending(now_ms);
+  mon.rendered_at_us = now_us;
+  mon.has_snapshot = true;
+  render_needs_you();
+}
+
 void tk_agent_monitor_tick(int64_t now_us) {
   if (!mon.has_snapshot) return;
   mon.rendered_at_us = now_us;
+  select_pending(monitor_now_ms(now_us));
   render_needs_you();
   render_completion(now_us > 0 ? (uint64_t)now_us / 1000ULL : 0);
 }

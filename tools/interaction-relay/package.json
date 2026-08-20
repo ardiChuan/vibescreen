@@ -1,0 +1,23 @@
+{
+  "name": "vibepulse-interaction-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "types": "wrangler types",
+    "types:check": "wrangler types --check",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "deploy:dry": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.22.0",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11",
+    "wrangler": "4.124.0"
+  }
+}

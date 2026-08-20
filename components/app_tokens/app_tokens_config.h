@@ -5,6 +5,30 @@
 #include "secrets.h"
 #endif
 
+/*
+ * Reläets adresser, härledda ur EN valfri bas i secrets.h.
+ *
+ * Reläet är en brevlåda på internet dit tjänsten LÄGGER sina färdiga
+ * siffror, så panelen kan hämta dem utan att dela nät med värden. Utan
+ * TK_VIBEPULSE_RELAY_URL blir varje adress NULL och hämtningarna beter sig
+ * exakt som förut — LAN eller ingenting.
+ *
+ * GRÄNSEN, medveten och testad: reläet bär SIFFROR, aldrig AKTIVITET.
+ * Kvot, burn rate, Max Tracker och GitHub går den vägen. Agentstatus och
+ * Needs You gör det INTE — de bär projektnamn, frågetexter och kommandon,
+ * och de lämnar aldrig LAN:et. Enhetsnyckelns svarsväg är av samma skäl
+ * LAN-only: panelen kan svara på en fråga hemma, aldrig via en brevlåda.
+ */
+#ifdef TK_VIBEPULSE_RELAY_URL
+#define TK_TOKENS_RELAY_URL      TK_VIBEPULSE_RELAY_URL "/api/tokens"
+#define TK_MAX_TRACKER_RELAY_URL TK_VIBEPULSE_RELAY_URL "/api/max-tracker"
+#define TK_GITHUB_RELAY_URL      TK_VIBEPULSE_RELAY_URL "/api/github"
+#else
+#define TK_TOKENS_RELAY_URL      NULL
+#define TK_MAX_TRACKER_RELAY_URL NULL
+#define TK_GITHUB_RELAY_URL      NULL
+#endif
+
 /* The GitHub page and star popup are deliberately independent. A fresh clone
  * remains Claude/Codex-only until the user opts in through secrets.h. */
 #ifndef TK_GITHUB_SCREEN_ENABLED

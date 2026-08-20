@@ -4,6 +4,8 @@
 <!-- Tokenmätarens tjänst som launchd-agent: startar vid inloggning och
      återstartas om den dör. Antar repot i ~/Torget och användaren
      niclasvestlund; redigera bägge sökvägarna annars.
+     Interaction providers and detail come from the tokenserver's saved config;
+     keep them out of ProgramArguments so setup changes cannot go stale here.
      Loggen bor i ~/Library/Logs (överlever omstart, syns i Konsol-appen;
      /tmp städas av macOS). Servern roterar den själv vid start när den
      vuxit förbi taket — launchd har ingen egen rotation.

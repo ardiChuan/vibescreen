@@ -5,7 +5,80 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ## Unreleased
 
+### Added
+
+- **The panel travels.** It remembers six places in NVS and joins the one
+  that worked most recently; arriving somewhere new no longer means editing
+  `secrets.h`, rebuilding and flashing over USB — which OTA could never fix,
+  since OTA needs the network the panel cannot reach. Two ways to teach it a
+  place: `tools/wifi-here.sh` on the Mac hands over the network it is
+  already on (reading the password from the keychain, one prompt, nothing
+  typed), or the panel raises `VibePulse-setup` with the password on the
+  glass and serves a captive portal listing what its *own* radio can see.
+  The window opens by itself after 90 s without an IP, or on a 3 s KEY3
+  hold, and closes after ten minutes — the access point, HTTP server and DNS
+  responder do not exist outside it (the lazy-surface rule from the
+  2026-08-14 freeze). The `secrets.h` networks stay as an immutable floor
+  underneath, so no entry can ever cost a USB rescue, and the setup window
+  can never write firmware. Full reference: `docs/wifi.md`.
+- The **relay**, end to end: the panel can now get its numbers from
+  anywhere with internet, instead of only from the same LAN as the
+  service. Born the same evening as the travel work: a guest network's
+  client isolation kept the panel from reaching the Mac while internet
+  worked fine, and no code on the panel could fix that. Three parts, one
+  boundary:
+  - *Panel*: fetches try the LAN first and fall back to the mailbox
+    (`TK_VIBEPULSE_RELAY_URL` in `secrets.h` — commented out by default;
+    without it nothing changes).
+  - *Service*: `--publish <url>` POSTs the same three payloads the LAN
+    endpoints serve — send-on-change plus a 5-minute heartbeat, staying
+    inside Cloudflare KV's 1 000 free writes/day by design. Several
+    machines may publish to one mailbox; every send names its publisher.
+  - *Mailbox*: a ~150-line Cloudflare Worker (`tools/relay/`) that merges
+    freshest-per-pool on read using the observation stamps the staleness
+    logic already carries — Claude from whichever machine asked Anthropic
+    last, Codex from whichever machine ran Codex last.
+  The boundary is enforced from three directions
+  (`test/test_relay_boundary.py`, `test_publisher.py`, the Worker's path
+  allowlist): the relay carries *numbers* (quota, burn rate, Max Tracker,
+  GitHub), never *activity* (agent status, Needs You, the device key's
+  answer path — those stay on the LAN). Full design: `docs/relay.md`.
+- **Windows autostart** for the tokenserver
+  (`tools/tokenserver/install-windows-task.ps1`): a scheduled task running
+  as the logged-in user (never SYSTEM — the credential file lives in the
+  user profile), restarting on failure, logs in `%LOCALAPPDATA%\VibePulse\`.
+  Closes the gap in issue #3.
+- **Hold KEY3 twice to reach WiFi setup on a connected panel.** The setup
+  window used to open only when the panel had no network — you could not
+  pre-load the phone hotspot at home before a trip. Now a second full 3 s
+  hold while the update window is open switches to WIFI SETUP. Any release
+  before three seconds still just closes (the 2026-08-16 escape hatch is
+  untouched); the port-80 handover between the two windows' HTTP servers is
+  owned by the setup guard, so they never collide.
+
+  **Hardware status, honestly:** the first physical exercise of this path
+  wedged the panel twice (2026-08-17; rolled back to the previous release
+  over USB). Suspected DMA starvation by the access point — the exact
+  2026-08-16 freeze anatomy — pending the incident's serial log.
+  `window_open()` is now bracketed by two host-tested DMA gates (refuse below 3x
+  the flush's contiguous block — calibrated against v0.5.0's measured
+  40-47 kB healthy baseline, so a healthy panel is never refused — abort
+  below 2x after the APSTA switch) with per-stage DMA logging. The gates are defensive, not a
+  verification: the setup window stays unproven on hardware until a
+  supervised run passes.
+- The glass explains a missing network instead of showing dashes. After 60 s
+  without an IP it names the network being hunted and translates the radio's
+  own disconnect reason — "NOT SEEN - 2.4 GHZ ONLY", "WRONG PASSWORD". The
+  reason codes were already in the serial log; a shelf gadget nobody has a
+  cable to could not show them.
+
 ### Fixed
+
+- Open networks were refused in silence. Every network was applied with
+  `threshold.authmode = WIFI_AUTH_WPA2_PSK`, so an open café or airport
+  network — the common case on the road — was rejected before it was tried,
+  with nothing in the log pointing at the threshold. The authmode now
+  follows each network: open where the password is blank.
 
 - The panel names all three GPT-5.6 variants. `gpt-5.6-sol` had a typeset
   screen label while its siblings `terra` and `luna` fell through to their

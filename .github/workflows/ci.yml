@@ -19,6 +19,20 @@ permissions:
   contents: read
 
 jobs:
+  interaction-relay:
+    name: Encrypted interaction Worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/interaction-relay/package-lock.json
+      - name: Verify the pinned Worker and privacy boundary
+        working-directory: tools/interaction-relay
+        run: npm ci && npm test && npm run typecheck
+
   tokenserver:
     name: Tokenserver tests (Python stdlib)
     runs-on: ubuntu-latest
@@ -29,7 +43,7 @@ jobs:
           python-version: "3.12"
       - name: Run tokenserver unit tests
         run: |
-          # Same eleven modules as test/run.sh, same order. The lists
+          # Same twelve modules as test/run.sh, same order. The lists
           # drifting apart is how a green CI hid a runtime NameError in
           # PR #11 (test_interactions was missing) — keep them in sync.
           python -m unittest \
@@ -43,7 +57,10 @@ jobs:
             tools.tokenserver.test_update_prices \
             tools.tokenserver.test_codex_usage \
             tools.tokenserver.test_interactions \
+            tools.tokenserver.test_publisher \
             tools.tokenserver.test_smoke -v
+      - name: Run relay mailbox merge tests
+        run: node --test tools/relay/test.mjs
 
   firmware:
     name: ESP32-S3 firmware build

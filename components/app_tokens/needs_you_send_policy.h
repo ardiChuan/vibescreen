@@ -23,10 +23,10 @@
 
 /* 64 lowercase hex + NUL. */
 #define TK_NEEDS_YOU_HMAC_HEX_CAP 65
-/* "<=32 id>|<=8 verdict>|<=20 ts>" + NUL, with room to spare. */
-#define TK_NEEDS_YOU_MESSAGE_CAP 72
-/* {"verdict":"leave_it","ts":<=20,"hmac":"<64>"} + NUL, with room to spare. */
-#define TK_NEEDS_YOU_BODY_CAP 160
+/* Largest v2 canonical message plus NUL, with explicit headroom. */
+#define TK_NEEDS_YOU_MESSAGE_CAP 160
+/* Largest v2 answer JSON plus NUL, with explicit headroom. */
+#define TK_NEEDS_YOU_BODY_CAP 256
 
 /* The wire name of a verdict, or NULL for one this build does not send. */
 const char *tk_needs_you_verdict_name(tk_needs_you_verdict verdict);
@@ -37,15 +37,31 @@ int tk_needs_you_canonical_message(char *out, size_t cap,
                                    const char *request_id,
                                    const char *verdict_name, uint64_t ts);
 
+/* v2 binds the answer to both provider and the exact public view rendered by
+ * the panel. Codex answers always use this form; there is no v1 downgrade. */
+int tk_needs_you_canonical_message_v2(
+    char *out, size_t cap, const char *provider, const char *request_id,
+    const char *view_sha256, const char *verdict_name, uint64_t ts);
+
 /* HMAC-SHA256(key, message) as 64 lowercase hex plus NUL. `out` must hold
  * TK_NEEDS_YOU_HMAC_HEX_CAP bytes. */
 void tk_needs_you_hmac_hex(char out[TK_NEEDS_YOU_HMAC_HEX_CAP],
                            const char *key, const char *message);
 
+/* SHA-256 over an exact byte span, as 64 lowercase hex plus NUL. Shared with
+ * the agent-status parser so the panel independently binds the public view it
+ * decoded rather than trusting the digest supplied beside it. */
+void tk_needs_you_sha256_hex(char out[TK_NEEDS_YOU_HMAC_HEX_CAP],
+                             const void *data, size_t len);
+
 /* The JSON body the device POSTs to /api/interaction/<request_id>. Returns the
  * length written, or -1 on a bad argument or overflow. */
 int tk_needs_you_answer_body(char *out, size_t cap, const char *verdict_name,
                              uint64_t ts, const char *hmac_hex);
+
+int tk_needs_you_answer_body_v2(
+    char *out, size_t cap, const char *provider, const char *view_sha256,
+    const char *verdict_name, uint64_t ts, const char *hmac_hex);
 
 /* The JSON body the device POSTs to /api/panic. The signed message is always
  * "panic|deny|<ts>", so the body carries only ts and the signature. */

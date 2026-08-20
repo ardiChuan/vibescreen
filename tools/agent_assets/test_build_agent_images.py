@@ -1,4 +1,5 @@
 import importlib.util
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,33 @@ def decode_i4_wh(data, width, height):
     for byte in data[16 * 4:]:
         indices.extend((byte >> 4, byte & 0x0F))
     return palette, indices[:width * height]
+
+
+DESCRIPTOR_RE = re.compile(
+    r"^const lv_image_dsc_t (?P<name>[A-Za-z_][A-Za-z0-9_]*) = \{\n"
+    r"(?P<body>.*?)^\};\n",
+    re.MULTILINE | re.DOTALL,
+)
+DESCRIPTOR_FIELD_RE = re.compile(
+    r"^\s*\.(?P<name>cf|w|h|stride|data_size|data)\s*=\s*"
+    r"(?P<value>[^,\n]+),?\s*$",
+    re.MULTILINE,
+)
+
+
+def descriptor_block_and_fields(source, name):
+    matches = [match for match in DESCRIPTOR_RE.finditer(source)
+               if match.group("name") == name]
+    if len(matches) != 1:
+        raise AssertionError(
+            f"expected exactly one {name} descriptor, found {len(matches)}"
+        )
+
+    pairs = DESCRIPTOR_FIELD_RE.findall(matches[0].group("body"))
+    fields = dict(pairs)
+    if len(fields) != len(pairs):
+        raise AssertionError(f"duplicate field in {name} descriptor")
+    return matches[0].group(0), fields
 
 
 class AgentAssetTests(unittest.TestCase):
@@ -58,15 +86,47 @@ class AgentAssetTests(unittest.TestCase):
         self.assertGreater(sum(byte > 0 for byte in data), 64)
 
     def test_codex_assets_are_native_deterministic_i4_composites(self):
-        for size in (112, 32):
+        for size in (112, 64, 32):
             with self.subTest(size=size):
                 data = build.build_codex(size)
                 self.assertIsInstance(data, bytes)
                 self.assertEqual(len(data), 16 * 4 + size * size // 2)
                 self.assertEqual(data, build.build_codex(size))
 
+    def test_codex_needs_you_asset_is_native_transparent_64(self):
+        data = build.build_codex(64)
+        palette, indices = decode_i4(data, 64)
+        self.assertEqual(len(data), 16 * 4 + 64 * 64 // 2)
+        self.assertEqual(palette[0], (0, 0, 0, 0))
+        self.assertEqual(sum(color == (255, 255, 255, 255)
+                             for color in palette), 1)
+        self.assertTrue(all(indices[i] == 0 for i in (0, 63, 4032, 4095)))
+        header, _ = build.render_generated_sources()
+        self.assertIn("extern const lv_image_dsc_t tk_img_codex_64;", header)
+
+    def test_codex_needs_you_descriptor_is_bound_to_the_native_asset(self):
+        _, source = build.render_generated_sources()
+
+        block, fields = descriptor_block_and_fields(source, "tk_img_codex_64")
+
+        self.assertEqual(fields["cf"], "LV_COLOR_FORMAT_I4")
+        self.assertEqual(fields["w"], "64")
+        self.assertEqual(fields["h"], "64")
+        self.assertEqual(fields["stride"], "32")
+        self.assertEqual(fields["data_size"], "2112")
+        self.assertEqual(fields["data"], "tk_img_codex_64_data")
+
+        # The old generic substring checks still pass after this descriptor is
+        # removed because 64 px mascot descriptors use the same dimensions.
+        # Selecting the named block must reject that false-positive source.
+        missing = source.replace(block, "", 1)
+        self.assertIn(".w = 64", missing)
+        self.assertIn(".stride = 32", missing)
+        with self.assertRaisesRegex(AssertionError, "expected exactly one"):
+            descriptor_block_and_fields(missing, "tk_img_codex_64")
+
     def test_codex_palette_reserves_transparency_and_one_exact_white(self):
-        for size in (112, 32):
+        for size in (112, 64, 32):
             palette, indices = decode_i4(build.build_codex(size), size)
             used = {palette[index] for index in indices}
 
@@ -74,13 +134,15 @@ class AgentAssetTests(unittest.TestCase):
             self.assertEqual(sum(color == (255, 255, 255, 255)
                                  for color in palette), 1)
             self.assertIn((255, 255, 255, 255), used)
+            # At least 1.25% of every native raster stays exact white, which
+            # keeps both terminal glyphs materially visible at each size.
             self.assertGreater(sum(index == 15 for index in indices),
-                               140 if size == 112 else 8)
+                               size * size // 80)
             self.assertGreater(sum(index not in (0, 15) for index in indices),
                                size * size // 5)
 
     def test_codex_silhouette_has_clean_transparent_corners(self):
-        for size in (112, 32):
+        for size in (112, 64, 32):
             palette, indices = decode_i4(build.build_codex(size), size)
             visible = [(x, y) for y in range(size) for x in range(size)
                        if indices[y * size + x] != 0]

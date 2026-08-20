@@ -38,10 +38,8 @@ cannot determine yourself.
 
 1. **macOS or Windows?** Both serve data. On Windows the Claude token comes
    from `%USERPROFILE%\.claude\.credentials.json` instead of the keychain,
-   and state and logs live under `%LOCALAPPDATA%\VibePulse\` — but there is
-   **no autostart**, so the service must be started by hand or wired into
-   Task Scheduler, and `smoke.py`'s advice still names `launchctl`
-   ([#3](https://github.com/niclasvestlund-YT/vibepulse/issues/3)). On Linux
+   and state and logs live under `%LOCALAPPDATA%\VibePulse\`. The supplied
+   `install-windows-task.ps1` adds autostart through Task Scheduler. On Linux
    the firmware still builds and the simulator still runs, but the service
    finds no Claude token at all — there is no keychain and the credential
    file is read only on Windows
@@ -63,7 +61,11 @@ cp secrets.h.example secrets.h
 
 Then edit `secrets.h`. Two separate things must be right:
 
-- `TG_WIFI_SSID` / `TG_WIFI_PASS` — their 2.4 GHz network.
+- `TG_WIFI_SSID` / `TG_WIFI_PASS` — their 2.4 GHz network. This one still
+  belongs here: it is the **immutable floor** the panel falls back to, and
+  the only network it knows before it has ever been anywhere. Every network
+  *after* the first is taught to the panel at the place itself, with no
+  rebuild — see [wifi.md](wifi.md).
 - **Replace `DIN-MAC` in `TK_VIBEPULSE_BASE_URL`** with their Mac's Bonjour
   name.
 
@@ -85,10 +87,15 @@ scutil --get LocalHostName     # e.g. "Niclas-MacBook" -> Niclas-MacBook.local
 
 ```sh
 grep -q 'DIN-MAC' secrets.h && echo "PLACEHOLDER STILL THERE" || echo "hostname set"
+grep -nE 'http://[0-9]' secrets.h && echo "WARNING: raw IP in a URL" || echo "no raw IPs"
 ```
 
-prints `hostname set`. If it still says the placeholder is there, the board
-will look for a host that does not exist and every page will stay on dashes.
+prints `hostname set` and `no raw IPs`. If the placeholder is still there,
+the board will look for a host that does not exist and every page will stay
+on dashes. If the second line finds a raw IP: that is a snapshot of a DHCP
+lease, and it *will* go stale — it cost an entire evening of network
+debugging in the wrong direction before anyone read what the URL actually
+contained (`docs/lessons.md` 2026-08-17). Use the Bonjour name.
 
 Ask the user for the WiFi password. Do not guess it, and do not commit
 `secrets.h` — it is gitignored, keep it that way.
@@ -136,6 +143,11 @@ Pure stdlib, nothing to install:
 python3 tools/tokenserver/tokenserver.py
 ```
 
+The computer must be on for the panel to receive fresh data. On the same LAN,
+the panel talks directly to it. On WiFi with client isolation, the optional
+numbers relay can still carry quota data as long as this service is running;
+it does not publish agent activity or Needs You prompts.
+
 **Verify**, from the same Mac:
 
 ```sh
@@ -179,46 +191,127 @@ For autostart on login, see [../tools/tokenserver/README.md](../tools/tokenserve
 The screen polls every 30 seconds, so wait that long before judging. Then
 confirm with the user that real numbers replaced the dashes.
 
-## Needs You — answer Claude from the panel (optional)
+## Needs You — answer Claude or Codex from the panel (optional)
 
-This turns the panel from a monitor into an input device: when Claude Code
-blocks on a question or a permission, the takeover appears and a tap answers
-it in the same live session. Everything below is opt-in; without it the panel
-is display-only and nothing changes. Full design: `docs/needs-you-investigation.md`.
+This turns the panel from a monitor into an input device. It is all off by
+default. Installing the Codex plugin does not enable Codex interactions, and
+enabling one provider does not enable the other, the numbers relay, the
+encrypted interaction relay, or GitHub.
 
-Three things must line up — a device key, the bridge, and hooks.
+The computer must be awake and running the tokenserver. Direct answers use the
+LAN. The separate encrypted interaction relay can work across unrelated
+internet Wi-Fi using outbound HTTPS only; it remains default-off and is not
+enabled by these steps or by installing the Codex plugin.
 
-1. **Device key.** One shared secret authenticates the panel's answers. It is
-   the only new secret on the device, it grants nothing but the ability to
-   answer a prompt this Mac was already going to ask about, and revoking it is
-   changing it. Generate one and put the *same* value in two places:
+### 1. Pair the panel
 
-   ```sh
-   python3 -c "import secrets; print(secrets.token_hex(32))"
-   ```
+One shared secret authenticates answers. Generate one value and put the same
+value on the panel and computer; never paste the real value into an issue or
+commit it:
 
-   - In `secrets.h`: uncomment and set
-     `#define TK_VIBEPULSE_DEVICE_KEY "…64 hex…"`, then rebuild and flash (Step
-     2–3). Without this define the sender compiles out and the screens stay
-     display-only — that is the safe default, not a bug.
-   - On the Mac, so the bridge reads the same key: write it to
-     `~/.vibepulse-device-key` (`chmod 600`), or export `VIBEPULSE_DEVICE_KEY`,
-     or set `TK_VIBEPULSE_DEVICE_KEY` in `secrets.h` (the bridge reads it too).
+```sh
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
 
-2. **The bridge.** Run the tokenserver with interactions on:
+- In the gitignored `secrets.h`, set
+  `#define TK_VIBEPULSE_DEVICE_KEY "…64 hex…"`, then rebuild and flash only
+  after the user approves Step 3. Without it, the sender is display-only.
+- On the computer, write the value to `~/.vibepulse-device-key` and run
+  `chmod 600 ~/.vibepulse-device-key`, or export `VIBEPULSE_DEVICE_KEY`.
 
-   ```sh
-   python3 tools/tokenserver/tokenserver.py --interactions --interaction-detail
-   ```
+### 2. Choose providers explicitly
 
-   `--interactions` opens the held-hook endpoints and the signed answer path;
-   `--interaction-detail` lets the command/question text reach the glass (leave
-   it off to keep the panel to "something is waiting" only). Prove the whole
-   loop on the Mac alone first, before any hardware: `python3 tools/fake-panel.py`.
+Run the guided setup from the repo root:
 
-3. **Hooks.** Point Claude Code's hooks at the bridge on loopback (Claude Code
-   blocks http hooks that resolve to the LAN, which is why the bridge splits
-   loopback-in / LAN-out). In your Claude Code settings:
+```sh
+python3 tools/vibepulse_setup.py install
+```
+
+Choose `off`, `claude`, `codex`, or `both`. Then choose whether bounded
+question/command detail may reach the local panel; the safe default is no.
+This saves the choices for the tokenserver and installs the optional Codex
+adapter. It does not start a cloud relay. A non-interactive install with no
+provider choice leaves both providers off.
+
+Useful lifecycle commands:
+
+```sh
+python3 tools/vibepulse_setup.py status
+python3 tools/vibepulse_setup.py doctor
+python3 tools/vibepulse_setup.py disable codex
+python3 tools/vibepulse_setup.py uninstall codex
+```
+
+`disable codex` turns off only Codex. `uninstall codex` removes the VibePulse
+Codex plugin/MCP and disables Codex; it preserves Claude, relay, GitHub,
+device-key, and unrelated Codex settings. It does not delete the repository or
+the shared device key.
+
+To opt in to encrypted decisions across isolated Wi-Fi, first read the exact
+privacy boundary in [interaction-relay.md](interaction-relay.md). Enable at
+least one provider and detail above, install the pinned Worker dependencies,
+then run:
+
+```sh
+cd tools/interaction-relay && npm ci && npx wrangler login && cd ../..
+python3 tools/vibepulse_setup.py relay install \
+  --url https://vibepulse-interaction-relay.YOUR-SUBDOMAIN.workers.dev \
+  --yes-e2e-cloud
+python3 tools/vibepulse_setup.py relay status
+python3 tools/vibepulse_setup.py relay doctor
+```
+
+The installer generates the mailbox and role credentials; it does not print
+them or flash the board. Enable `TK_VIBEPULSE_INTERACTION_RELAY` separately in
+`idf.py menuconfig`, rebuild, and ask before flashing. Restart a running
+tokenserver after changing saved choices.
+
+Disable traffic without deleting credentials, or remove only this relay:
+
+```sh
+python3 tools/vibepulse_setup.py relay disable
+python3 tools/vibepulse_setup.py relay uninstall --keep-worker
+python3 tools/vibepulse_setup.py relay uninstall --delete-worker
+```
+
+These commands preserve Claude/Codex provider choices, the Codex package,
+GitHub, numbers relay, repository, and shared device key. Captive portals,
+offline networks, and blocked Worker domains still fall back to the computer.
+
+The service command remains plain:
+
+```sh
+python3 tools/tokenserver/tokenserver.py
+```
+
+It loads the saved choices. Do not put provider or detail switches into a
+launchd/Task Scheduler command, where they can go stale. `--interactions` is a
+legacy alias for Claude only. Current installations should use the setup tool.
+
+### 3. Review hooks instead of bypassing trust
+
+For Codex, open Codex and run `/hooks`. Review the VibePulse `SessionStart` and
+`PermissionRequest` command hooks and explicitly trust them. Then **Start a new
+Codex task** so the newly trusted hooks, skill, and MCP tool are loaded. Run
+`python3 tools/vibepulse_setup.py doctor` again; doctor reports the review
+state but never bypasses it.
+
+Codex permissions use a narrow safe-command tier. Only recognized read-only,
+test, and build commands can offer **ALLOW ONCE**. Unknown commands, mutations,
+secrets, truncated text, free-form questions, and questions without exactly
+one explicit recommendation use the computer fallback. Timeout and silence
+also return to the computer; nothing is approved by silence.
+
+For an old Claude-only panel, `--legacy-claude-panel-v1` is available solely
+as an explicit compatibility switch. **legacy Claude v1 is insecure** because
+its verdict is not bound to provider and exact rendered view; it is off by
+default and must never be used for Codex.
+
+### 4. Add Claude hooks only if Claude was selected
+
+Point Claude Code's hooks at the bridge on loopback (Claude Code blocks HTTP
+hooks that resolve to the LAN, which is why the bridge splits loopback-in and
+LAN-out). In Claude Code settings:
 
    ```json
    {
@@ -245,10 +338,11 @@ Three things must line up — a device key, the bridge, and hooks.
    }
    ```
 
-   Fail-safe by design: a held hook that times out or is left alone renders no
-   decision, so Claude Code falls back to its normal terminal prompt. Walking
-   away always costs nothing. A managed/enterprise `allowedHttpHookUrls` policy
-   can silently block http hooks — if the panel never reacts, check that first.
+Fail-safe by design: a held hook that times out or is left alone renders no
+decision, so Claude Code falls back to its normal terminal prompt. This is the
+same computer fallback as Codex. A managed/enterprise `allowedHttpHookUrls`
+policy can silently block HTTP hooks — if the panel never reacts, check that
+first.
 
 On the glass: a tap opens the decision; APPROVE / DENY / LEAVE IT answer it; on
 the private screen a tap hands it to the terminal. KEY3 held ~1.5–3 s and
@@ -264,7 +358,10 @@ workflow, consent model and troubleshooting live in [ota.md](ota.md).
 | Screen boots, everything is dashes, forever | `DIN-MAC` never replaced in `secrets.h`, or the `TK_*` defines were removed | Set the real Bonjour name, rebuild, reflash |
 | Dashes, and the Mac's URL is set | tokenserver not running, or Mac asleep, or firewall | Start it; check `curl localhost:8737/` |
 | Dashes only for Claude, Codex fine (or vice versa) | That provider's source is unavailable | Check `claudeProbe`; the other half working is by design |
-| Never joins WiFi | Network is 5 GHz | 2.4 GHz only. iPhone hotspot: enable "Maximize Compatibility" |
+| Never joins WiFi | Network is 5 GHz | 2.4 GHz only. iPhone hotspot: enable "Maximize Compatibility". The glass names the reason itself after 60 s |
+| Moved to a new place; panel finds nothing | The new network was never taught to it | It raises `VibePulse-setup` after 90 s (or a 3 s KEY3 hold). Run `tools/wifi-here.sh` on the Mac, or join the AP from a phone. Remembered afterwards — [docs/wifi.md](wifi.md) |
+| `wifi-here.sh` cannot join the setup AP | The window is closed, or `TG_OTA_TOKEN` is missing so the password is random | Check the glass says WIFI SETUP; without a token run `TG_AP_PASS=<what the glass shows> tools/wifi-here.sh` |
+| Panel joined the venue WiFi but still shows dashes | Client isolation, or a captive portal the panel cannot pass | Not fixable on the device. Use the phone hotspot instead |
 | "This project has no OTA" / partitions.csv shows one factory partition | Reading a tree from before the OTA foundation (A/B slots + otadata + `components/torget_ota/`) | Check which branch/commit the checkout is on; read `partitions.csv` in THAT tree before concluding. OTA workflow: `tools/ota-flash.sh <ip>` + a 3 s KEY3 hold |
 | Panel shows stale quota / empty Fable weekly in the morning | Upstream 429 penalty from the shared account bucket | Self-heals: dead tokens are never resent, the penalty persists across restarts, deltas serve from cache. Check `claudeProbe` on `curl localhost:8737/` |
 | Panel shows stale while powered from the computer USB port | The Mac port cannot feed WiFi TX bursts — fetches time out | Expected on Mac USB; run from wall power. Logs stay valid on Mac USB, data does not |

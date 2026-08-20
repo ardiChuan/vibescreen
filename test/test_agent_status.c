@@ -43,6 +43,45 @@ static char *read_file(const char *path, size_t *len_out) {
   return data;
 }
 
+static char *replace_once(const char *source, const char *from,
+                          const char *to, size_t *len_out) {
+  const char *match = strstr(source, from);
+  if (!match) {
+    printf("FAIL hittar inte muteringsfältet %s\n", from);
+    failures++;
+    return NULL;
+  }
+  size_t prefix = (size_t)(match - source);
+  size_t from_len = strlen(from);
+  size_t to_len = strlen(to);
+  size_t source_len = strlen(source);
+  char *changed = malloc(source_len - from_len + to_len + 1);
+  if (!changed) {
+    failures++;
+    return NULL;
+  }
+  memcpy(changed, source, prefix);
+  memcpy(changed + prefix, to, to_len);
+  memcpy(changed + prefix + to_len, match + from_len,
+         source_len - prefix - from_len + 1);
+  *len_out = source_len - from_len + to_len;
+  return changed;
+}
+
+static void pending_soft_drops_after_mutation(const char *what,
+                                              const char *fixture,
+                                              const char *from,
+                                              const char *to) {
+  size_t changed_len = 0;
+  char *changed = replace_once(fixture, from, to, &changed_len);
+  if (!changed) return;
+  tk_agent_snapshot snapshot = {0};
+  bool parsed = tk_agent_status_parse(changed, changed_len, &snapshot);
+  check(what, parsed && !snapshot.pending.present &&
+                  snapshot.codex.job_count == 1);
+  free(changed);
+}
+
 static void rejected_unchanged(const char *what, const char *json,
                                tk_agent_snapshot *out) {
   memset(out, 0xa5, sizeof *out);
@@ -115,6 +154,30 @@ int main(void) {
           snapshot.codex.job_count == 0);
     free(fixture);
   }
+
+  static const char relay_view[] =
+      "{\"can_approve\":true,\"hold_ms\":120000,\"kind\":\"question\","
+      "\"marked\":true,\"options_total\":2,\"project\":\"Torget\","
+      "\"prompt\":\"How should Codex handle approvals?\","
+      "\"provider\":\"codex\","
+      "\"request_id\":\"ABEiM0RVZneImaq7zN3u_w\","
+      "\"subtitle\":\"Desktop + CLI, one setup\","
+      "\"title\":\"Use the trusted hook\"}";
+  tk_pending_interaction relay_pending = {0};
+  check("relävyn parsas utan att låtsas vara en agentstatuskropp",
+        tk_agent_status_parse_relay_view(
+            (const uint8_t *)relay_view, strlen(relay_view), 117000,
+            "df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d",
+            &relay_pending) && relay_pending.present &&
+        relay_pending.provider == TK_AGENT_PROVIDER_CODEX &&
+        relay_pending.expires_in_ms == 117000 &&
+        strcmp(relay_pending.request_id, "ABEiM0RVZneImaq7zN3u_w") == 0);
+  relay_pending.present = true;
+  check("relävyn kräver den autentiserade digesten",
+        !tk_agent_status_parse_relay_view(
+            (const uint8_t *)relay_view, strlen(relay_view), 117000,
+            "0f55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d",
+            &relay_pending) && !relay_pending.present);
 
   const char multi[] =
       "{\"v\":2,\"seq\":9,\"agents\":{" \
@@ -250,6 +313,65 @@ int main(void) {
         TK_AGENT_PROVIDER_CLAUDE == 0 && TK_AGENT_PROVIDER_CODEX == 1 &&
         TK_AGENT_PROVIDER_COUNT == 2 && TK_AGENT_JOBS_MAX == 4);
 
+  fixture = read_file(
+      FIXTURES_DIR "/agent-status-needs-you-codex-question.json", &fixture_len);
+  if (fixture) {
+    memset(&snapshot, 0, sizeof snapshot);
+    check("Codex Needs You-fixturen parsar",
+          tk_agent_status_parse(fixture, fixture_len, &snapshot));
+    check("Codex pending binder provider och vy",
+          snapshot.pending.present &&
+          snapshot.pending.provider == TK_AGENT_PROVIDER_CODEX &&
+          snapshot.pending.has_view_sha256 &&
+          strcmp(snapshot.pending.view_sha256,
+                 "df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d") == 0 &&
+          strcmp(snapshot.pending.request_id,
+                 "ABEiM0RVZneImaq7zN3u_w") == 0);
+
+    pending_soft_drops_after_mutation(
+        "ändrad prompt avvisas", fixture,
+        "How should Codex handle approvals?",
+        "Why should Codex handle approvals?");
+    pending_soft_drops_after_mutation(
+        "ändrad titel avvisas", fixture, "Use the trusted hook",
+        "Use an untrusted hook");
+    pending_soft_drops_after_mutation(
+        "ändrad undertitel avvisas", fixture,
+        "Desktop + CLI, one setup", "Desktop only");
+    pending_soft_drops_after_mutation(
+        "ändrad can_approve avvisas", fixture,
+        "\"can_approve\":true", "\"can_approve\":false");
+    pending_soft_drops_after_mutation(
+        "ändrad digest avvisas", fixture,
+        "df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d",
+        "0f55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d");
+    pending_soft_drops_after_mutation(
+        "okänt v2-fält avvisas", fixture,
+        "\"can_approve\":true}",
+        "\"can_approve\":true,\"unknown_stable\":1}");
+    pending_soft_drops_after_mutation(
+        "dubbelt stabilt v2-fält avvisas", fixture,
+        "\"title\":\"Use the trusted hook\"",
+        "\"title\":\"Use the trusted hook\",\"title\":\"Other\"");
+    free(fixture);
+  }
+
+  fixture = read_file(
+      FIXTURES_DIR "/agent-status-needs-you-codex-approval.json", &fixture_len);
+  if (fixture) {
+    memset(&snapshot, 0, sizeof snapshot);
+    check("Codex approval-fixturen parsar",
+          tk_agent_status_parse(fixture, fixture_len, &snapshot) &&
+          snapshot.pending.present &&
+          snapshot.pending.kind == TK_PENDING_APPROVAL &&
+          snapshot.pending.provider == TK_AGENT_PROVIDER_CODEX &&
+          snapshot.pending.has_view_sha256);
+    pending_soft_drops_after_mutation(
+        "ändrat verktyg avvisas", fixture, "\"tool\":\"Shell\"",
+        "\"tool\":\"Bash\"");
+    free(fixture);
+  }
+
   /* "Needs You": pending är FRIVILLIG och tolkas mjukt. Ett trasigt
    * pending-objekt får aldrig ta agentlistan med sig — det är hela
    * skillnaden mot resten av den här parsern. */
@@ -268,6 +390,8 @@ int main(void) {
   check("hel fråga läses in",
         PARSE(WITH_PENDING(QUESTION_PENDING), &snapshot) &&
         snapshot.pending.present &&
+        snapshot.pending.provider == TK_AGENT_PROVIDER_CLAUDE &&
+        !snapshot.pending.has_view_sha256 &&
         snapshot.pending.kind == TK_PENDING_QUESTION &&
         snapshot.pending.can_approve && snapshot.pending.marked &&
         snapshot.pending.options_total == 2 &&
@@ -298,6 +422,19 @@ int main(void) {
       "\"expires_in_ms\":1}",                                  /* okänd sort */
       "{\"request_id\":\"abc\",\"kind\":\"question\","
       "\"expires_in_ms\":\"snart\"}",                          /* fel typ */
+      "{\"provider\":\"future\",\"request_id\":\"abc\","
+      "\"kind\":\"question\",\"expires_in_ms\":1}",        /* okänd provider */
+      "{\"provider\":\"codex\",\"request_id\":\"abc\","
+      "\"view_sha256\":\"ABCDEF\",\"kind\":\"question\","
+      "\"expires_in_ms\":1}",                                  /* trasig digest */
+      "{\"provider\":\"codex\",\"request_id\":\"abc\","
+      "\"kind\":\"question\",\"expires_in_ms\":1}",        /* Codex utan digest */
+      "{\"request_id\":\"abc\","
+      "\"view_sha256\":\"df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d\","
+      "\"kind\":\"question\",\"expires_in_ms\":1}",       /* digest utan provider */
+      "{\"provider\":\"codex\",\"request_id\":\"abc|claude\","
+      "\"view_sha256\":\"9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a\","
+      "\"kind\":\"question\",\"expires_in_ms\":1}",        /* osäkert id */
       "\"inte ett objekt\"",
       "null",
       "[]",
@@ -314,6 +451,13 @@ int main(void) {
           parsed && !snapshot.pending.present &&
           snapshot.claude.job_count == 1);
   }
+
+  memset(&snapshot, 0, sizeof snapshot);
+  check("saknad provider är legacy Claude",
+        PARSE(WITH_PENDING(QUESTION_PENDING), &snapshot) &&
+        snapshot.pending.present &&
+        snapshot.pending.provider == TK_AGENT_PROVIDER_CLAUDE &&
+        !snapshot.pending.has_view_sha256);
 
   memset(&snapshot, 0, sizeof snapshot);
   check("okända fält inuti pending bryter inte bygget",
@@ -361,6 +505,47 @@ int main(void) {
                            "\"title\":\"npm\\ttest\"}"), &snapshot) &&
         snapshot.pending.present && !snapshot.pending.has_title &&
         !snapshot.pending.can_approve);
+
+  static const char utf8_escaped_v2[] =
+      "{\"v\":2,\"seq\":7,\"agents\":{" ONE_CLAUDE(WORKING_JOB) ","
+      EMPTY_CODEX "},\"pending\":{"
+      "\"provider\":\"codex\",\"request_id\":\"UTF8_escape_1\","
+      "\"view_sha256\":\"aef456f66e899749f8b1215cefac7159e15f7674ab1fd80848d67bd9db7f3be1\","
+      "\"kind\":\"question\",\"project\":\"Törgët\","
+      "\"expires_in_ms\":118000,\"hold_ms\":120000,"
+      "\"options_total\":2,\"marked\":true,"
+      "\"prompt\":\"Fråga \\\"nu\\\" \\\\ ok\","
+      "\"title\":\"Kör\",\"subtitle\":\"Säker väg\","
+      "\"can_approve\":true}}";
+  memset(&snapshot, 0, sizeof snapshot);
+  check("UTF-8 och JSON-escaping har samma produktionsdigest",
+        PARSE(utf8_escaped_v2, &snapshot) && snapshot.pending.present &&
+        strcmp(snapshot.pending.prompt, "Fråga \"nu\" \\ ok") == 0);
+
+  static const char invalid_utf8_v2[] =
+      "{\"v\":2,\"seq\":7,\"agents\":{" ONE_CLAUDE(WORKING_JOB) ","
+      EMPTY_CODEX "},\"pending\":{"
+      "\"provider\":\"codex\",\"request_id\":\"bad_utf8\","
+      "\"view_sha256\":\"aef456f66e899749f8b1215cefac7159e15f7674ab1fd80848d67bd9db7f3be1\","
+      "\"kind\":\"approval\",\"expires_in_ms\":1,\"hold_ms\":1,"
+      "\"title\":\"bad\xC3\x28\",\"can_approve\":true}}";
+  memset(&snapshot, 0, sizeof snapshot);
+  check("ogiltig UTF-8 i v2 mjukavvisas",
+        PARSE(invalid_utf8_v2, &snapshot) && !snapshot.pending.present &&
+        snapshot.claude.job_count == 1);
+
+  static const char overlong_v2[] =
+      "{\"v\":2,\"seq\":7,\"agents\":{" ONE_CLAUDE(WORKING_JOB) ","
+      EMPTY_CODEX "},\"pending\":{"
+      "\"provider\":\"codex\",\"request_id\":\"too_long\","
+      "\"view_sha256\":\"aef456f66e899749f8b1215cefac7159e15f7674ab1fd80848d67bd9db7f3be1\","
+      "\"kind\":\"approval\",\"expires_in_ms\":1,\"hold_ms\":1,"
+      "\"title\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+      "\"can_approve\":true}}";
+  memset(&snapshot, 0, sizeof snapshot);
+  check("v2-text över firmwaregräns mjukavvisas",
+        PARSE(overlong_v2, &snapshot) && !snapshot.pending.present &&
+        snapshot.claude.job_count == 1);
 
   if (failures == 0) {
     printf("OK: alla agentstatus-v2-tester gröna\n");

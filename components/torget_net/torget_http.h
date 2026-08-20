@@ -3,6 +3,14 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+
+/* One static gate for every Cloudflare HTTPS operation. Initialize it before
+ * app network tasks start. Acquire only around client open/perform/close, and
+ * never while holding torget_ui_lock. LAN HTTP deliberately bypasses it. */
+bool torget_cloud_io_init(void);
+bool torget_cloud_io_acquire(uint32_t timeout_ms);
+void torget_cloud_io_release(void);
 
 /*
  * Torgets HTTP-klient för glance-mönstrets endpoints: EN begränsad GET som
@@ -22,5 +30,18 @@
  * också — Tokenmätarens Mac-tjänst bor på LAN:et utan certifikat.
  */
 bool torget_http_get(const char *url, char *buf, size_t cap, size_t *len_out);
+
+/*
+ * Samma hämtning, men med en reservadress: tjänsten på LAN:et först, reläet
+ * på internet om LAN inte svarar. relay_url får vara NULL — då är det här
+ * exakt torget_http_get.
+ *
+ * Vilken som provas först, och hur länge den får ta på sig, avgörs av
+ * net_source_policy (värdtestad). Tillståndet delas av alla anropare: har
+ * en hämtning redan konstaterat att LAN är borta ska nästa inte betala
+ * samma timeout om igen.
+ */
+bool torget_http_get_failover(const char *lan_url, const char *relay_url,
+                              char *buf, size_t cap, size_t *len_out);
 
 #endif

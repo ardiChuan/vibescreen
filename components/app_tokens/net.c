@@ -16,6 +16,7 @@
 #include "esp_log.h"
 
 #include "app_tokens.h"
+#include "app_tokens_config.h"
 #ifdef ESP_PLATFORM
 #include "secrets.h"
 #endif
@@ -46,7 +47,8 @@ static void net_task(void *arg) {
 
   for (;;) {
     tk_tokens t;
-    if (torget_http_get(TK_TOKENS_URL, body, sizeof body, &len)
+    if (torget_http_get_failover(TK_TOKENS_URL, TK_TOKENS_RELAY_URL,
+                                body, sizeof body, &len)
         && tk_tokens_parse(body, len, &t)) {
       torget_ui_lock();
       tokens_apply(&t);
@@ -100,7 +102,8 @@ static void max_tracker_task(void *arg) {
 
   for (;;) {
     tk_max_tracker t;
-    if (torget_http_get(TK_MAX_TRACKER_URL, body, sizeof body, &len)
+    if (torget_http_get_failover(TK_MAX_TRACKER_URL, TK_MAX_TRACKER_RELAY_URL,
+                                body, sizeof body, &len)
         && tk_max_tracker_parse(body, len, &t)) {
       torget_ui_lock();
       tokens_apply_max_tracker(&t);

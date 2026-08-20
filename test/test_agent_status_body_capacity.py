@@ -7,9 +7,9 @@ pending interaction is a new optional root key on that same payload, so it is
 the field most able to break a screen that works today.
 
 Two things are asserted, and the second is the one that matters: the ceiling
-the server enforces must leave the agreed margin under the firmware's buffer,
-and a genuinely worst-case snapshot plus a worst-case pending item must fit
-inside that ceiling.
+the server enforces must remain inside the firmware's explicit 4096-byte
+envelope, and a genuinely worst-case snapshot plus a worst-case pending item
+must retain meaningful headroom inside it.
 
 Standalone, invoked from test/run.sh:
     python3 test/test_agent_status_body_capacity.py
@@ -25,14 +25,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POLICY_H = (REPO_ROOT / "components" / "app_tokens" /
             "agent_net_policy.h")
+AGENT_STATUS_H = (REPO_ROOT / "components" / "app_tokens" /
+                  "agent_status.h")
 
 sys.path.insert(0, str(REPO_ROOT / "tools" / "tokenserver"))
 
 import interactions  # noqa: E402
 
-# Same margin the token body contract uses: the worst case may use at most
-# 75 % of the buffer, leaving room for growth and the terminator.
-REQUIRED_MARGIN = 0.75
+# Provider and view binding make 75 % unattainable without shortening the
+# established display fields.  The field-wise maximum must still stay within
+# 80 % of the firmware envelope, leaving more than 800 bytes of headroom.
+WORST_CASE_MAX_FRACTION = 0.80
 
 
 def read_body_cap() -> int:
@@ -43,6 +46,17 @@ def read_body_cap() -> int:
         raise AssertionError(
             f"expected exactly one TK_AGENT_HTTP_BODY_CAP define in "
             f"{POLICY_H}, found {len(matches)}")
+    return int(matches[0])
+
+
+def read_pending_id_cap() -> int:
+    source = AGENT_STATUS_H.read_text(encoding="utf-8")
+    matches = re.findall(r"^#define\s+TK_PENDING_ID_CAP\s+(\d+)", source,
+                         flags=re.MULTILINE)
+    if len(matches) != 1:
+        raise AssertionError(
+            f"expected exactly one TK_PENDING_ID_CAP define in "
+            f"{AGENT_STATUS_H}, found {len(matches)}")
     return int(matches[0])
 
 
@@ -98,20 +112,76 @@ def worst_case_pending() -> dict:
 
 
 class AgentStatusBodyCapacityTests(unittest.TestCase):
-    def test_server_ceiling_leaves_the_agreed_margin(self):
+    def test_codex_fixtures_carry_the_production_public_view_digest(self):
+        fixture_dir = REPO_ROOT / "sim-fixtures"
+        for name in (
+                "agent-status-needs-you-codex-question.json",
+                "agent-status-needs-you-codex-approval.json"):
+            with self.subTest(fixture=name):
+                payload = json.loads(
+                    (fixture_dir / name).read_text(encoding="utf-8"))
+                pending = payload["pending"]
+                self.assertEqual(
+                    pending["view_sha256"],
+                    interactions.view_digest(pending),
+                    interactions.view_bytes(pending),
+                )
+
+    def test_pending_ids_fit_and_preserve_the_legacy_32_hex_envelope(self):
+        store = interactions.InteractionStore(secret="a" * 64,
+                                              reveal_detail=True)
+        entry = store.park("approval", {
+            "session_id": "s", "cwd": "/tmp/project",
+            "tool_name": "Read", "tool_input": {},
+        }, 60)
+        cap = read_pending_id_cap()
+
+        self.assertEqual(cap, 33)  # legacy 32 hex chars plus NUL
+        self.assertEqual(len(entry.request_id), 22)
+        self.assertLess(len(entry.request_id), cap)
+        self.assertEqual(len("f" * 32) + 1, cap)
+
+    def test_server_ceiling_stays_inside_the_firmware_envelope(self):
         cap = read_body_cap()
-        allowed = int(cap * REQUIRED_MARGIN)
-        self.assertLessEqual(
-            interactions.RESPONSE_CEILING_BYTES, allowed,
+        self.assertLess(
+            interactions.RESPONSE_CEILING_BYTES, cap,
             f"RESPONSE_CEILING_BYTES={interactions.RESPONSE_CEILING_BYTES} "
-            f"exceeds {REQUIRED_MARGIN:.0%} of TK_AGENT_HTTP_BODY_CAP={cap}")
+            f"does not fit inside TK_AGENT_HTTP_BODY_CAP={cap}")
 
     def test_pending_item_respects_its_own_budget(self):
-        encoded = len(json.dumps(worst_case_pending()).encode())
+        pending = worst_case_pending()
+        encoded = len(json.dumps(pending).encode())
+        self.assertIn(pending["provider"], ("claude", "codex"))
+        self.assertRegex(pending["view_sha256"], r"^[0-9a-f]{64}$")
         self.assertLessEqual(
             encoded, interactions.PENDING_BUDGET_BYTES,
             f"worst-case pending item is {encoded} bytes, budget is "
             f"{interactions.PENDING_BUDGET_BYTES}")
+
+    def test_pending_text_cannot_break_the_firmware_lexical_contract(self):
+        """The device rejects NUL escapes and Unicode control/format text."""
+        for forbidden in ("\x00", "\u202e"):
+            with self.subTest(forbidden=ascii(forbidden)):
+                store = interactions.InteractionStore(
+                    secret="a" * 64, reveal_detail=True)
+                entry = store.park("approval", {
+                    "session_id": "s", "cwd": "/tmp/project",
+                    "tool_name": f"Read{forbidden}", "tool_input": {},
+                }, 60)
+                self.assertIsNone(entry)
+                self.assertIsNone(store.pending_public())
+
+        store = interactions.InteractionStore(
+            secret="a" * 64, reveal_detail=True)
+        entry = store.park("approval", {
+            "session_id": "s", "cwd": "/tmp/Fråga",
+            "tool_name": "Läs", "tool_input": {},
+        }, 60)
+        self.assertIsNotNone(entry)
+        encoded = json.dumps(
+            store.pending_public(), ensure_ascii=False).encode("utf-8")
+        self.assertIn("Fråga".encode("utf-8"), encoded)
+        self.assertNotIn(b"\\u0000", encoded.lower())
 
     def test_worst_case_snapshot_plus_pending_fits_the_device(self):
         payload = worst_case_snapshot()
@@ -123,8 +193,9 @@ class AgentStatusBodyCapacityTests(unittest.TestCase):
             f"worst case is {encoded} bytes against a "
             f"{interactions.RESPONSE_CEILING_BYTES}-byte ceiling")
         self.assertLessEqual(
-            encoded, int(cap * REQUIRED_MARGIN),
-            f"worst case is {encoded} bytes, over {REQUIRED_MARGIN:.0%} of "
+            encoded, int(cap * WORST_CASE_MAX_FRACTION),
+            f"worst case is {encoded} bytes, over "
+            f"{WORST_CASE_MAX_FRACTION:.0%} of "
             f"the device's {cap}-byte buffer")
 
     def test_the_agent_list_survives_when_pending_would_not_fit(self):

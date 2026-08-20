@@ -1,7 +1,11 @@
+import http.client
+import hashlib
 import json
+import socket
 import threading
 import time
 import unittest
+from dataclasses import replace
 
 from tools.tokenserver import interactions
 from tools.tokenserver.interactions import (
@@ -19,6 +23,7 @@ from tools.tokenserver.interactions import (
 
 
 SECRET = "a" * 64
+_NO_BODY = object()
 
 
 class Clock:
@@ -98,6 +103,15 @@ class RenderabilityTests(unittest.TestCase):
     def test_multiselect_is_not_answerable(self):
         payload = question_event(multiSelect=True)["tool_input"]
         self.assertIsNone(first_question(payload))
+
+    def test_question_option_count_matches_firmware_uint8_boundary(self):
+        accepted = question_event(options=[{"label": str(index)}
+                                           for index in range(255)])
+        rejected = question_event(options=[{"label": str(index)}
+                                           for index in range(256)])
+
+        self.assertIsNotNone(first_question(accepted["tool_input"]))
+        self.assertIsNone(first_question(rejected["tool_input"]))
 
     def test_malformed_payloads_are_not_answerable(self):
         for payload in (None, {}, {"questions": []}, {"questions": [{}]},
@@ -214,8 +228,53 @@ class SignatureTests(unittest.TestCase):
         self.assertFalse(verify_answer("", "abc", "approve", 1000, "z",
                                        1000.0))
 
+    def test_v2_round_trip_binds_provider_request_view_verdict_and_time(self):
+        digest = "1" * 64
+        mac = interactions.sign_answer_v2(
+            SECRET, "claude", "request", digest, "approve", 1000)
 
-class StoreTests(unittest.TestCase):
+        self.assertTrue(interactions.verify_answer_v2(
+            SECRET, "claude", "request", digest, "approve", 1000, mac,
+            1000.0))
+        for provider, request_id, changed_digest, verdict, stamp in (
+                ("codex", "request", digest, "approve", 1000),
+                ("claude", "different", digest, "approve", 1000),
+                ("claude", "request", "2" * 64, "approve", 1000),
+                ("claude", "request", digest, "deny", 1000),
+                ("claude", "request", digest, "approve", 1001)):
+            with self.subTest(field=(provider, request_id, changed_digest,
+                                     verdict, stamp)):
+                self.assertFalse(interactions.verify_answer_v2(
+                    SECRET, provider, request_id, changed_digest, verdict,
+                    stamp, mac, 1000.0))
+
+    def test_v2_validation_is_strict_and_fresh(self):
+        digest = "1" * 64
+        mac = interactions.sign_answer_v2(
+            SECRET, "codex", "request", digest, "deny", 1000)
+
+        invalid = (
+            ("CODEX", digest, "deny", 1000, mac),
+            ("codex", "A" * 64, "deny", 1000, mac),
+            ("codex", "short", "deny", 1000, mac),
+            ("codex", digest, "maybe", 1000, mac),
+            ("codex", digest, "deny", 1000.5, mac),
+            ("codex", digest, "deny", True, mac),
+            ("codex", digest, "deny", 10 ** 1000, "0" * 64),
+            ("codex", digest, "deny", 1000, "not-hex"),
+        )
+        for provider, changed_digest, verdict, stamp, changed_mac in invalid:
+            with self.subTest(value=(provider, changed_digest, verdict,
+                                     stamp, changed_mac)):
+                self.assertFalse(interactions.verify_answer_v2(
+                    SECRET, provider, "request", changed_digest, verdict,
+                    stamp, changed_mac, 1000.0))
+        self.assertFalse(interactions.verify_answer_v2(
+            SECRET, "codex", "request", digest, "deny", 1000, mac,
+            1000.0 + interactions.FRESHNESS_S + 1))
+
+
+class ProviderStoreTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.wall = Clock(50_000.0)
@@ -227,14 +286,21 @@ class StoreTests(unittest.TestCase):
 
     def answer(self, request_id, verdict="approve"):
         stamp = int(self.wall())
-        return self.store.resolve(request_id, verdict, stamp,
-                                  sign_answer(SECRET, request_id, verdict,
-                                              stamp))
+        entry = self.store._pending[request_id]
+        mac = interactions.sign_answer_v2(
+            SECRET, entry.provider.value, request_id, entry.view_sha256,
+            verdict, stamp)
+        return self.store.resolve(
+            request_id, verdict, stamp, mac, provider=entry.provider.value,
+            view_sha256=entry.view_sha256)
 
     def test_park_publish_resolve_round_trip(self):
         entry = self.store.park("question", question_event(), 120)
         public = self.store.pending_public()
         self.assertEqual(public["request_id"], entry.request_id)
+        self.assertEqual(public["provider"], "claude")
+        self.assertEqual(public["view_sha256"],
+                         interactions.view_digest(public))
         self.assertEqual(public["title"], "New auth layer")
         self.assertEqual(public["subtitle"], "Cleaner architecture")
         self.assertEqual(public["project"], "vibepulse")
@@ -251,6 +317,303 @@ class StoreTests(unittest.TestCase):
             {"Which auth approach?": "New auth layer (Recommended)"})
         self.assertIsNone(self.store.pending_public())
 
+    def test_claude_utf8_limits_are_bytes_and_preserve_codepoints(self):
+        exact_cases = (
+            (question_event(
+                question="é" * 48,
+                options=[{"label": "x (Recommended)"}]),
+             "prompt", "é" * 48, 96),
+            (question_event(options=[{
+                "label": "é" * 32 + " (Recommended)",
+                "description": "safe",
+            }]), "title", "é" * 32, 64),
+            (question_event(options=[{
+                "label": "safe (Recommended)",
+                "description": "é" * 32,
+            }]), "subtitle", "é" * 32, 64),
+        )
+        for event, field, expected, limit in exact_cases:
+            with self.subTest(field=field):
+                entry = self.store.park("question", event, 120)
+                self.assertIsNotNone(entry)
+                public = self.store.pending_public()
+                self.assertEqual(public[field], expected)
+                self.assertLessEqual(
+                    len(public[field].encode("utf-8")), limit)
+                self.assertTrue(public["can_approve"])
+                self.store.deny_all()
+
+        too_wide = (
+            question_event(question="é" * 49),
+            question_event(options=[{
+                "label": "é" * 33 + " (Recommended)",
+                "description": "safe",
+            }]),
+            question_event(options=[{
+                "label": "safe (Recommended)",
+                "description": "é" * 33,
+            }]),
+        )
+        for event in too_wide:
+            with self.subTest(event=event):
+                self.assertIsNone(self.store.park("question", event, 120))
+                self.assertIsNone(self.store.pending_public())
+
+    def test_claude_approval_and_normalized_views_use_utf8_byte_limits(self):
+        exact_cases = (
+            (approval_event(command="é" * 32), "title", "é" * 32, 64),
+            (approval_event(tool="é" * 12), "tool", "é" * 12, 24),
+        )
+        exact_subtitle = approval_event()
+        exact_subtitle["tool_input"]["description"] = "é" * 32
+        exact_cases += ((exact_subtitle, "subtitle", "é" * 32, 64),)
+        for event, field, expected, limit in exact_cases:
+            with self.subTest(exact_field=field):
+                entry = self.store.park("approval", event, 120)
+                self.assertIsNotNone(entry)
+                public = self.store.pending_public()
+                self.assertEqual(public[field], expected)
+                self.assertLessEqual(
+                    len(public[field].encode("utf-8")), limit)
+                self.store.deny_all()
+
+        over_title = approval_event(command="é" * 33)
+        over_tool = approval_event(tool="é" * 13)
+        over_subtitle = approval_event()
+        over_subtitle["tool_input"]["description"] = "é" * 33
+        for event in (over_title, over_tool, over_subtitle):
+            with self.subTest(event=event):
+                self.assertIsNone(self.store.park("approval", event, 120))
+                self.assertIsNone(self.store.pending_public())
+
+        self.assertIsNotNone(interactions._normalized_view("question", {
+            "kind": "question", "options_total": 1, "marked": True,
+            "prompt": "safe", "title": "é" * 32, "can_approve": True,
+        }))
+        self.assertIsNone(interactions._normalized_view("question", {
+            "kind": "question", "options_total": 1, "marked": True,
+            "prompt": "safe", "title": "é" * 33, "can_approve": True,
+        }))
+        self.assertIsNotNone(interactions._normalized_view("approval", {
+            "kind": "approval", "tool": "Read",
+            "subtitle": "é" * 32, "can_approve": False,
+        }))
+        self.assertIsNone(interactions._normalized_view("approval", {
+            "kind": "approval", "tool": "Read",
+            "subtitle": "é" * 33, "can_approve": False,
+        }))
+
+    def test_truncated_question_prompt_is_alert_only(self):
+        event = question_event(
+            question="Choose carefully " + "x" * 200,
+            options=[{"label": "Run tests (Recommended)"}])
+
+        entry = self.store.park("question", event, 120)
+
+        self.assertIsNotNone(entry)
+        public = self.store.pending_public()
+        self.assertTrue(public["prompt"].endswith("…"))
+        self.assertLessEqual(
+            len(public["prompt"].encode("utf-8")), interactions.PROMPT_MAX)
+        self.assertFalse(public["can_approve"])
+
+    def test_truncated_question_subtitle_is_alert_only(self):
+        exact = question_event(options=[{
+            "label": "Run tests (Recommended)",
+            "description": "x" * 64,
+        }])
+        entry = self.store.park("question", exact, 120)
+        self.assertIsNotNone(entry)
+        public = self.store.pending_public()
+        self.assertEqual(public["subtitle"], "x" * 64)
+        self.assertTrue(public["can_approve"])
+        self.store.deny_all()
+
+        over = question_event(options=[{
+            "label": "Run tests (Recommended)",
+            "description": "x" * 65,
+        }])
+        entry = self.store.park("question", over, 120)
+        self.assertIsNotNone(entry)
+        public = self.store.pending_public()
+        self.assertTrue(public["subtitle"].endswith("…"))
+        self.assertLessEqual(
+            len(public["subtitle"].encode("utf-8")),
+            interactions.SUBTITLE_MAX)
+        self.assertFalse(public["can_approve"])
+
+    def test_truncated_approval_subtitle_is_alert_only(self):
+        exact = approval_event(command="npm test")
+        exact["tool_input"]["description"] = "é" * 32
+        entry = self.store.park("approval", exact, 120)
+        self.assertIsNotNone(entry)
+        public = self.store.pending_public()
+        self.assertEqual(public["subtitle"], "é" * 32)
+        self.assertTrue(public["can_approve"])
+        self.store.deny_all()
+
+        over = approval_event(command="npm test")
+        over["tool_input"]["description"] = "x" * 65
+        entry = self.store.park("approval", over, 120)
+        self.assertIsNotNone(entry)
+        public = self.store.pending_public()
+        self.assertTrue(public["subtitle"].endswith("…"))
+        self.assertLessEqual(
+            len(public["subtitle"].encode("utf-8")),
+            interactions.SUBTITLE_MAX)
+        self.assertFalse(public["can_approve"])
+
+    def test_options_total_is_limited_to_firmware_uint8_range(self):
+        base = {
+            "kind": "question", "marked": False, "can_approve": False,
+        }
+        self.assertIsNotNone(interactions._normalized_view(
+            "question", {**base, "options_total": 255}))
+        self.assertIsNone(interactions._normalized_view(
+            "question", {**base, "options_total": 256}))
+        self.assertIsNone(self.store.park(
+            "question", question_event(options=[{"label": str(index)}
+                                                   for index in range(256)]),
+            120))
+
+    def test_view_digest_ignores_only_countdown_and_self_digest(self):
+        self.store.park("question", question_event(), 90)
+        public = self.store.pending_public()
+        digest = public["view_sha256"]
+        canonical = interactions.view_bytes(public)
+
+        self.clock.advance(30)
+        later = self.store.pending_public()
+        self.assertNotEqual(later["expires_in_ms"], public["expires_in_ms"])
+        self.assertEqual(later["view_sha256"], digest)
+        self.assertEqual(interactions.view_digest(later), digest)
+        self.assertEqual(interactions.view_bytes(later), canonical)
+        changed = dict(later)
+        changed["hold_ms"] += 1
+        self.assertNotEqual(interactions.view_digest(changed), digest)
+
+    def test_fractional_hold_uses_one_stored_value_in_view_and_digest(self):
+        entry = self.store.park("approval", approval_event(), 90.001)
+        public = self.store.pending_public()
+
+        self.assertEqual(public["hold_ms"], 90001)
+        self.assertEqual(public["view_sha256"], entry.view_sha256)
+        self.assertEqual(interactions.view_digest(public), entry.view_sha256)
+
+    def test_view_bytes_use_the_specified_canonical_json_encoding(self):
+        view = {"provider": "claude", "title": "Fråga"}
+        expected = b'{"provider":"claude","title":"Fr\xc3\xa5ga"}'
+
+        self.assertEqual(interactions.view_bytes(view), expected)
+        self.assertEqual(
+            interactions.view_digest(view),
+            "c7767b91a147d7b07a6b174b4b26544905c1419678e8c6a8f05dc3e83d06e2b2",
+        )
+
+    def test_new_ids_are_unique_canonical_128_bit_base64url(self):
+        random_values = iter((bytes(range(16)), bytes(range(1, 17))))
+        store = InteractionStore(
+            secret=SECRET, reveal_detail=True, now=self.clock,
+            wall=self.wall, random_bytes=lambda size: next(random_values))
+
+        first = store.park("approval", approval_event(), 120)
+        second = store.park("approval", approval_event(), 120)
+
+        self.assertEqual(first.request_id, "AAECAwQFBgcICQoLDA0ODw")
+        self.assertEqual(len(first.request_id), 22)
+        self.assertRegex(first.request_id, r"^[A-Za-z0-9_-]{22}$")
+        self.assertEqual(len(second.request_id), 22)
+        self.assertNotEqual(first.request_id, second.request_id)
+
+    def test_issued_id_history_is_bounded_without_evicting_active_ids(self):
+        history_limit = interactions.ISSUED_ID_HISTORY_LIMIT
+        next_value = 0
+        forced_values = []
+
+        def deterministic_bytes(size):
+            nonlocal next_value
+            self.assertEqual(size, 16)
+            if forced_values:
+                return forced_values.pop(0)
+            raw = next_value.to_bytes(16, "big")
+            next_value += 1
+            return raw
+
+        store = InteractionStore(
+            secret=SECRET, reveal_detail=True, now=self.clock,
+            wall=self.wall, random_bytes=deterministic_bytes)
+        live = store.park("approval", approval_event(), 120)
+        seen = {live.request_id}
+        terminal = store.park("approval", approval_event(), 120)
+        seen.add(terminal.request_id)
+        stamp = int(self.wall())
+        terminal_mac = interactions.sign_answer_v2(
+            SECRET, "claude", terminal.request_id, terminal.view_sha256,
+            "deny", stamp)
+        self.assertEqual(store.resolve(
+            terminal.request_id, "deny", stamp, terminal_mac,
+            provider="claude", view_sha256=terminal.view_sha256),
+            (True, "ok"))
+
+        for _ in range(history_limit * 3):
+            entry = store.park("approval", approval_event(), 120)
+            self.assertIsNotNone(entry)
+            self.assertNotIn(entry.request_id, seen)
+            seen.add(entry.request_id)
+            stamp = int(self.wall())
+            mac = interactions.sign_answer_v2(
+                SECRET, "claude", entry.request_id, entry.view_sha256,
+                "deny", stamp)
+            self.assertEqual(
+                store.resolve(
+                    entry.request_id, "deny", stamp, mac,
+                    provider="claude", view_sha256=entry.view_sha256),
+                (True, "ok"))
+            self.assertIsNotNone(store.await_verdict(entry))
+
+        self.assertLessEqual(len(store._issued_ids), history_limit)
+        self.assertIn(live.request_id, store._issued_ids)
+        self.assertIn(terminal.request_id, store._issued_ids)
+        self.assertIsNotNone(store.await_verdict(terminal))
+        forced_values.extend((bytes(16), next_value.to_bytes(16, "big")))
+        collision = store.park("approval", approval_event(), 120)
+        self.assertIsNotNone(collision)
+        self.assertNotEqual(collision.request_id, live.request_id)
+        store.deny_all()
+
+    def test_v1_claude_compatibility_returns_the_exact_hook_shape(self):
+        event = approval_event()
+        entry = self.store.park_legacy("approval", event, 120)
+
+        public = self.store.pending_public()
+        self.assertNotIn("provider", public)
+        self.assertNotIn("view_sha256", public)
+
+        stamp = int(self.wall())
+        mac = sign_answer(SECRET, entry.request_id, "approve", stamp)
+        ok, reason = self.store.resolve(
+            entry.request_id, "approve", stamp, mac)
+
+        self.assertEqual((ok, reason), (True, "ok"))
+        self.assertEqual(self.store.await_verdict(entry),
+                         hook_response("approval", "approve", event))
+
+    def test_new_claude_entry_cannot_be_resolved_by_stripping_v2_binding(self):
+        entry = self.store.park("approval", approval_event(), 120)
+        shown = self.store.pending_public()
+        self.assertEqual(shown["provider"], "claude")
+        self.assertEqual(shown["view_sha256"], entry.view_sha256)
+
+        stamp = int(self.wall())
+        stripped_mac = sign_answer(
+            SECRET, entry.request_id, "approve", stamp)
+        ok, reason = self.store.resolve(
+            entry.request_id, "approve", stamp, stripped_mac)
+
+        self.assertEqual((ok, reason), (False, "v2 verdict required"))
+        self.assertEqual(self.store.pending_public()["request_id"],
+                         entry.request_id)
+
     def test_hold_ms_is_the_original_duration_for_the_ring(self):
         # The countdown ring needs the original hold, not just the remaining
         # time. hold_ms is fixed at park; expires_in_ms drains beside it.
@@ -264,6 +627,40 @@ class StoreTests(unittest.TestCase):
         self.answer(entry.request_id)
         self.store.await_verdict(entry)
 
+    def test_hold_duration_rejects_invalid_and_uint32_overflow_values(self):
+        maximum_ms = interactions.MAX_HOLD_MS
+        invalid = (
+            None, False, True, 0, -1, float("nan"), float("inf"),
+            1e308, (maximum_ms + 1) / 1000,
+        )
+        for hold_s in invalid:
+            with self.subTest(hold_s=hold_s):
+                store = InteractionStore(
+                    secret=SECRET, reveal_detail=True, now=self.clock,
+                    wall=self.wall)
+                try:
+                    entry = store.park(
+                        "approval", approval_event(), hold_s)
+                except (OverflowError, ValueError) as exc:
+                    self.fail(f"park leaked a hold conversion error: {exc}")
+                self.assertIsNone(entry)
+                self.assertIsNone(store.pending_public())
+
+        at_boundary = InteractionStore(
+            secret=SECRET, reveal_detail=True, now=self.clock,
+            wall=self.wall)
+        entry = at_boundary.park(
+            "approval", approval_event(), maximum_ms / 1000)
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.hold_ms, maximum_ms)
+
+        subsecond = InteractionStore(
+            secret=SECRET, reveal_detail=True, now=self.clock,
+            wall=self.wall)
+        entry = subsecond.park("approval", approval_event(), 0.5)
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.hold_ms, 1000)
+
     def test_a_second_tap_cannot_land_on_a_later_prompt(self):
         first = self.store.park("question", question_event(), 120)
         ok, _ = self.answer(first.request_id)
@@ -272,7 +669,13 @@ class StoreTests(unittest.TestCase):
         second = self.store.park("approval", approval_event(), 120)
         # The device re-sends the first tap (flaky WiFi). It must not resolve
         # the approval now on screen.
-        ok, reason = self.answer(first.request_id)
+        stamp = int(self.wall())
+        mac = interactions.sign_answer_v2(
+            SECRET, "claude", first.request_id, first.view_sha256,
+            "approve", stamp)
+        ok, reason = self.store.resolve(
+            first.request_id, "approve", stamp, mac, provider="claude",
+            view_sha256=first.view_sha256)
         self.assertFalse(ok)
         self.assertIn("no such pending", reason)
         self.assertIsNotNone(self.store.pending_public())
@@ -290,10 +693,13 @@ class StoreTests(unittest.TestCase):
         entry = self.store.park("approval", approval_event(), 120)
         stamp = int(self.wall())
         ok, reason = self.store.resolve(entry.request_id, "approve", stamp,
-                                        "0" * 64)
+                                        "0" * 64, provider="claude",
+                                        view_sha256=entry.view_sha256)
         self.assertFalse(ok)
         self.assertEqual(reason, "signature rejected")
-        ok, _ = self.store.resolve(entry.request_id, "approve", stamp, None)
+        ok, _ = self.store.resolve(
+            entry.request_id, "approve", stamp, None, provider="claude",
+            view_sha256=entry.view_sha256)
         self.assertFalse(ok)
         # ...and the interaction is still pending, not consumed by the attempt
         self.assertIsNotNone(self.store.pending_public())
@@ -301,10 +707,13 @@ class StoreTests(unittest.TestCase):
     def test_replay_outside_the_freshness_window_is_refused(self):
         entry = self.store.park("approval", approval_event(), 600)
         stamp = int(self.wall())
-        mac = sign_answer(SECRET, entry.request_id, "approve", stamp)
+        mac = interactions.sign_answer_v2(
+            SECRET, "claude", entry.request_id, entry.view_sha256,
+            "approve", stamp)
         self.wall.advance(interactions.FRESHNESS_S + 5)
-        ok, reason = self.store.resolve(entry.request_id, "approve", stamp,
-                                        mac)
+        ok, reason = self.store.resolve(
+            entry.request_id, "approve", stamp, mac, provider="claude",
+            view_sha256=entry.view_sha256)
         self.assertFalse(ok)
         self.assertEqual(reason, "signature rejected")
 
@@ -374,6 +783,78 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(self.store.park("nonsense", question_event(), 120))
         self.assertIsNone(self.store.pending_public())
 
+    def test_legacy_park_rejects_lone_surrogates_without_raising(self):
+        invalid_project = approval_event()
+        invalid_project["cwd"] = "/tmp/bad\ud800"
+        events = (
+            question_event(question="bad\ud800"),
+            approval_event("bad\udc00"),
+            invalid_project,
+        )
+        for event in events:
+            with self.subTest(event=event["hook_event_name"]):
+                try:
+                    entry = self.store.park(
+                        "question" if event["hook_event_name"] == "PreToolUse"
+                        else "approval",
+                        event, 120)
+                except UnicodeEncodeError as exc:
+                    self.fail(f"park leaked UnicodeEncodeError: {exc}")
+                self.assertIsNone(entry)
+        self.assertIsNone(self.store.pending_public())
+
+    def test_legacy_park_rejects_control_and_bidi_display_text(self):
+        for forbidden in ("\x00", "\u202e"):
+            question_label = question_event(options=[
+                {"label": f"Run tests{forbidden} (Recommended)",
+                 "description": "Safe local tests"},
+                {"label": "Leave unchanged"},
+            ])
+            question_prompt = question_event(
+                question=f"Approve{forbidden}this?")
+            approval_title = approval_event(f"npm test {forbidden}")
+            approval_subtitle = approval_event()
+            approval_subtitle["tool_input"]["description"] = \
+                f"Safe{forbidden}tests"
+            approval_tool = approval_event(tool=f"Read{forbidden}")
+            events = (
+                ("option label", "question", question_label),
+                ("prompt", "question", question_prompt),
+                ("title", "approval", approval_title),
+                ("subtitle", "approval", approval_subtitle),
+                ("tool", "approval", approval_tool),
+            )
+            for field, kind, event in events:
+                with self.subTest(
+                        forbidden=ascii(forbidden), field=field):
+                    self.assertIsNone(self.store.park(kind, event, 120))
+                    self.assertIsNone(self.store.pending_public())
+
+    def test_legacy_park_rejects_controls_in_project_without_sanitizing(self):
+        for forbidden in ("\x00", "\u202e"):
+            with self.subTest(forbidden=ascii(forbidden)):
+                event = approval_event()
+                event["cwd"] = f"/tmp/safe{forbidden}name"
+                self.assertIsNone(self.store.park("approval", event, 120))
+                self.assertIsNone(self.store.pending_public())
+
+    def test_valid_international_display_text_still_parks(self):
+        event = question_event(
+            question="Vilken väg?",
+            options=[
+                {"label": "Kör tester (Recommended)",
+                 "description": "Säker ändring"},
+                {"label": "Lämna oförändrat"},
+            ])
+
+        entry = self.store.park("question", event, 120)
+
+        self.assertIsNotNone(entry)
+        public = self.store.pending_public()
+        self.assertEqual(public["prompt"], "Vilken väg?")
+        self.assertEqual(public["title"], "Kör tester")
+        self.assertEqual(public["subtitle"], "Säker ändring")
+
     def test_queue_is_bounded(self):
         parked = [self.store.park("approval", approval_event(), 300)
                   for _ in range(interactions.MAX_PENDING)]
@@ -424,6 +905,231 @@ class StoreTests(unittest.TestCase):
                                                "approve", stamp))
         self.assertFalse(ok)
         self.assertIn("not configured", reason)
+
+
+class RelayStoreListenerTests(unittest.TestCase):
+    class Listener:
+        def __init__(self, store, fail=False):
+            self.store = store
+            self.fail = fail
+            self.parked = []
+            self.removed = []
+
+        def _assert_unlocked(self):
+            acquired = self.store._lock.acquire(blocking=False)
+            if acquired:
+                self.store._lock.release()
+            if not acquired:
+                raise AssertionError("listener invoked under store lock")
+
+        def on_park(self, job):
+            self._assert_unlocked()
+            self.store.pending_public()
+            if self.fail:
+                raise RuntimeError("listener failure")
+            self.parked.append(job)
+
+        def on_remove(self, request_id, reason):
+            self._assert_unlocked()
+            if self.fail:
+                raise RuntimeError("listener failure")
+            self.removed.append((request_id, reason))
+
+    def setUp(self):
+        self.clock = Clock()
+        self.wall = Clock(50_000.0)
+        self.store = InteractionStore(
+            secret=SECRET, reveal_detail=True, now=self.clock,
+            wall=self.wall,
+            relay_random_bytes=lambda size: b"\x42" * size,
+        )
+        self.listener = self.Listener(self.store)
+        self.store.set_relay_listener(self.listener)
+
+    def test_park_emits_only_an_immutable_bounded_public_job(self):
+        event = approval_event(command="npm test")
+        event["session_id"] = "secret-session"
+        event["transcript_path"] = "/private/transcript.jsonl"
+
+        entry = self.store.park("approval", event, 30)
+
+        self.assertIsNotNone(entry)
+        self.assertEqual(len(self.listener.parked), 1)
+        job = self.listener.parked[0]
+        self.assertEqual(set(job.__dataclass_fields__), {
+            "request_id", "challenge", "view_bytes", "view_sha256",
+            "expires_at", "provider", "can_approve",
+        })
+        self.assertEqual(job.request_id, entry.request_id)
+        self.assertEqual(job.challenge, b"\x42" * 32)
+        self.assertEqual(job.provider, "claude")
+        self.assertTrue(job.can_approve)
+        self.assertLessEqual(len(job.view_bytes),
+                             interactions.PENDING_BUDGET_BYTES)
+        self.assertEqual(
+            job.view_sha256,
+            hashlib.sha256(job.view_bytes).digest(),
+        )
+        decoded = json.loads(job.view_bytes.decode("utf-8"))
+        self.assertEqual(decoded["title"], "npm test")
+        self.assertNotIn("session_id", decoded)
+        self.assertNotIn("transcript_path", decoded)
+        self.assertNotIn("secret-session", repr(job))
+        self.assertNotIn("transcript.jsonl", repr(job))
+        with self.assertRaises((AttributeError, TypeError)):
+            job.provider = "codex"
+
+    def test_listener_failure_never_breaks_parking_or_resolution(self):
+        self.store.set_relay_listener(self.Listener(self.store, fail=True))
+        entry = self.store.park("approval", approval_event(), 30)
+        self.assertIsNotNone(entry)
+
+        stamp = int(self.wall())
+        mac = interactions.sign_answer_v2(
+            SECRET, "claude", entry.request_id, entry.view_sha256,
+            "deny", stamp)
+        self.assertEqual(self.store.resolve(
+            entry.request_id, "deny", stamp, mac, provider="claude",
+            view_sha256=entry.view_sha256), (True, "ok"))
+        self.assertEqual(self.store.await_result(entry).verdict, "deny")
+
+    def test_direct_timeout_dead_hook_and_panic_emit_remote_removal(self):
+        direct = self.store.park("approval", approval_event(), 30)
+        stamp = int(self.wall())
+        mac = interactions.sign_answer_v2(
+            SECRET, "claude", direct.request_id, direct.view_sha256,
+            "deny", stamp)
+        self.assertEqual(self.store.resolve(
+            direct.request_id, "deny", stamp, mac, provider="claude",
+            view_sha256=direct.view_sha256), (True, "ok"))
+
+        expired = self.store.park("approval", approval_event(), 1)
+        self.clock.advance(2)
+        self.store.pending_public()
+
+        abandoned = self.store.park("approval", approval_event(), 30)
+        original_poll = interactions.ALIVE_POLL_S
+        interactions.ALIVE_POLL_S = 0
+        try:
+            self.assertIsNone(self.store.await_result(
+                abandoned, is_alive=lambda: False))
+        finally:
+            interactions.ALIVE_POLL_S = original_poll
+
+        panic_a = self.store.park("approval", approval_event(), 30)
+        panic_b = self.store.park("question", question_event(), 30)
+        self.assertEqual(self.store.deny_all(), 2)
+
+        self.assertCountEqual(self.listener.removed, [
+            (direct.request_id, "resolved"),
+            (expired.request_id, "timeout"),
+            (abandoned.request_id, "abandoned"),
+            (panic_a.request_id, "panic"),
+            (panic_b.request_id, "panic"),
+        ])
+
+    def _relay_verdict(self, entry, verdict="approve", **changes):
+        job = entry.relay_job
+        value = interactions.RelayResolution(
+            request_id=entry.request_id,
+            challenge=job.challenge,
+            view_sha256=job.view_sha256,
+            verdict=verdict,
+            mac=b"\x99" * 32,
+        )
+        return replace(value, **changes)
+
+    def test_relay_resolution_checks_binding_deadline_consumption_and_policy(self):
+        entry = self.store.park("approval", approval_event(), 30)
+        verifier_calls = []
+
+        def verifier(job, verdict):
+            self.assertFalse(self.store._lock.acquire(blocking=False))
+            verifier_calls.append((job, verdict))
+            return True
+
+        wrong_challenge = self._relay_verdict(
+            entry, challenge=b"\x43" * 32)
+        self.assertEqual(self.store.resolve_relay(
+            wrong_challenge, verifier), (False, "interaction binding rejected"))
+        wrong_digest = self._relay_verdict(
+            entry, view_sha256=b"\x44" * 32)
+        self.assertEqual(self.store.resolve_relay(
+            wrong_digest, verifier), (False, "interaction binding rejected"))
+        self.assertEqual(verifier_calls, [])
+
+        accepted = self._relay_verdict(entry)
+        self.assertEqual(self.store.resolve_relay(
+            accepted, verifier), (True, "ok"))
+        self.assertEqual(len(verifier_calls), 1)
+        self.assertEqual(self.store.resolve_relay(
+            accepted, verifier), (False, "no such pending interaction"))
+        self.assertEqual(self.store.await_result(entry).verdict, "approve")
+
+        private_event = approval_event(command="rm -rf important")
+        private = self.store.park("approval", private_event, 30)
+        self.assertFalse(private.relay_job.can_approve)
+        self.assertEqual(self.store.resolve_relay(
+            self._relay_verdict(private), verifier),
+            (False, "this one has to be approved at the terminal"))
+
+        expired = self.store.park("approval", approval_event(), 1)
+        self.clock.advance(2)
+        self.assertEqual(self.store.resolve_relay(
+            self._relay_verdict(expired, verdict="deny"), verifier),
+            (False, "no such pending interaction"))
+
+    def test_terminal_and_authenticated_panic_are_anchored(self):
+        terminal = self.store.park("approval", approval_event(), 30)
+        self.assertEqual(self.store.resolve_relay(
+            self._relay_verdict(terminal, verdict="terminal"),
+            lambda _job, _verdict: True), (True, "ok"))
+        self.assertEqual(self.store.await_result(terminal).verdict, "leave_it")
+
+        anchor = self.store.park("approval", approval_event(), 30)
+        other = self.store.park("question", question_event(), 30)
+        self.assertEqual(self.store.resolve_relay(
+            self._relay_verdict(anchor, verdict="panic"),
+            lambda _job, _verdict: True), (True, "panic"))
+        self.assertEqual(self.store.await_result(anchor).verdict, "deny")
+        self.assertEqual(self.store.await_result(other).verdict, "deny")
+        self.assertIsNone(self.store.pending_public())
+
+    def test_concurrent_direct_and_relay_answers_consume_exactly_once(self):
+        for _ in range(40):
+            entry = self.store.park("approval", approval_event(), 30)
+            relay_result = self._relay_verdict(entry, verdict="approve")
+            stamp = int(self.wall())
+            direct_mac = interactions.sign_answer_v2(
+                SECRET, "claude", entry.request_id, entry.view_sha256,
+                "deny", stamp)
+            barrier = threading.Barrier(3)
+            results = []
+
+            def direct():
+                barrier.wait()
+                results.append(self.store.resolve(
+                    entry.request_id, "deny", stamp, direct_mac,
+                    provider="claude", view_sha256=entry.view_sha256))
+
+            def relayed():
+                barrier.wait()
+                results.append(self.store.resolve_relay(
+                    relay_result, lambda _job, _result: True))
+
+            threads = [threading.Thread(target=direct),
+                       threading.Thread(target=relayed)]
+            for thread in threads:
+                thread.start()
+            barrier.wait()
+            for thread in threads:
+                thread.join(timeout=1)
+                self.assertFalse(thread.is_alive())
+
+            self.assertEqual(sum(accepted for accepted, _reason in results), 1)
+            self.assertIn(
+                self.store.await_result(entry).verdict, ("approve", "deny"))
+            self.assertIsNone(self.store.pending_public())
 
 
 class PrivacyTests(unittest.TestCase):
@@ -545,9 +1251,12 @@ class AbandonedHookTests(unittest.TestCase):
         thread.start()
         time.sleep(0.05)
         stamp = int(time.time())
+        mac = interactions.sign_answer_v2(
+            SECRET, "claude", entry.request_id, entry.view_sha256,
+            "approve", stamp)
         ok, _ = self.store.resolve(
-            entry.request_id, "approve", stamp,
-            sign_answer(SECRET, entry.request_id, "approve", stamp))
+            entry.request_id, "approve", stamp, mac, provider="claude",
+            view_sha256=entry.view_sha256)
         self.assertTrue(ok)
         thread.join(timeout=5)
         self.assertEqual(
@@ -593,12 +1302,17 @@ class HttpEndToEndTests(unittest.TestCase):
             "store": self.handler.interaction_store,
             "timeout": self.handler.interaction_timeout_s,
             "agent_status": self.handler.agent_status,
+            "claude": self.handler.claude_interactions,
+            "legacy_claude_panel_v1": getattr(
+                self.handler, "legacy_claude_panel_v1", False),
         }
         self.store = InteractionStore(secret=SECRET, reveal_detail=True)
         self.handler.interaction_store = self.store
         self.handler.interaction_timeout_s = 30.0
         self.handler.agent_status = StubAgentStatus()
-        self.server = server_module.ThreadingHTTPServer(
+        self.handler.claude_interactions = True
+        self.handler.legacy_claude_panel_v1 = False
+        self.server = server_module.BoundedThreadingHTTPServer(
             ("127.0.0.1", 0), self.handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever,
@@ -612,17 +1326,34 @@ class HttpEndToEndTests(unittest.TestCase):
         self.handler.interaction_store = self._saved["store"]
         self.handler.interaction_timeout_s = self._saved["timeout"]
         self.handler.agent_status = self._saved["agent_status"]
+        self.handler.claude_interactions = self._saved["claude"]
+        self.handler.legacy_claude_panel_v1 = \
+            self._saved["legacy_claude_panel_v1"]
 
-    def request(self, method, path, payload=None):
-        import http.client
+    def request(self, method, path, payload=_NO_BODY, headers=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
-        body = json.dumps(payload).encode() if payload is not None else None
-        headers = {"Content-Type": "application/json"} if body else {}
-        conn.request(method, path, body=body, headers=headers)
+        body = (None if payload is _NO_BODY else
+                json.dumps(payload).encode())
+        request_headers = ({"Content-Type": "application/json"}
+                           if body else {})
+        request_headers.update(headers or {})
+        conn.request(method, path, body=body, headers=request_headers)
         response = conn.getresponse()
         raw = response.read()
         conn.close()
         return response.status, raw
+
+    def raw_exchange(self, request, timeout=2.0):
+        client = socket.create_connection(
+            ("127.0.0.1", self.port), timeout=timeout)
+        client.settimeout(timeout)
+        try:
+            client.sendall(request)
+            response = http.client.HTTPResponse(client)
+            response.begin()
+            return response.status, response.read()
+        finally:
+            client.close()
 
     def pending(self):
         status, raw = self.request("GET", "/api/agent-status")
@@ -638,11 +1369,16 @@ class HttpEndToEndTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail("the interaction never reached /api/agent-status")
 
-    def answer(self, request_id, verdict="approve"):
+    def answer(self, shown, verdict="approve"):
+        request_id = shown["request_id"]
         stamp = int(time.time())
+        mac = interactions.sign_answer_v2(
+            SECRET, shown["provider"], request_id, shown["view_sha256"],
+            verdict, stamp)
         return self.request("POST", f"/api/interaction/{request_id}", {
-            "verdict": verdict, "ts": stamp,
-            "hmac": sign_answer(SECRET, request_id, verdict, stamp)})
+            "provider": shown["provider"],
+            "view_sha256": shown["view_sha256"],
+            "verdict": verdict, "ts": stamp, "hmac": mac})
 
     def test_question_travels_claude_to_device_to_claude(self):
         result = {}
@@ -664,7 +1400,7 @@ class HttpEndToEndTests(unittest.TestCase):
         thread.join(timeout=0.3)
         self.assertTrue(thread.is_alive())
 
-        status, raw = self.answer(shown["request_id"])
+        status, raw = self.answer(shown)
         self.assertEqual(status, 200)
         self.assertTrue(json.loads(raw)["ok"])
 
@@ -691,8 +1427,38 @@ class HttpEndToEndTests(unittest.TestCase):
         shown = self.wait_for_pending()
         self.assertEqual(shown["kind"], "approval")
         self.assertEqual(shown["title"], "npm test")
-        self.answer(shown["request_id"], "approve")
+        self.answer(shown, "approve")
         thread.join(timeout=10)
+        self.assertEqual(
+            json.loads(result["raw"])["hookSpecificOutput"]["decision"],
+            {"behavior": "allow"})
+
+    def test_explicit_legacy_claude_mode_uses_v1_only_for_claude(self):
+        self.handler.legacy_claude_panel_v1 = True
+        result = {}
+
+        def hook():
+            result["status"], result["raw"] = self.request(
+                "POST", "/api/hook/permission", approval_event())
+
+        thread = threading.Thread(target=hook, daemon=True)
+        thread.start()
+        shown = self.wait_for_pending()
+        self.assertNotIn("provider", shown)
+        self.assertNotIn("view_sha256", shown)
+        stamp = int(time.time())
+        mac = sign_answer(
+            SECRET, shown["request_id"], "approve", stamp)
+
+        status, raw = self.request(
+            "POST", f"/api/interaction/{shown['request_id']}", {
+                "verdict": "approve", "ts": stamp, "hmac": mac,
+            })
+
+        self.assertEqual(status, 200, raw)
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result["status"], 200)
         self.assertEqual(
             json.loads(result["raw"])["hookSpecificOutput"]["decision"],
             {"behavior": "allow"})
@@ -801,7 +1567,9 @@ class HttpEndToEndTests(unittest.TestCase):
         for host in ("192.168.1.20", "10.0.0.5", ""):
             handler.client_address = (host, 5000)
             self.assertFalse(handler._is_loopback(), host)
-        for host in ("127.0.0.1", "::1"):
+        for host in (
+                "127.0.0.1", "127.42.7.9", "::1",
+                "::ffff:127.42.7.9"):
             handler.client_address = (host, 5000)
             self.assertTrue(handler._is_loopback(), host)
 

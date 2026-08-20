@@ -5,6 +5,7 @@
 
 extern const lv_image_dsc_t tk_img_claude;
 extern const lv_image_dsc_t tk_img_codex;
+extern const lv_image_dsc_t tk_img_codex_64;
 extern const lv_image_dsc_t tk_img_claude_32;
 extern const lv_image_dsc_t tk_img_codex_32;
 

@@ -39,21 +39,29 @@ command — `python3 tools/tokenserver/smoke.py` (exit 0 ok / 1 warnings /
 
 The only log the device has. ESP-IDF `ESP_LOGx` over the USB console —
 attach with `idf.py monitor -p /dev/cu.usbmodem101` (ESP-IDF env sourced).
-Five tags:
+Eleven tags:
 
 | Tag | Owner | Talks about |
 |-----|-------|-------------|
-| `torget` | `main/main.c` | boot, WiFi, SNTP, heap, brightness, MADCTL |
+| `torget` | `main/main.c` | boot, WiFi candidate hunt, SNTP, heap, brightness, MADCTL |
 | `rotation` | `main/rotation.c` | IMU reads, display rotation |
-| `torget-http` | `components/torget_net/torget_http.c` | every GET: error name, status, cap, URL |
+| `torget-http` | `components/torget_net/torget_http.c` | every GET: error name, status, cap, URL; `LAN svarade inte, provar reläet` when a fetch fails over to the relay |
 | `tokens` | `components/app_tokens/net.c` | /api/tokens + /api/max-tracker polls |
 | `agent-net` | `components/app_tokens/agent_net.c` | /api/agent-status poll (1 Hz, log rate-limited to 30 s) |
+| `github-net` | `components/app_tokens/github_net.c` | the optional /api/github poll |
+| `needs-you-net` | `components/app_tokens/needs_you_net.c` | signed verdict/panic POSTs (LAN only, never the relay) |
+| `boot-health` | `components/torget_ota/boot_health.c` | the 15 s boot-health gate: proofs landed, rollback verdicts |
+| `ota-service` | `components/torget_ota/ota_service.c` | maintenance window open/close, upload progress, image gates |
+| `wifi-setup` | `components/torget_wifi/wifi_setup.c` | setup window open/close, scan counts, received credentials (SSID only — passwords are never logged) |
+| `wifi-creds` | `components/torget_wifi/wifi_creds.c` | the remembered-network list in NVS: stores, rejects, corrupt-blob recovery |
 
 A healthy boot shows: the `boot:` banner (project name and git-describe
 version from the app descriptor, build date/time, IDF version, and the
 decoded reset reason — `strömpåslag` is normal; `PANIK`,
 `TASKVAKTHUND` or `BROWNOUT` mean the previous run died and this line is
-your only witness), the WiFi scan table (deliberately permanent — it is
+your only witness), `N ihågkomna nät i NVS` and `N nät i jaktlistan`
+(the remembered-network list and the candidate hunt — `docs/wifi.md`),
+the WiFi scan table (deliberately permanent — it is
 the ground truth for "which networks can the 2.4 GHz-only S3 actually
 see"), `WiFi uppe ("...")`, `tid synkad`, then steady-state `hämtning ok`
 lines every 30 s and a `heap:` line every 10 s.

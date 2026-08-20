@@ -37,6 +37,9 @@ int64_t torget_now_us(void);
  * fixtures behöver inget nät. */
 void torget_net_wait(void);
 
+/* 0 disconnected, 1 weak, 2 medium, 3 strong. Never implies relay health. */
+uint8_t torget_wifi_signal_bars(void);
+
 /* OTA-annonsen fran kvotpollen: appen ager natet (P25) och lamnar bara
  * vidare strangen; plattformen jamfor mot korande version och driver
  * UPDATE READY-notisen. NULL = ingen annons i senaste svaret. */

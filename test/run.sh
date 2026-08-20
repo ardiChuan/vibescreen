@@ -19,6 +19,19 @@ then
   exit 1
 fi
 
+# Relay crypto stays an optional runtime dependency, but its security vectors
+# are part of the host gate once this repository is being developed/tested.
+if ! "$PYTHON_BIN" -c \
+  'import cryptography; raise SystemExit(0 if cryptography.__version__ == "49.0.0" else 1)' \
+  2>/dev/null
+then
+  printf '%s\n' \
+    'ERROR: De krypterade interaktionstesterna kräver cryptography 49.0.0.' \
+    'Kör från Torget-repots rot:' \
+    '  .venv/bin/python -m pip install -r requirements-interaction-relay.txt' >&2
+  exit 1
+fi
+
 cc -std=c11 -Wall -Wextra -Werror -O1 \
   ../components/torget_fmt/fmt_sv.c \
   ../components/torget_ticker/ticker.c \
@@ -63,6 +76,7 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 cc -std=c11 -Wall -Wextra -Werror -O1 \
   -DFIXTURES_DIR="\"$(cd ../sim-fixtures && pwd)\"" \
   ../components/app_tokens/agent_status_parse.c \
+  ../components/app_tokens/needs_you_send_policy.c \
   test_agent_status.c /tmp/torget-cjson.o \
   -lm \
   -o /tmp/torget-agent-status-test
@@ -79,6 +93,35 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
   test_needs_you_send_policy.c \
   -o /tmp/torget-needs-you-send-test
 /tmp/torget-needs-you-send-test
+
+"$PYTHON_BIN" test_interaction_relay_vectors.py
+
+cc -std=c11 -Wall -Wextra -Werror -O1 \
+  -I../components/app_tokens \
+  ../components/app_tokens/interaction_relay_policy.c \
+  test_interaction_relay_policy.c \
+  -o /tmp/torget-interaction-relay-policy-test
+/tmp/torget-interaction-relay-policy-test
+
+# Cross-language wire vector: the portable panel HMAC immediately above and
+# the tokenserver verifier must pin the same exact v2 bytes forever.
+"$PYTHON_BIN" - <<'PY'
+import sys
+sys.path.insert(0, "..")
+from tools.tokenserver.interactions import sign_answer_v2
+
+actual = sign_answer_v2(
+    "a" * 64,
+    "codex",
+    "ABEiM0RVZneImaq7zN3u_w",
+    "df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d",
+    "approve",
+    1787097720,
+)
+expected = "49357b233c81c9979606a52b94aaab578c18fc95c16d0037949b1018c298bbbf"
+assert actual == expected, (actual, expected)
+print("OK: panelens och tokenserverns v2-HMAC-vektor är identisk")
+PY
 
 cc -std=c11 -Wall -Wextra -Werror -O1 \
   ../components/app_tokens/github_status_parse.c \
@@ -164,6 +207,33 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
   -o /tmp/torget-boot-health-policy-test
 /tmp/torget-boot-health-policy-test
 
+cc -std=c11 -Wall -Wextra -Werror -O1 \
+  ../components/torget_net/net_source_policy.c \
+  test_net_source_policy.c \
+  -lm \
+  -o /tmp/torget-net-source-test
+/tmp/torget-net-source-test
+
+cc -std=c11 -Wall -Wextra -Werror -O1 \
+  ../components/torget_wifi/wifi_slots.c \
+  test_wifi_slots.c \
+  -lm \
+  -o /tmp/torget-wifi-slots-test
+/tmp/torget-wifi-slots-test
+
+cc -std=c11 -Wall -Wextra -Werror -O1 \
+  test_wifi_signal_state.c \
+  -o /tmp/torget-wifi-signal-state-test
+/tmp/torget-wifi-signal-state-test
+
+cc -std=c11 -Wall -Wextra -Werror -O1 \
+  ../components/torget_wifi/wifi_form.c \
+  ../components/torget_wifi/wifi_slots.c \
+  test_wifi_form.c \
+  -lm \
+  -o /tmp/torget-wifi-form-test
+/tmp/torget-wifi-form-test
+
 "$PYTHON_BIN" test_agent_demo_wiring.py
 "$PYTHON_BIN" test_agent_net_wiring.py
 "$PYTHON_BIN" test_github_wiring.py
@@ -171,11 +241,19 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 "$PYTHON_BIN" test_target_tls_memory.py
 "$PYTHON_BIN" test_buddy_opt_in.py
 "$PYTHON_BIN" test_lvgl_layer_safety.py
+"$PYTHON_BIN" test_lvgl_memory_config.py
 "$PYTHON_BIN" test_vibepulse_layout_wiring.py
 "$PYTHON_BIN" test_preview_ui.py
 "$PYTHON_BIN" test_ota_partition.py
 "$PYTHON_BIN" test_ota_reopen_wiring.py
 "$PYTHON_BIN" test_ota_sender_gates.py
+"$PYTHON_BIN" test_wifi_setup_wiring.py
+"$PYTHON_BIN" test_relay_boundary.py
+"$PYTHON_BIN" test_interaction_relay_boundary.py
+"$PYTHON_BIN" test_interaction_relay_docs.py
+"$PYTHON_BIN" test_interaction_relay_build.py
+"$PYTHON_BIN" test_interaction_relay_net_source.py
+"$PYTHON_BIN" test_vibepulse_codex_plugin.py
 
 cd ..
 "$PYTHON_BIN" -m unittest tools.agent_assets.test_build_agent_images -v
@@ -198,5 +276,23 @@ cd ..
   tools.tokenserver.test_value_meter \
   tools.tokenserver.test_update_prices \
   tools.tokenserver.test_codex_usage \
+  tools.tokenserver.test_vibepulse_config \
+  tools.tokenserver.test_codex_interactions \
   tools.tokenserver.test_interactions \
+  tools.tokenserver.test_interaction_relay \
+  tools.tokenserver.test_interaction_relay_integration \
+  tools.tokenserver.test_interaction_relay_crypto \
+  tools.tokenserver.test_publisher \
   tools.tokenserver.test_smoke -v
+
+# Båda molntjänsterna hålls av Node. CI måste ha Node 22; en lokal
+# firmwareutvecklare utan Node får ett ärligt hopp i stället för falskt grönt.
+if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+  node --test tools/relay/test.mjs
+  (cd tools/interaction-relay && npm ci && npm test && npm run typecheck)
+elif [ -n "${CI:-}" ]; then
+  echo "ERROR: CI requires Node.js 22 + npm for both relay security services" >&2
+  exit 1
+else
+  echo "OBS: node/npm saknas — relayernas JS-tester hoppas över lokalt (CI kör dem)"
+fi

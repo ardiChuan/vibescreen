@@ -102,6 +102,11 @@ void torget_net_wait(void)  {}
 void torget_keep_awake(void) {} /* ljusrampen finns bara på panelen */
 void torget_data_alive(void) {}  /* bootskärmen drivs manuellt i QA:n */
 
+/* Deterministic fixture for exact raster captures: 0 disconnected, 1 weak,
+ * 2 medium, 3 strong. Like target RSSI, this says nothing about relay health. */
+static uint8_t sim_wifi_signal_bars = 3;
+uint8_t torget_wifi_signal_bars(void) { return sim_wifi_signal_bars; }
+
 int64_t torget_now_us(void) { return (int64_t)lv_tick_get() * 1000; }
 
 /* The sim has no network, so a tap on the glass just prints the canonical
@@ -109,13 +114,26 @@ int64_t torget_now_us(void) { return (int64_t)lv_tick_get() * 1000; }
  * builds, so the wire is provable by fake-panel while the screens are provable
  * here, and the shared policy proves they agree. */
 static void sim_needs_you_verdict(tk_needs_you_verdict verdict,
-                                  const char *request_id) {
+                                  const tk_ir_decision_context *context) {
   const char *name = tk_needs_you_verdict_name(verdict);
   char message[TK_NEEDS_YOU_MESSAGE_CAP];
   uint64_t ts = (uint64_t)(lv_tick_get() / 1000);
-  if (name && request_id &&
-      tk_needs_you_canonical_message(message, sizeof message, request_id, name,
-                                     ts) > 0) {
+  int written = -1;
+  if (name && context && context->has_view_sha256 &&
+      (context->provider == TK_AGENT_PROVIDER_CLAUDE ||
+       context->provider == TK_AGENT_PROVIDER_CODEX)) {
+    const char *provider = context->provider == TK_AGENT_PROVIDER_CODEX
+                               ? "codex"
+                               : "claude";
+    written = tk_needs_you_canonical_message_v2(
+        message, sizeof message, provider, context->request_id,
+        context->view_sha256, name, ts);
+  } else if (name && context &&
+             context->provider == TK_AGENT_PROVIDER_CLAUDE) {
+    written = tk_needs_you_canonical_message(
+        message, sizeof message, context->request_id, name, ts);
+  }
+  if (written > 0) {
     printf("needs-you verdict: %s\n", message);
   } else {
     printf("needs-you verdict: (unsendable)\n");
@@ -561,15 +579,151 @@ static void poll_keys(lv_timer_t *t) {
   }
 }
 
+static void capture_codex_question_variant(const char *tag,
+                                           const char *request_id,
+                                           const char *prompt,
+                                           bool private_view,
+                                           uint8_t wifi_bars) {
+  size_t len = 0;
+  char *json = read_fixture("agent-status-needs-you-codex-question.json", &len);
+  tk_agent_snapshot snapshot;
+  bool valid = json && tk_agent_status_parse(json, len, &snapshot) &&
+               snapshot.pending.provider == TK_AGENT_PROVIDER_CODEX;
+  if (valid) {
+    snprintf(snapshot.pending.request_id, sizeof snapshot.pending.request_id,
+             "%s", request_id);
+    if (prompt) {
+      snprintf(snapshot.pending.prompt, sizeof snapshot.pending.prompt, "%s",
+               prompt);
+      snapshot.pending.has_prompt = true;
+    }
+    if (private_view) {
+      snapshot.pending.prompt[0] = '\0';
+      snapshot.pending.has_prompt = false;
+      snapshot.pending.title[0] = '\0';
+      snapshot.pending.has_title = false;
+      snapshot.pending.marked = false;
+      snapshot.pending.can_approve = false;
+    }
+    sim_wifi_signal_bars = wifi_bars;
+    tokens_apply_agent_status(&snapshot);
+    tk_agent_monitor_needs_you_tap();
+    dump_frame(tag);
+  } else {
+    capture_failed(tag, "Codex question fixture rejected");
+  }
+  free(json);
+}
+
+typedef enum {
+  FIT_TITLE, FIT_SUBTITLE, FIT_DESCRIPTION, FIT_COMMAND, FIT_TOOL, FIT_PROMPT
+} fit_field;
+
+static void capture_codex_fit_variant(const char *tag, fit_field field,
+                                      const char *value) {
+  size_t len = 0;
+  char *json = read_fixture("agent-status-needs-you-codex-question.json", &len);
+  tk_agent_snapshot snapshot;
+  bool valid = json && tk_agent_status_parse(json, len, &snapshot);
+  if (valid) {
+    snprintf(snapshot.pending.request_id, sizeof snapshot.pending.request_id,
+             "fit-%u-%s", (unsigned)field, tag + strlen(tag) - 8);
+    if (field == FIT_PROMPT) {
+      snprintf(snapshot.pending.prompt, sizeof snapshot.pending.prompt,
+               "%s", value);
+      snapshot.pending.has_prompt = true;
+    } else if (field == FIT_TITLE || field == FIT_SUBTITLE) {
+      char *target = field == FIT_TITLE ? snapshot.pending.title
+                                        : snapshot.pending.subtitle;
+      snprintf(target, TK_PENDING_TITLE_CAP, "%s", value);
+      snapshot.pending.has_title = true;
+      snapshot.pending.has_subtitle = true;
+    } else {
+      snapshot.pending.kind = TK_PENDING_APPROVAL;
+      snapshot.pending.marked = false;
+      snapshot.pending.has_prompt = false;
+      snapshot.pending.prompt[0] = '\0';
+      snprintf(snapshot.pending.title, sizeof snapshot.pending.title,
+               "python3 -c 'print(1)'");
+      snprintf(snapshot.pending.subtitle, sizeof snapshot.pending.subtitle,
+               "Run a harmless local command");
+      snprintf(snapshot.pending.tool, sizeof snapshot.pending.tool, "Shell");
+      snapshot.pending.has_title = true;
+      snapshot.pending.has_subtitle = true;
+      snapshot.pending.has_tool = true;
+      if (field == FIT_DESCRIPTION)
+        snprintf(snapshot.pending.subtitle, sizeof snapshot.pending.subtitle,
+                 "%s", value);
+      else if (field == FIT_COMMAND)
+        snprintf(snapshot.pending.title, sizeof snapshot.pending.title,
+                 "%s", value);
+      else
+        snprintf(snapshot.pending.tool, sizeof snapshot.pending.tool,
+                 "%s", value);
+    }
+    sim_wifi_signal_bars = 3;
+    tokens_apply_agent_status(&snapshot);
+    tk_agent_monitor_needs_you_tap();
+    dump_frame(tag);
+  } else {
+    capture_failed(tag, "Codex fit fixture rejected");
+  }
+  free(json);
+}
+
+static void capture_codex_fit_matrix(void) {
+  static const char *const boundary[] = {
+      "WWWWWWWWWWWW", "WWWWWWWWWWWWWWWWWWWWWW",
+      "WWWWWW WWWWWW", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "WWWWWWWWWWWW"};
+  static const char *const overbound[] = {
+      "WWWWWWWWWWWWWWWWWWWW", "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+      "WWWWWWWW WWWWWWWW WWWWWWWW WWWWWWWW",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "WWWWWWWWWWWWWWWWWWWW"};
+  static const char *const missing[] = {
+      "Use \xE2\x82\xAC", "Desktop \xE2\x82\xAC", "Run \xE2\x82\xAC",
+      "echo \xE2\x82\xAC", "Shell\xE2\x82\xAC"};
+  static const char *const names[] = {
+      "title", "subtitle", "description", "command", "tool"};
+  for (int i = 0; i < 5; i++) {
+    char tag[96];
+    snprintf(tag, sizeof tag, "vibepulse-needs-you-fit-%s-boundary", names[i]);
+    capture_codex_fit_variant(tag, (fit_field)i, boundary[i]);
+    snprintf(tag, sizeof tag, "vibepulse-needs-you-fit-%s-overbound", names[i]);
+    capture_codex_fit_variant(tag, (fit_field)i, overbound[i]);
+    snprintf(tag, sizeof tag, "vibepulse-needs-you-fit-%s-missing-glyph",
+             names[i]);
+    capture_codex_fit_variant(tag, (fit_field)i, missing[i]);
+  }
+
+  capture_codex_fit_variant(
+      "vibepulse-needs-you-fit-prompt-27-boundary", FIT_PROMPT,
+      "WWWWWW WWWWWW");
+  capture_codex_fit_variant(
+      "vibepulse-needs-you-fit-prompt-21-fallback", FIT_PROMPT,
+      "Ship pricing now, or hold for tomorrow's review?");
+  capture_codex_fit_variant(
+      "vibepulse-needs-you-fit-prompt-21-overbound", FIT_PROMPT,
+      "Ship the pricing recalibration to production now, or hold it for "
+      "tomorrow's review window?");
+  capture_codex_fit_variant(
+      "vibepulse-needs-you-fit-prompt-missing-glyph", FIT_PROMPT,
+      "Approve \xE2\x82\xAC?");
+}
+
 /* Needs You v2, the interactive takeover in every stage the policy can put on
  * the glass: the attract summon, the three decision screens, the page it
  * yields to, and the static payoff beat. The two-stage summon is driven by the
  * deterministic tap/press paths that stand in for a glass touch. Payoff is last
  * because it owns the glass for its static window. */
 static void capture_needs_you_v2(void) {
+  static const char *const codex_long_prompt =
+      "Ship pricing now, or hold for tomorrow's review?";
   torget_app_show(SIM_APP_VIBEPULSE);
   feed_tokens();
   tokens_show_view(VIEW_CLAUDE_FABLE);
+  sim_wifi_signal_bars = 3;
 
   apply_agent_file("agent-status-needs-you-question.json");
   dump_frame("vibepulse-needs-you-attract");
@@ -594,6 +748,75 @@ static void capture_needs_you_v2(void) {
   tokens_show_view(VIEW_CLAUDE_FABLE);
   dump_frame("vibepulse-needs-you-none");
 
+  /* Codex uses the same tree and exact vertical anchors.  Only the provider
+   * fixture, native icon, accent, copy, and deterministic Wi-Fi fixture vary.
+   * The long/private variants are derived from the parsed signed-view fixture
+   * solely for raster coverage; no verdict is sent from these frames. */
+  apply_agent_file("agent-status-needs-you-codex-question.json");
+  tk_agent_monitor_needs_you_tap();
+  dump_frame("vibepulse-needs-you-codex-question");
+
+  capture_codex_question_variant("vibepulse-needs-you-codex-question-long",
+                                 "codex-long-question", codex_long_prompt,
+                                 false, 3);
+
+  apply_agent_file("agent-status-needs-you-codex-approval.json");
+  tk_agent_monitor_needs_you_tap();
+  dump_frame("vibepulse-needs-you-codex-approval");
+
+  capture_codex_question_variant("vibepulse-needs-you-codex-private",
+                                 "codex-private-view", NULL, true, 3);
+  capture_codex_question_variant("vibepulse-needs-you-codex-wifi-weak",
+                                 "codex-wifi-weak", NULL, false, 1);
+  capture_codex_question_variant("vibepulse-needs-you-codex-wifi-off",
+                                 "codex-wifi-off", NULL, false, 0);
+
+  capture_codex_fit_matrix();
+
+  /* The provider belongs to the accepted verdict, not whichever snapshot
+   * happens to arrive during the short payoff beat. */
+  size_t codex_len = 0, idle_len = 0, working_len = 0, replacement_len = 0;
+  char *codex_json = read_fixture("agent-status-needs-you-codex-question.json",
+                                  &codex_len);
+  char *idle_json = read_fixture("agent-status-idle.json", &idle_len);
+  char *working_json = read_fixture("agent-status-claude-working.json",
+                                    &working_len);
+  char *replacement_json = read_fixture("agent-status-needs-you-question.json",
+                                        &replacement_len);
+  tk_agent_snapshot codex_payoff, idle, working, replacement;
+  bool payoff_valid = codex_json && idle_json && working_json &&
+      replacement_json &&
+      tk_agent_status_parse(codex_json, codex_len, &codex_payoff) &&
+      tk_agent_status_parse(idle_json, idle_len, &idle) &&
+      tk_agent_status_parse(working_json, working_len, &working) &&
+      tk_agent_status_parse(replacement_json, replacement_len, &replacement);
+  if (payoff_valid) {
+    int64_t base_us = torget_now_us() + 1000000LL;
+    usage_screen_apply_agent(&codex_payoff, base_us);
+    tk_agent_monitor_needs_you_tap();
+    tk_agent_monitor_needs_you_press(TK_NEEDS_YOU_VERDICT_APPROVE);
+    dump_frame("vibepulse-needs-you-codex-payoff");
+    usage_screen_apply_agent(&idle, base_us + 1000);
+    dump_frame("vibepulse-needs-you-codex-payoff-empty");
+    usage_screen_apply_agent(&working, base_us + 2000);
+    dump_frame("vibepulse-needs-you-codex-payoff-claude");
+    usage_screen_apply_agent(&replacement, base_us + 2499999LL);
+    dump_frame("vibepulse-needs-you-codex-payoff-replacement-pre-expiry");
+    usage_screen_tick(base_us + 2500000LL);
+    dump_frame("vibepulse-needs-you-codex-payoff-exact-expiry");
+    usage_screen_tick(base_us + 2500001LL);
+    dump_frame("vibepulse-needs-you-codex-payoff-post-expiry");
+  } else {
+    capture_failed("vibepulse-needs-you-codex-payoff",
+                   "payoff timing fixture rejected");
+  }
+  free(codex_json);
+  free(idle_json);
+  free(working_json);
+  free(replacement_json);
+
+  /* Payoff owns the glass briefly, so it remains last. */
+  sim_wifi_signal_bars = 3;
   apply_agent_file("agent-status-needs-you-question.json");
   tk_agent_monitor_needs_you_tap();
   tk_agent_monitor_needs_you_press(TK_NEEDS_YOU_VERDICT_APPROVE);

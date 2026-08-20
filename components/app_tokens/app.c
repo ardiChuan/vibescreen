@@ -6,11 +6,18 @@
 #include "lvgl.h"
 
 #include "needs_you_net.h"
+#if defined(ESP_PLATFORM) && CONFIG_TK_VIBEPULSE_INTERACTION_RELAY
+#include "interaction_relay_net.h"
+#endif
 #include "torget.h"
 #include "usage_screen.h"
 
 #ifdef ESP_PLATFORM
 #include "secrets.h"
+#endif
+
+#ifdef ESP_PLATFORM
+#include "torget_http.h"
 #endif
 
 extern const lv_font_t plex_icon_64;
@@ -101,10 +108,14 @@ static void create(lv_obj_t *root) {
   lv_timer_create(tick_cb, TICK_EVERY_MS, NULL);
 
 #ifdef ESP_PLATFORM
+  (void)torget_cloud_io_init();
   tokens_net_start();
   tokens_agent_net_start();
   tokens_github_net_start();
   tokens_needs_you_net_start();
+#if CONFIG_TK_VIBEPULSE_INTERACTION_RELAY
+  tokens_interaction_relay_net_start();
+#endif
 #endif
 }
 
