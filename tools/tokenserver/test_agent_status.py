@@ -867,6 +867,7 @@ class JsonlTailerTests(unittest.TestCase):
 
     def test_same_inode_rewrite_is_detected_when_final_boundary_is_unchanged(self):
         with tempfile.TemporaryDirectory() as temp_dir:
+            now = [100.0]
             path = Path(temp_dir) / "session.jsonl"
             original = {"first": "A" * 80}
             replacement = {"first": "B" * 80}
@@ -877,7 +878,7 @@ class JsonlTailerTests(unittest.TestCase):
                 encoding="utf-8",
             )
             original_inode = path.stat().st_ino
-            tailer = JsonlTailer()
+            tailer = JsonlTailer(now=lambda: now[0])
             self.assertEqual(tailer.read(path), [original, unchanged_tail])
 
             path.write_text(
@@ -886,6 +887,10 @@ class JsonlTailerTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(path.stat().st_ino, original_inode)
+            # Windows may retain the same timestamp/signature for a rapid
+            # same-size rewrite. The bounded periodic digest is the portable
+            # authority in that case.
+            now[0] += tailer._VERIFY_INTERVAL_S
 
             self.assertEqual(tailer.read(path), [replacement, unchanged_tail])
             self.assertEqual(tailer.read(path), [])

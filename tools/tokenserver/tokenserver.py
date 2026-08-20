@@ -1354,10 +1354,19 @@ def _read_codex_app_server_limits(timeout_s=5):
     executable = _codex_app_server_command()
     if executable is None:
         return {}
+    if isinstance(executable, (str, os.PathLike)):
+        command = [executable]
+    elif isinstance(executable, (list, tuple)):
+        command = list(executable)
+    else:
+        return {}
+    if not command or not all(isinstance(part, (str, os.PathLike))
+                              for part in command):
+        return {}
     process = None
     try:
         process = subprocess.Popen(
-            [executable, "app-server", "--listen", "stdio://"],
+            command + ["app-server", "--listen", "stdio://"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, bufsize=1)
 
@@ -2049,8 +2058,28 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             b"Connection: close\r\n\r\n"
         )
         try:
-            request.settimeout(0.25)
+            request.settimeout(0.05)
+        except OSError:
+            pass
+        # Closing a Windows socket with unread request bytes can turn the
+        # intended 503 into WSAECONNABORTED at the client. Drain one bounded
+        # header before replying; a slow/hostile peer still costs at most the
+        # short timeout and 8 KiB.
+        try:
+            received = b""
+            while len(received) < 8 * 1024 and b"\r\n\r\n" not in received:
+                chunk = request.recv(min(2048, 8 * 1024 - len(received)))
+                if not chunk:
+                    break
+                received += chunk
+        except OSError:
+            pass
+        try:
             request.sendall(response)
+        except OSError:
+            pass
+        try:
+            request.shutdown(socket.SHUT_WR)
         except OSError:
             pass
 

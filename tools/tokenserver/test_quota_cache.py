@@ -326,6 +326,7 @@ class QuotaCacheTests(unittest.TestCase):
                              original)
             self.assertEqual(path.read_text(encoding="utf-8"), on_disk)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX directory fsync")
     def test_fsyncs_temp_before_replace_and_directory_after(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quota.json"
@@ -366,6 +367,7 @@ class QuotaCacheTests(unittest.TestCase):
                 "directory-close",
             ])
 
+    @unittest.skipUnless(os.name == "posix", "POSIX directory fsync")
     def test_directory_fsync_failure_rolls_back_memory_and_disk(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quota.json"
@@ -394,6 +396,7 @@ class QuotaCacheTests(unittest.TestCase):
                              original)
             self.assertEqual(path.read_text(encoding="utf-8"), on_disk)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX directory fsync")
     def test_directory_fsync_rollback_restores_exact_prior_file_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "quota.json"
