@@ -80,22 +80,33 @@ assert re.search(
     source,
 ), "a valid snapshot must be applied under the UI lock"
 
-# The callback gets the whole pending snapshot while it is still owned by the
-# UI, and the queue item copies both v2 binding fields before that call returns.
-assert "const tk_pending_interaction *pending" in agent_monitor_header
-assert "mon.tk_needs_you_cb(verdict, p);" in agent_monitor
+# The callback gets one copied source-aware decision while the exact item is
+# still visible. The UI callback only copies it into the bounded sender queue;
+# direct/relay routing happens on that worker.
+assert "const tk_ir_decision_context *context" in agent_monitor_header
+assert "mon.tk_needs_you_cb(verdict, &context);" in agent_monitor
 for binding_copy in (
-    ".provider = pending->provider",
-    ".has_view_sha256 = pending->has_view_sha256",
-    "memcpy(item.view_sha256, pending->view_sha256",
+    "item.context = *context;",
+    "tk_ir_delivery_initial(&item.context)",
+    "tk_ir_delivery_after_direct(",
+    "tk_interaction_relay_queue_verdict(item.verdict, &item.context)",
 ):
     assert binding_copy in needs_you_net, f"missing queued binding: {binding_copy}"
 assert "tk_needs_you_canonical_message_v2(" in needs_you_net
 assert "tk_needs_you_answer_body_v2(" in needs_you_net
 assert re.search(
-    r"pending->provider\s*==\s*TK_AGENT_PROVIDER_CODEX\s*&&\s*"
-    r"!pending->has_view_sha256",
+    r"context->provider\s*==\s*TK_AGENT_PROVIDER_CODEX\s*&&\s*"
+    r"!context->has_view_sha256",
     needs_you_net,
 ), "Codex must be dropped, never downgraded, when its view binding is absent"
+
+ui_callback = needs_you_net[
+    needs_you_net.index("static void needs_you_send_cb"):
+    needs_you_net.index("void tk_needs_you_send_panic")
+]
+for forbidden in ("esp_http", "mbedtls", "tk_ir_encode", "torget_cloud_io"):
+    assert forbidden not in ui_callback, (
+        f"the LVGL callback must only copy to a queue, found {forbidden}"
+    )
 
 print("OK: agentnätets targetkoppling och klientlivscykel är inkopplade")

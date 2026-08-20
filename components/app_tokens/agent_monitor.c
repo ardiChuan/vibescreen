@@ -7,6 +7,7 @@
 #include "agent_completion_policy.h"
 #include "agent_monitor_policy.h"
 #include "needs_you_policy.h"
+#include "interaction_relay_policy.h"
 #include "torget.h"
 #include "vibepulse_layout.generated.h"
 
@@ -144,6 +145,7 @@ static struct {
   completion_view completion;
   needs_you_view needs_you;
   tk_needs_you_state needs_you_state;
+  tk_ir_policy interaction_policy;
   needs_you_key needs_you_rendered;
   bool needs_you_visible; /* read by render_completion to yield the screen */
   ny_stage stage;
@@ -575,9 +577,25 @@ static void needs_you_resolve(tk_needs_you_verdict verdict) {
     mon.payoff_provider = p->provider;
     mon.has_payoff_provider = true;
   }
-  if (mon.tk_needs_you_cb) mon.tk_needs_you_cb(verdict, p);
+  uint64_t now_ms = mon.rendered_at_us > 0
+                        ? (uint64_t)mon.rendered_at_us / 1000u : 0;
+  tk_ir_decision_context context;
+  bool has_context = tk_ir_policy_capture_visible(
+      &mon.interaction_policy, now_ms, &context);
+  if (has_context &&
+      strncmp(context.request_id, p->request_id, TK_PENDING_ID_CAP) == 0 &&
+      mon.tk_needs_you_cb) {
+    mon.tk_needs_you_cb(verdict, &context);
+  }
   /* Drop it at the tap, not a poll later, so a second tap can not double-answer. */
   tk_needs_you_mark_answered(&mon.needs_you_state, p);
+  (void)tk_ir_policy_mark_answered(&mon.interaction_policy, p, now_ms);
+  tk_pending_interaction next;
+  if (tk_ir_policy_current(&mon.interaction_policy, now_ms, &next)) {
+    mon.snapshot.pending = next;
+  } else {
+    memset(&mon.snapshot.pending, 0, sizeof mon.snapshot.pending);
+  }
   render_needs_you();
 }
 
@@ -1139,19 +1157,36 @@ void tk_agent_monitor_needs_you_press(tk_needs_you_verdict verdict) {
 
 void tk_agent_monitor_create(lv_obj_t *app_root) {
   memset(&mon, 0, sizeof mon);
+  tk_ir_policy_init(&mon.interaction_policy);
   create_completion(app_root);
   create_needs_you(app_root);
+}
+
+static uint64_t monitor_now_ms(int64_t now_us) {
+  return now_us > 0 ? (uint64_t)now_us / 1000u : 0;
+}
+
+static void select_pending(uint64_t now_ms) {
+  tk_pending_interaction selected;
+  if (tk_ir_policy_current(&mon.interaction_policy, now_ms, &selected)) {
+    mon.snapshot.pending = selected;
+  } else {
+    memset(&mon.snapshot.pending, 0, sizeof mon.snapshot.pending);
+  }
 }
 
 void tk_agent_monitor_apply(const tk_agent_snapshot *snapshot,
                             int64_t now_us) {
   if (!snapshot) return;
   mon.snapshot = *snapshot;
+  uint64_t now_ms = monitor_now_ms(now_us);
+  (void)tk_ir_policy_update_lan(&mon.interaction_policy, &snapshot->pending,
+                                now_ms);
+  select_pending(now_ms);
   mon.applied_at_us = now_us;
   mon.rendered_at_us = now_us;
   mon.has_snapshot = true;
-  tk_completion_queue_apply(&mon.queue, snapshot,
-                            now_us > 0 ? (uint64_t)now_us / 1000ULL : 0);
+  tk_completion_queue_apply(&mon.queue, &mon.snapshot, now_ms);
   render_needs_you(); /* first: it decides whether completion yields the glass */
   render_completion(now_us > 0 ? (uint64_t)now_us / 1000ULL : 0);
 
@@ -1169,9 +1204,20 @@ void tk_agent_monitor_apply(const tk_agent_snapshot *snapshot,
   }
 }
 
+void tk_agent_monitor_apply_relay(const tk_pending_interaction *pending,
+                                  int64_t now_us) {
+  uint64_t now_ms = monitor_now_ms(now_us);
+  (void)tk_ir_policy_update_relay(&mon.interaction_policy, pending, now_ms);
+  select_pending(now_ms);
+  mon.rendered_at_us = now_us;
+  mon.has_snapshot = true;
+  render_needs_you();
+}
+
 void tk_agent_monitor_tick(int64_t now_us) {
   if (!mon.has_snapshot) return;
   mon.rendered_at_us = now_us;
+  select_pending(monitor_now_ms(now_us));
   render_needs_you();
   render_completion(now_us > 0 ? (uint64_t)now_us / 1000ULL : 0);
 }

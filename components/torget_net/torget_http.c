@@ -3,6 +3,10 @@
 #include <stdatomic.h>
 #include <string.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -11,6 +15,31 @@
 #include "net_source_policy.h"
 
 static const char *TAG = "torget-http";
+
+static StaticSemaphore_t s_cloud_io_storage;
+static SemaphoreHandle_t s_cloud_io;
+static portMUX_TYPE s_cloud_io_init_lock = portMUX_INITIALIZER_UNLOCKED;
+
+bool torget_cloud_io_init(void) {
+  if (s_cloud_io != NULL) return true;
+  taskENTER_CRITICAL(&s_cloud_io_init_lock);
+  if (s_cloud_io == NULL) {
+    s_cloud_io = xSemaphoreCreateMutexStatic(&s_cloud_io_storage);
+  }
+  taskEXIT_CRITICAL(&s_cloud_io_init_lock);
+  return s_cloud_io != NULL;
+}
+
+bool torget_cloud_io_acquire(uint32_t timeout_ms) {
+  if (!torget_cloud_io_init()) return false;
+  TickType_t ticks = pdMS_TO_TICKS(timeout_ms);
+  if (timeout_ms != 0 && ticks == 0) ticks = 1;
+  return xSemaphoreTake(s_cloud_io, ticks) == pdTRUE;
+}
+
+void torget_cloud_io_release(void) {
+  if (s_cloud_io != NULL) (void)xSemaphoreGive(s_cloud_io);
+}
 
 typedef struct {
   char *buf;
@@ -35,8 +64,20 @@ static esp_err_t on_event(esp_http_client_event_t *evt) {
 }
 
 static bool http_get_timeout(const char *url, char *buf, size_t cap,
-                             size_t *len_out, int timeout_ms) {
+                             size_t *len_out, int timeout_ms, bool cloud) {
   body_t body = { .buf = buf, .cap = cap };
+  bool gate_held = false;
+  bool ok = false;
+  esp_http_client_handle_t client = NULL;
+
+  if (!url || !buf || cap == 0 || timeout_ms <= 0) return false;
+  if (cloud) {
+    gate_held = torget_cloud_io_acquire((uint32_t)timeout_ms);
+    if (!gate_held) {
+      ESP_LOGW(TAG, "molnhämtning väntade för länge på TLS-grinden");
+      return false;
+    }
+  }
 
   esp_http_client_config_t cfg = {
     .url = url,
@@ -50,10 +91,9 @@ static bool http_get_timeout(const char *url, char *buf, size_t cap,
     .max_redirection_count = 3,
   };
 
-  esp_http_client_handle_t client = esp_http_client_init(&cfg);
-  if (!client) return false;
+  client = esp_http_client_init(&cfg);
+  if (!client) goto done;
 
-  bool ok = false;
   esp_err_t err = esp_http_client_perform(client);
   int status = esp_http_client_get_status_code(client);
 
@@ -69,12 +109,15 @@ static bool http_get_timeout(const char *url, char *buf, size_t cap,
     ok = true;
   }
 
-  esp_http_client_cleanup(client);
+done:
+  if (client != NULL) esp_http_client_cleanup(client);
+  if (gate_held) torget_cloud_io_release();
   return ok;
 }
 
 bool torget_http_get(const char *url, char *buf, size_t cap, size_t *len_out) {
-  return http_get_timeout(url, buf, cap, len_out, TG_NET_LOCAL_TIMEOUT_MS);
+  return http_get_timeout(url, buf, cap, len_out, TG_NET_LOCAL_TIMEOUT_MS,
+                          false);
 }
 
 /*
@@ -101,8 +144,9 @@ bool torget_http_get_failover(const char *lan_url, const char *relay_url,
 
   tg_net_source source = tg_net_source_first(&state, now);
   const char *url = (source == TG_NET_SOURCE_LOCAL) ? lan_url : relay_url;
-  bool ok = http_get_timeout(url, buf, cap, len_out,
-                             tg_net_source_timeout_ms(&state, source));
+  bool ok = http_get_timeout(
+      url, buf, cap, len_out, tg_net_source_timeout_ms(&state, source),
+      source == TG_NET_SOURCE_RELAY);
 
   tg_net_source_note(&state, source, ok, now);
   atomic_store(&s_relay_won, state.relay_won);
@@ -113,7 +157,7 @@ bool torget_http_get_failover(const char *lan_url, const char *relay_url,
   /* LAN föll — reläet är hela poängen med att vara på resa. */
   ESP_LOGI(TAG, "LAN svarade inte, provar reläet");
   ok = http_get_timeout(relay_url, buf, cap, len_out,
-                        TG_NET_LOCAL_TIMEOUT_MS);
+                        TG_NET_LOCAL_TIMEOUT_MS, true);
   tg_net_source_note(&state, TG_NET_SOURCE_RELAY, ok, now);
   atomic_store(&s_relay_won, state.relay_won);
   return ok;

@@ -6,6 +6,7 @@ idf_component_register(
        "agent_status_parse.c" "agent_usage.c"
        "agent_monitor_policy.c" "usage_live_policy.c" "agent_completion_policy.c"
        "needs_you_policy.c" "needs_you_send_policy.c"
+       "interaction_relay_policy.c"
        "agent_monitor.c" "agent_assets.c"
        "github_status_parse.c" "project_star_popup_policy.c"
        "project_star_assets.c" "project_star_chime.c" "project_star_popup.c"

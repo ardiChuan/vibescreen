@@ -4,4 +4,4 @@
 idf_component_register(
   SRCS "torget_http.c" "net_source_policy.c"
   INCLUDE_DIRS "."
-  PRIV_REQUIRES esp_http_client esp-tls esp_timer)
+  PRIV_REQUIRES esp_http_client esp-tls esp_timer freertos)

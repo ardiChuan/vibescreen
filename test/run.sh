@@ -96,6 +96,13 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 
 "$PYTHON_BIN" test_interaction_relay_vectors.py
 
+cc -std=c11 -Wall -Wextra -Werror -O1 \
+  -I../components/app_tokens \
+  ../components/app_tokens/interaction_relay_policy.c \
+  test_interaction_relay_policy.c \
+  -o /tmp/torget-interaction-relay-policy-test
+/tmp/torget-interaction-relay-policy-test
+
 # Cross-language wire vector: the portable panel HMAC immediately above and
 # the tokenserver verifier must pin the same exact v2 bytes forever.
 "$PYTHON_BIN" - <<'PY'

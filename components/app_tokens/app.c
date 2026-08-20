@@ -13,6 +13,10 @@
 #include "secrets.h"
 #endif
 
+#ifdef ESP_PLATFORM
+#include "torget_http.h"
+#endif
+
 extern const lv_font_t plex_icon_64;
 
 #define STALE_AFTER_US (120LL * 1000000LL)
@@ -101,6 +105,7 @@ static void create(lv_obj_t *root) {
   lv_timer_create(tick_cb, TICK_EVERY_MS, NULL);
 
 #ifdef ESP_PLATFORM
+  (void)torget_cloud_io_init();
   tokens_net_start();
   tokens_agent_net_start();
   tokens_github_net_start();

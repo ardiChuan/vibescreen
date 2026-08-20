@@ -74,8 +74,18 @@ typedef enum {
   TK_PENDING_APPROVAL,
 } tk_pending_kind;
 
+/* Pending decisions arrive independently from the direct LAN status feed and
+ * the optional encrypted relay. NONE is the parser/default value until the
+ * owning monitor assigns the slot. */
+typedef enum {
+  TK_PENDING_SOURCE_NONE = 0,
+  TK_PENDING_SOURCE_LAN,
+  TK_PENDING_SOURCE_RELAY,
+} tk_pending_source;
+
 typedef struct {
   bool present;
+  tk_pending_source source;
   /* Missing on legacy Claude payloads. Codex is never accepted without an
    * explicit provider and view digest, so it can never fall back to v1. */
   tk_agent_provider provider;
@@ -92,6 +102,11 @@ typedef struct {
   bool has_subtitle;
   bool has_tool;
   bool has_project;
+  /* Authenticated relay binding retained when the LAN and relay slots mirror
+   * the same exact public view. It is binary to avoid a second decode in the
+   * UI path. Never sufficient on its own: source selection and digest equality
+   * are enforced by interaction_relay_policy. */
+  bool has_relay_binding;
   uint8_t options_total;
   uint32_t expires_in_ms;
   /* The interaction's original hold duration. The countdown ring is
@@ -105,6 +120,8 @@ typedef struct {
   char title[TK_PENDING_TITLE_CAP];
   char subtitle[TK_PENDING_TITLE_CAP];
   char tool[TK_PENDING_TOOL_CAP];
+  uint8_t relay_challenge[32];
+  uint8_t relay_view_sha256[32];
 } tk_pending_interaction;
 
 typedef struct {

@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""The relay carries numbers, never activity.
+"""The existing numbers relay carries numbers, never activity.
 
-The relay is a mailbox on the internet, so whatever crosses it is readable
-by anyone who learns the URL.  Quota percentages and reset times are dull.
-Project names, question text and shell commands are not — and neither is the
-device key's answer path, which must never be reachable from outside the
-LAN.  Nothing in the compiler enforces that split, so it is asserted here.
+The separate interaction transport is explicit opt-in and end-to-end
+encrypted. This file protects the old public numbers Worker/publisher and the
+direct LAN client from accidentally becoming an activity transport.
 """
 
 from pathlib import Path
@@ -41,15 +39,17 @@ assert "torget_http_get_failover(TK_TOKENS_URL, TK_TOKENS_RELAY_URL" in net
 assert "torget_http_get_failover(TK_MAX_TRACKER_URL" in net
 assert "torget_http_get_failover(TK_GITHUB_URL" in github
 
-# --- What may not cross: anything that names your work ------------------
-for path, source in (("agent_net.c", agent), ("needs_you_net.c", needs_you)):
-    assert "RELAY" not in source.upper(), (
-        f"{path} must never reach the relay — it carries project names, "
-        "question text and commands"
-    )
-    assert "failover" not in source, (
-        f"{path} must not use the failover helper"
-    )
+# --- What may not cross the numbers transport: anything naming your work --
+assert "RELAY" not in agent.upper()
+assert "failover" not in agent
+assert "failover" not in needs_you, (
+    "direct verdicts must not enter the plaintext numbers failover helper"
+)
+assert "TK_VIBEPULSE_RELAY_URL" not in needs_you
+assert "torget_cloud_io" not in needs_you
+assert "tk_interaction_relay_queue_verdict" in needs_you, (
+    "the only cloud handoff here is the separately encrypted transport"
+)
 
 # The device key answers only the LAN service.  A verdict posted into a
 # mailbox would be a signed instruction sitting in public storage.
@@ -123,4 +123,4 @@ for guide, name in ((agent_setup, "agent setup"),
         f"{name} must state the computer-on requirement plainly"
     )
 
-print("OK: the relay carries numbers, and activity stays on the LAN")
+print("OK: the numbers relay carries only numbers; activity uses a separate encrypted boundary")

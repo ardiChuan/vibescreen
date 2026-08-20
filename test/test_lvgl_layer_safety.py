@@ -15,6 +15,16 @@ target_main = (root / "main/main.c").read_text(encoding="utf-8")
 sim_main = (root / "sim/main.c").read_text(encoding="utf-8")
 platform_header = (root / "platform/torget.h").read_text(encoding="utf-8")
 wifi_state_header = (root / "main/wifi_signal_state.h").read_text(encoding="utf-8")
+tokens_app = (root / "components/app_tokens/app.c").read_text(encoding="utf-8")
+torget_http = (root / "components/torget_net/torget_http.c").read_text(
+    encoding="utf-8"
+)
+torget_http_header = (root / "components/torget_net/torget_http.h").read_text(
+    encoding="utf-8"
+)
+needs_you_net = (root / "components/app_tokens/needs_you_net.c").read_text(
+    encoding="utf-8"
+)
 
 # Scaling a dynamic label makes LVGL render the complete label into an
 # unsliceable ARGB transform layer.  The 436 px hero labels can then request
@@ -91,5 +101,28 @@ assert disconnect.index("xEventGroupClearBits") < disconnect.index(
 assert got_ip.index("xEventGroupSetBits") < got_ip.index(
     "tg_wifi_signal_event")
 assert "TG_WIFI_SIGNAL_TERMINAL_GENERATION" in wifi_state_header
+
+# All Cloudflare HTTPS clients share one mutex created before app network tasks
+# start. LAN status/verdict traffic never waits on it, and no source may hold
+# it while entering the LVGL lock.
+assert "bool torget_cloud_io_init(void);" in torget_http_header
+assert "bool torget_cloud_io_acquire(uint32_t timeout_ms);" in torget_http_header
+assert "void torget_cloud_io_release(void);" in torget_http_header
+assert "xSemaphoreCreateMutexStatic" in torget_http
+assert "torget_cloud_io_init();" in tokens_app
+assert tokens_app.index("torget_cloud_io_init();") < tokens_app.index(
+    "tokens_net_start();"
+)
+assert "torget_cloud_io_acquire" in torget_http
+assert "torget_cloud_io_release" in torget_http
+assert "TG_NET_LOCAL_TIMEOUT_MS,\n                          false" in torget_http
+assert "source == TG_NET_SOURCE_RELAY" in torget_http
+assert "TG_NET_LOCAL_TIMEOUT_MS, true" in torget_http
+assert "torget_cloud_io" not in needs_you_net, (
+    "the direct LAN verdict sender must never wait behind Cloudflare"
+)
+for network_source in (torget_http, needs_you_net):
+    assert "torget_ui_lock" not in network_source
+    assert "lv_" not in network_source
 
 print("OK: VibePulse labels and shared Needs You tree stay allocation-safe")

@@ -3,6 +3,14 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+
+/* One static gate for every Cloudflare HTTPS operation. Initialize it before
+ * app network tasks start. Acquire only around client open/perform/close, and
+ * never while holding torget_ui_lock. LAN HTTP deliberately bypasses it. */
+bool torget_cloud_io_init(void);
+bool torget_cloud_io_acquire(uint32_t timeout_ms);
+void torget_cloud_io_release(void);
 
 /*
  * Torgets HTTP-klient för glance-mönstrets endpoints: EN begränsad GET som
