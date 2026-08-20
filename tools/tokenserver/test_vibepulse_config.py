@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tools.tokenserver import vibepulse_config as config_module
 from tools.tokenserver.vibepulse_config import (
     ConfigError,
     VibePulseConfig,
@@ -147,6 +148,57 @@ class SavedConfigTests(unittest.TestCase):
         with config_lock(self.path):
             save_config(self.path, VibePulseConfig(codex_interactions=True))
         self.assertTrue(load_config(self.path).codex_interactions)
+
+    def _run_lock_program(self, program):
+        try:
+            return subprocess.run(
+                [sys.executable, "-c", program, str(self.path)],
+                cwd=Path(__file__).resolve().parents[2],
+                timeout=2,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("nested config lock deadlocked")
+
+    def test_config_lock_is_reentrant_for_the_same_thread_and_path(self):
+        program = (
+            "from pathlib import Path; import sys; "
+            "from tools.tokenserver.vibepulse_config import config_lock; "
+            "path=Path(sys.argv[1]); "
+            "\nwith config_lock(path):"
+            "\n with config_lock(path): pass"
+        )
+
+        completed = self._run_lock_program(program)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_nested_exception_unwinds_then_lock_can_be_reacquired(self):
+        program = (
+            "from pathlib import Path; import sys; "
+            "from tools.tokenserver.vibepulse_config import config_lock; "
+            "path=Path(sys.argv[1]); "
+            "\nwith config_lock(path):"
+            "\n try:"
+            "\n  with config_lock(path): raise RuntimeError('nested')"
+            "\n except RuntimeError: pass"
+            "\nwith config_lock(path): pass"
+        )
+
+        completed = self._run_lock_program(program)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_config_lock_fails_before_mutation_without_an_os_backend(self):
+        with mock.patch.object(config_module, "fcntl", None), \
+                mock.patch.object(config_module, "msvcrt", None):
+            with self.assertRaises(ConfigError):
+                with config_lock(self.path):
+                    self.fail("lock succeeded without an OS backend")
+
+        self.assertFalse(self.path.parent.exists())
 
     @unittest.skipUnless(os.name == "posix", "POSIX symbolic links")
     def test_config_lock_never_follows_a_symlink(self):

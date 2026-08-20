@@ -36,6 +36,12 @@ class ConfigError(ValueError):
     """The saved configuration could not be trusted or persisted."""
 
 
+class _ConfigLockCoordinator:
+    def __init__(self) -> None:
+        self.process_lock = threading.RLock()
+        self.local = threading.local()
+
+
 @dataclass(frozen=True)
 class VibePulseConfig:
     claude_interactions: bool = False
@@ -141,14 +147,14 @@ def _config_lock_path(path: Path) -> Path:
     return path.with_name(f".{path.name}.lock")
 
 
-def _process_lock(path: Path) -> threading.RLock:
-    key = os.path.abspath(os.fspath(path))
+def _lock_coordinator(path: Path) -> _ConfigLockCoordinator:
+    key = os.path.normcase(os.path.realpath(os.path.abspath(os.fspath(path))))
     with _PROCESS_LOCKS_GUARD:
-        lock = _PROCESS_LOCKS.get(key)
-        if lock is None:
-            lock = threading.RLock()
-            _PROCESS_LOCKS[key] = lock
-        return lock
+        coordinator = _PROCESS_LOCKS.get(key)
+        if coordinator is None:
+            coordinator = _ConfigLockCoordinator()
+            _PROCESS_LOCKS[key] = coordinator
+        return coordinator
 
 
 def _open_lock_file(path: Path) -> int:
@@ -193,6 +199,8 @@ def _acquire_file_lock(fd: int) -> None:
             os.fsync(fd)
         os.lseek(fd, 0, os.SEEK_SET)
         msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+    else:
+        raise ConfigError("no supported cross-process lock backend")
 
 
 def _release_file_lock(fd: int) -> None:
@@ -207,25 +215,43 @@ def _release_file_lock(fd: int) -> None:
 def config_lock(path: Path):
     """Serialize one config transaction in this process and across peers."""
     lock_path = _config_lock_path(Path(path))
-    with _process_lock(lock_path):
-        try:
-            fd = _open_lock_file(lock_path)
-            _acquire_file_lock(fd)
-        except ConfigError:
-            raise
-        except OSError as exc:
+    coordinator = _lock_coordinator(lock_path)
+    with coordinator.process_lock:
+        depth = getattr(coordinator.local, "depth", 0)
+        if depth == 0:
+            if fcntl is None and msvcrt is None:
+                raise ConfigError("no supported cross-process lock backend")
+            fd = None
             try:
-                os.close(fd)
-            except (UnboundLocalError, OSError):
-                pass
-            raise ConfigError("cannot lock configuration") from exc
+                fd = _open_lock_file(lock_path)
+                _acquire_file_lock(fd)
+            except BaseException as exc:
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                if isinstance(exc, ConfigError):
+                    raise
+                if isinstance(exc, OSError):
+                    raise ConfigError("cannot lock configuration") from exc
+                raise
+            coordinator.local.descriptor = fd
+        coordinator.local.depth = depth + 1
         try:
             yield
         finally:
-            try:
-                _release_file_lock(fd)
-            finally:
-                os.close(fd)
+            coordinator.local.depth -= 1
+            if coordinator.local.depth == 0:
+                fd = coordinator.local.descriptor
+                try:
+                    _release_file_lock(fd)
+                finally:
+                    try:
+                        os.close(fd)
+                    finally:
+                        del coordinator.local.descriptor
+                        del coordinator.local.depth
 
 def save_config(path: Path, config: VibePulseConfig) -> None:
     """Atomically write the public feature switches with private modes."""
