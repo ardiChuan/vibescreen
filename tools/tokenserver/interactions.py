@@ -44,7 +44,7 @@ import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Tuple
 
 if __package__:
     from .agent_status import sanitize_project
@@ -684,6 +684,36 @@ def _codex_approval_is_normalized(normalized: Dict[str, Any],
     return canonical == normalized
 
 
+@dataclass(frozen=True)
+class RelayPublishJob:
+    """Immutable, plaintext-minimal handoff to the optional relay thread."""
+    request_id: str
+    challenge: bytes
+    view_bytes: bytes
+    view_sha256: bytes
+    expires_at: int
+    provider: str
+    can_approve: bool
+
+
+@dataclass(frozen=True)
+class RelayResolution:
+    """Decrypted relay verdict passed back across the store boundary."""
+    request_id: str
+    challenge: bytes
+    view_sha256: bytes
+    verdict: str
+    mac: bytes
+
+
+class InteractionRelayListener(Protocol):
+    def on_park(self, job: RelayPublishJob) -> None:
+        ...
+
+    def on_remove(self, request_id: str, reason: str) -> None:
+        ...
+
+
 @dataclass
 class _Pending:
     request_id: str
@@ -699,6 +729,7 @@ class _Pending:
     hold_ms: int
     created_at: float
     expires_at: float
+    relay_job: RelayPublishJob
     done: threading.Event = field(default_factory=threading.Event)
     verdict: Optional[str] = None
 
@@ -714,18 +745,30 @@ class InteractionStore:
                  now: Callable[[], float] = time.monotonic,
                  wall: Callable[[], float] = time.time,
                  audit: Optional[Callable[[str, Dict[str, Any]], None]] = None,
-                 random_bytes: Callable[[int], bytes] = secrets.token_bytes):
+                 random_bytes: Callable[[int], bytes] = secrets.token_bytes,
+                 relay_listener: Optional[InteractionRelayListener] = None,
+                 relay_random_bytes: Callable[[int], bytes] =
+                 secrets.token_bytes):
         self._secret = secret
         self._reveal = bool(reveal_detail)
         self._now = now
         self._wall = wall
         self._audit = audit
         self._random_bytes = random_bytes
+        self._relay_random_bytes = relay_random_bytes
+        self._relay_listener = relay_listener
         self._lock = threading.Lock()
         self._pending: Dict[str, _Pending] = {}
         self._issued_ids = set()
         self._issued_order = deque()
         self._protected_ids = set()
+        self._relay_notifications = deque()
+
+    def set_relay_listener(
+            self, listener: Optional[InteractionRelayListener]) -> None:
+        """Attach or detach the optional background relay boundary."""
+        with self._lock:
+            self._relay_listener = listener
 
     # -- creation ---------------------------------------------------------
 
@@ -899,9 +942,36 @@ class InteractionStore:
             return None
         duration = max(1.0, requested_duration)
         now = self._now()
+        wall_now = self._wall()
+        try:
+            challenge = self._relay_random_bytes(32)
+        except Exception:
+            return None
+        if not isinstance(challenge, bytes) or len(challenge) != 32 or \
+                not isinstance(wall_now, (int, float)) or \
+                isinstance(wall_now, bool) or not math.isfinite(wall_now):
+            return None
+        relay_expiry = math.ceil(wall_now + duration)
+        if not 0 < relay_expiry <= 0xFFFFFFFF:
+            return None
         hold_ms = int(duration * 1000)
+        stable_template = {
+            "provider": provider.value,
+            "request_id": "A" * 22,
+            "project": project,
+            "hold_ms": hold_ms,
+        }
+        stable_template.update(view)
+        stable_template = {
+            key: value for key, value in stable_template.items()
+            if value is not None
+        }
+        if not 0 < len(view_bytes(stable_template)) <= PENDING_BUDGET_BYTES:
+            return None
         with self._lock:
             self._sweep_locked(now)
+        self._flush_relay_notifications()
+        with self._lock:
             if len(self._pending) >= MAX_PENDING:
                 return None
             request_id = self._mint_id_locked()
@@ -916,6 +986,17 @@ class InteractionStore:
             stable.update(view)
             stable = {key: value for key, value in stable.items()
                       if value is not None}
+            stable_bytes = view_bytes(stable)
+            digest = hashlib.sha256(stable_bytes).digest()
+            relay_job = RelayPublishJob(
+                request_id=request_id,
+                challenge=challenge,
+                view_bytes=stable_bytes,
+                view_sha256=digest,
+                expires_at=relay_expiry,
+                provider=provider.value,
+                can_approve=bool(view.get("can_approve")),
+            )
             entry = _Pending(
                 request_id=request_id,
                 provider=provider,
@@ -923,16 +1004,19 @@ class InteractionStore:
                 event=event,
                 view=view,
                 recommended_index=recommended,
-                view_sha256=view_digest(stable),
+                view_sha256=digest.hex(),
                 requires_v2=requires_v2,
                 project=project,
                 session_key=_session_key(session_id),
                 hold_ms=hold_ms,
                 created_at=now,
                 expires_at=now + duration,
+                relay_job=relay_job,
             )
             self._pending[entry.request_id] = entry
             self._protected_ids.add(entry.request_id)
+        if requires_v2:
+            self._notify_relay_park(entry.relay_job)
         self._log("parked", entry, None)
         return entry
 
@@ -960,13 +1044,20 @@ class InteractionStore:
                     break
                 if not is_alive():
                     with self._lock:
-                        self._pending.pop(entry.request_id, None)
+                        removed = self._pending.pop(entry.request_id, None)
                         self._protected_ids.discard(entry.request_id)
+                        if removed is not None:
+                            self._queue_relay_remove_locked(
+                                entry, "abandoned")
+                    self._flush_relay_notifications()
                     self._log("abandoned", entry, None)
                     return None
         with self._lock:
-            self._pending.pop(entry.request_id, None)
+            removed = self._pending.pop(entry.request_id, None)
             self._protected_ids.discard(entry.request_id)
+            if removed is not None and entry.verdict is None:
+                self._queue_relay_remove_locked(entry, "timeout")
+        self._flush_relay_notifications()
         if entry.verdict is None:
             self._log("timeout", entry, None)
             return None
@@ -983,9 +1074,13 @@ class InteractionStore:
             # authority. Reap a still-live mistake so it cannot shadow the
             # queue as a ghost.
             with self._lock:
-                self._pending.pop(entry.request_id, None)
+                removed = self._pending.pop(entry.request_id, None)
                 self._protected_ids.discard(entry.request_id)
+                if removed is not None:
+                    self._queue_relay_remove_locked(
+                        entry, "provider-mismatch")
             entry.done.set()
+            self._flush_relay_notifications()
             self._log("provider-mismatch", entry, None)
             return None
         result = self.await_result(entry, is_alive=is_alive)
@@ -1010,6 +1105,7 @@ class InteractionStore:
         with self._lock:
             self._sweep_locked(self._now())
             entry = self._pending.get(request_id)
+        self._flush_relay_notifications()
         uses_v2 = provider is not None or view_sha256 is not None
         if entry is not None and entry.requires_v2 and \
                 (provider is None or view_sha256 is None):
@@ -1031,20 +1127,107 @@ class InteractionStore:
                                  self._wall()):
                 return False, "signature rejected"
 
+        accepted_entry = None
+        failure = None
         with self._lock:
             self._sweep_locked(self._now())
             entry = self._pending.get(request_id)
             if entry is None:
                 # Already answered, expired, or never existed. Identical
                 # response on purpose: a stale tap learns nothing.
-                return False, "no such pending interaction"
-            if verdict == "approve" and not entry.view.get("can_approve"):
-                return False, "this one has to be approved at the terminal"
-            del self._pending[request_id]
-            entry.verdict = verdict
-        entry.done.set()
-        self._log("resolved", entry, verdict)
+                failure = "no such pending interaction"
+            elif verdict == "approve" and not entry.view.get("can_approve"):
+                failure = "this one has to be approved at the terminal"
+            else:
+                del self._pending[request_id]
+                entry.verdict = verdict
+                self._queue_relay_remove_locked(entry, "resolved")
+                accepted_entry = entry
+        if accepted_entry is not None:
+            accepted_entry.done.set()
+        self._flush_relay_notifications()
+        if failure is not None:
+            return False, failure
+        self._log("resolved", accepted_entry, verdict)
         return True, "ok"
+
+    def resolve_relay(
+            self, result: Any,
+            verify: Callable[[RelayPublishJob, RelayResolution], bool]
+            ) -> Tuple[bool, str]:
+        """Consume one decrypted relay verdict in a single locked transition.
+
+        AEAD decoding happens before this boundary. ``verify`` must be a pure,
+        non-blocking HMAC check; it is invoked under the store lock only after
+        the live request, deadline, challenge, and view digest match.
+        """
+        if not isinstance(result, RelayResolution) or \
+                not isinstance(result.request_id, str) or \
+                not isinstance(result.challenge, bytes) or \
+                len(result.challenge) != 32 or \
+                not isinstance(result.view_sha256, bytes) or \
+                len(result.view_sha256) != 32 or \
+                not isinstance(result.mac, bytes) or len(result.mac) != 32 or \
+                result.verdict not in ("approve", "deny", "terminal", "panic") or \
+                not callable(verify):
+            return False, "bad request"
+
+        completed = []
+        accepted = False
+        reason = "no such pending interaction"
+        with self._lock:
+            self._sweep_locked(self._now())
+            entry = self._pending.get(result.request_id)
+            if entry is not None:
+                job = entry.relay_job
+                if not hmac.compare_digest(result.challenge, job.challenge) or \
+                        not hmac.compare_digest(
+                            result.view_sha256, job.view_sha256):
+                    reason = "interaction binding rejected"
+                else:
+                    try:
+                        authenticated = bool(verify(job, result))
+                    except Exception:
+                        authenticated = False
+                    if not authenticated:
+                        reason = "signature rejected"
+                    elif result.verdict == "approve" and \
+                            not job.can_approve:
+                        reason = \
+                            "this one has to be approved at the terminal"
+                    elif result.verdict == "panic":
+                        completed = list(self._pending.values())
+                        self._pending.clear()
+                        for pending in completed:
+                            pending.verdict = "deny"
+                            self._queue_relay_remove_locked(pending, "panic")
+                        accepted = True
+                        reason = "panic"
+                    else:
+                        del self._pending[result.request_id]
+                        entry.verdict = "leave_it" \
+                            if result.verdict == "terminal" \
+                            else result.verdict
+                        self._queue_relay_remove_locked(
+                            entry,
+                            "terminal" if result.verdict == "terminal"
+                            else "resolved",
+                        )
+                        completed = [entry]
+                        accepted = True
+                        reason = "ok"
+        for entry in completed:
+            entry.done.set()
+        self._flush_relay_notifications()
+        if accepted:
+            for entry in completed:
+                self._log(
+                    "relay-panic" if result.verdict == "panic"
+                    else "relay-resolved",
+                    entry,
+                    entry.verdict,
+                )
+        return accepted, reason
 
     def panic(self, ts: Any, mac: Any) -> Tuple[bool, int]:
         """Signed panic stop. Returns (accepted, denied_count).
@@ -1065,10 +1248,13 @@ class InteractionStore:
         with self._lock:
             entries = list(self._pending.values())
             self._pending.clear()
+            for entry in entries:
+                self._queue_relay_remove_locked(entry, "panic")
         for entry in entries:
             entry.verdict = "deny"
             entry.done.set()
             self._log("panic-denied", entry, "deny")
+        self._flush_relay_notifications()
         return len(entries)
 
     # -- publishing -------------------------------------------------------
@@ -1080,26 +1266,31 @@ class InteractionStore:
         and a dashboard is not what you answer from the kitchen.
         """
         now = self._now()
+        payload = None
         with self._lock:
             self._sweep_locked(now)
-            if not self._pending:
-                return None
-            entry = min(self._pending.values(),
-                        key=lambda item: (item.created_at, item.request_id))
-            payload = {
-                "request_id": entry.request_id,
-                "project": entry.project,
-                "expires_in_ms": max(
-                    0, int((entry.expires_at - now) * 1000)),
-                # The original hold, so the panel's countdown ring maps to the
-                # REAL terminal-fallback time rather than guessing a duration.
-                "hold_ms": entry.hold_ms,
-            }
-            if entry.requires_v2:
-                payload["provider"] = entry.provider.value
-            payload.update(entry.view)
-            if entry.requires_v2:
-                payload["view_sha256"] = entry.view_sha256
+            if self._pending:
+                entry = min(
+                    self._pending.values(),
+                    key=lambda item: (item.created_at, item.request_id),
+                )
+                payload = {
+                    "request_id": entry.request_id,
+                    "project": entry.project,
+                    "expires_in_ms": max(
+                        0, int((entry.expires_at - now) * 1000)),
+                    # The original hold, so the panel's countdown ring maps to
+                    # the REAL terminal-fallback time rather than guessing.
+                    "hold_ms": entry.hold_ms,
+                }
+                if entry.requires_v2:
+                    payload["provider"] = entry.provider.value
+                payload.update(entry.view)
+                if entry.requires_v2:
+                    payload["view_sha256"] = entry.view_sha256
+        self._flush_relay_notifications()
+        if payload is None:
+            return None
         payload = {key: value for key, value in payload.items()
                    if value is not None}
         encoded = len(json.dumps(payload).encode())
@@ -1114,8 +1305,37 @@ class InteractionStore:
                    if entry.expires_at <= now]
         for key in expired:
             entry = self._pending.pop(key)
+            self._queue_relay_remove_locked(entry, "timeout")
             entry.done.set()  # unblock the hook; verdict stays None → no
             #                   decision, so the terminal asks
+
+    def _queue_relay_remove_locked(self, entry: _Pending,
+                                   reason: str) -> None:
+        if entry.requires_v2:
+            self._relay_notifications.append((entry.request_id, reason))
+
+    def _flush_relay_notifications(self) -> None:
+        with self._lock:
+            listener = self._relay_listener
+            notifications = list(self._relay_notifications)
+            self._relay_notifications.clear()
+        if listener is None:
+            return
+        for request_id, reason in notifications:
+            try:
+                listener.on_remove(request_id, reason)
+            except Exception:
+                pass
+
+    def _notify_relay_park(self, job: RelayPublishJob) -> None:
+        with self._lock:
+            listener = self._relay_listener
+        if listener is None:
+            return
+        try:
+            listener.on_park(job)
+        except Exception:
+            pass
 
     def _log(self, action: str, entry: _Pending,
              verdict: Optional[str]) -> None:

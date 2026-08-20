@@ -1,9 +1,11 @@
 import http.client
+import hashlib
 import json
 import socket
 import threading
 import time
 import unittest
+from dataclasses import replace
 
 from tools.tokenserver import interactions
 from tools.tokenserver.interactions import (
@@ -903,6 +905,231 @@ class ProviderStoreTests(unittest.TestCase):
                                                "approve", stamp))
         self.assertFalse(ok)
         self.assertIn("not configured", reason)
+
+
+class RelayStoreListenerTests(unittest.TestCase):
+    class Listener:
+        def __init__(self, store, fail=False):
+            self.store = store
+            self.fail = fail
+            self.parked = []
+            self.removed = []
+
+        def _assert_unlocked(self):
+            acquired = self.store._lock.acquire(blocking=False)
+            if acquired:
+                self.store._lock.release()
+            if not acquired:
+                raise AssertionError("listener invoked under store lock")
+
+        def on_park(self, job):
+            self._assert_unlocked()
+            self.store.pending_public()
+            if self.fail:
+                raise RuntimeError("listener failure")
+            self.parked.append(job)
+
+        def on_remove(self, request_id, reason):
+            self._assert_unlocked()
+            if self.fail:
+                raise RuntimeError("listener failure")
+            self.removed.append((request_id, reason))
+
+    def setUp(self):
+        self.clock = Clock()
+        self.wall = Clock(50_000.0)
+        self.store = InteractionStore(
+            secret=SECRET, reveal_detail=True, now=self.clock,
+            wall=self.wall,
+            relay_random_bytes=lambda size: b"\x42" * size,
+        )
+        self.listener = self.Listener(self.store)
+        self.store.set_relay_listener(self.listener)
+
+    def test_park_emits_only_an_immutable_bounded_public_job(self):
+        event = approval_event(command="npm test")
+        event["session_id"] = "secret-session"
+        event["transcript_path"] = "/private/transcript.jsonl"
+
+        entry = self.store.park("approval", event, 30)
+
+        self.assertIsNotNone(entry)
+        self.assertEqual(len(self.listener.parked), 1)
+        job = self.listener.parked[0]
+        self.assertEqual(set(job.__dataclass_fields__), {
+            "request_id", "challenge", "view_bytes", "view_sha256",
+            "expires_at", "provider", "can_approve",
+        })
+        self.assertEqual(job.request_id, entry.request_id)
+        self.assertEqual(job.challenge, b"\x42" * 32)
+        self.assertEqual(job.provider, "claude")
+        self.assertTrue(job.can_approve)
+        self.assertLessEqual(len(job.view_bytes),
+                             interactions.PENDING_BUDGET_BYTES)
+        self.assertEqual(
+            job.view_sha256,
+            hashlib.sha256(job.view_bytes).digest(),
+        )
+        decoded = json.loads(job.view_bytes.decode("utf-8"))
+        self.assertEqual(decoded["title"], "npm test")
+        self.assertNotIn("session_id", decoded)
+        self.assertNotIn("transcript_path", decoded)
+        self.assertNotIn("secret-session", repr(job))
+        self.assertNotIn("transcript.jsonl", repr(job))
+        with self.assertRaises((AttributeError, TypeError)):
+            job.provider = "codex"
+
+    def test_listener_failure_never_breaks_parking_or_resolution(self):
+        self.store.set_relay_listener(self.Listener(self.store, fail=True))
+        entry = self.store.park("approval", approval_event(), 30)
+        self.assertIsNotNone(entry)
+
+        stamp = int(self.wall())
+        mac = interactions.sign_answer_v2(
+            SECRET, "claude", entry.request_id, entry.view_sha256,
+            "deny", stamp)
+        self.assertEqual(self.store.resolve(
+            entry.request_id, "deny", stamp, mac, provider="claude",
+            view_sha256=entry.view_sha256), (True, "ok"))
+        self.assertEqual(self.store.await_result(entry).verdict, "deny")
+
+    def test_direct_timeout_dead_hook_and_panic_emit_remote_removal(self):
+        direct = self.store.park("approval", approval_event(), 30)
+        stamp = int(self.wall())
+        mac = interactions.sign_answer_v2(
+            SECRET, "claude", direct.request_id, direct.view_sha256,
+            "deny", stamp)
+        self.assertEqual(self.store.resolve(
+            direct.request_id, "deny", stamp, mac, provider="claude",
+            view_sha256=direct.view_sha256), (True, "ok"))
+
+        expired = self.store.park("approval", approval_event(), 1)
+        self.clock.advance(2)
+        self.store.pending_public()
+
+        abandoned = self.store.park("approval", approval_event(), 30)
+        original_poll = interactions.ALIVE_POLL_S
+        interactions.ALIVE_POLL_S = 0
+        try:
+            self.assertIsNone(self.store.await_result(
+                abandoned, is_alive=lambda: False))
+        finally:
+            interactions.ALIVE_POLL_S = original_poll
+
+        panic_a = self.store.park("approval", approval_event(), 30)
+        panic_b = self.store.park("question", question_event(), 30)
+        self.assertEqual(self.store.deny_all(), 2)
+
+        self.assertCountEqual(self.listener.removed, [
+            (direct.request_id, "resolved"),
+            (expired.request_id, "timeout"),
+            (abandoned.request_id, "abandoned"),
+            (panic_a.request_id, "panic"),
+            (panic_b.request_id, "panic"),
+        ])
+
+    def _relay_verdict(self, entry, verdict="approve", **changes):
+        job = entry.relay_job
+        value = interactions.RelayResolution(
+            request_id=entry.request_id,
+            challenge=job.challenge,
+            view_sha256=job.view_sha256,
+            verdict=verdict,
+            mac=b"\x99" * 32,
+        )
+        return replace(value, **changes)
+
+    def test_relay_resolution_checks_binding_deadline_consumption_and_policy(self):
+        entry = self.store.park("approval", approval_event(), 30)
+        verifier_calls = []
+
+        def verifier(job, verdict):
+            self.assertFalse(self.store._lock.acquire(blocking=False))
+            verifier_calls.append((job, verdict))
+            return True
+
+        wrong_challenge = self._relay_verdict(
+            entry, challenge=b"\x43" * 32)
+        self.assertEqual(self.store.resolve_relay(
+            wrong_challenge, verifier), (False, "interaction binding rejected"))
+        wrong_digest = self._relay_verdict(
+            entry, view_sha256=b"\x44" * 32)
+        self.assertEqual(self.store.resolve_relay(
+            wrong_digest, verifier), (False, "interaction binding rejected"))
+        self.assertEqual(verifier_calls, [])
+
+        accepted = self._relay_verdict(entry)
+        self.assertEqual(self.store.resolve_relay(
+            accepted, verifier), (True, "ok"))
+        self.assertEqual(len(verifier_calls), 1)
+        self.assertEqual(self.store.resolve_relay(
+            accepted, verifier), (False, "no such pending interaction"))
+        self.assertEqual(self.store.await_result(entry).verdict, "approve")
+
+        private_event = approval_event(command="rm -rf important")
+        private = self.store.park("approval", private_event, 30)
+        self.assertFalse(private.relay_job.can_approve)
+        self.assertEqual(self.store.resolve_relay(
+            self._relay_verdict(private), verifier),
+            (False, "this one has to be approved at the terminal"))
+
+        expired = self.store.park("approval", approval_event(), 1)
+        self.clock.advance(2)
+        self.assertEqual(self.store.resolve_relay(
+            self._relay_verdict(expired, verdict="deny"), verifier),
+            (False, "no such pending interaction"))
+
+    def test_terminal_and_authenticated_panic_are_anchored(self):
+        terminal = self.store.park("approval", approval_event(), 30)
+        self.assertEqual(self.store.resolve_relay(
+            self._relay_verdict(terminal, verdict="terminal"),
+            lambda _job, _verdict: True), (True, "ok"))
+        self.assertEqual(self.store.await_result(terminal).verdict, "leave_it")
+
+        anchor = self.store.park("approval", approval_event(), 30)
+        other = self.store.park("question", question_event(), 30)
+        self.assertEqual(self.store.resolve_relay(
+            self._relay_verdict(anchor, verdict="panic"),
+            lambda _job, _verdict: True), (True, "panic"))
+        self.assertEqual(self.store.await_result(anchor).verdict, "deny")
+        self.assertEqual(self.store.await_result(other).verdict, "deny")
+        self.assertIsNone(self.store.pending_public())
+
+    def test_concurrent_direct_and_relay_answers_consume_exactly_once(self):
+        for _ in range(40):
+            entry = self.store.park("approval", approval_event(), 30)
+            relay_result = self._relay_verdict(entry, verdict="approve")
+            stamp = int(self.wall())
+            direct_mac = interactions.sign_answer_v2(
+                SECRET, "claude", entry.request_id, entry.view_sha256,
+                "deny", stamp)
+            barrier = threading.Barrier(3)
+            results = []
+
+            def direct():
+                barrier.wait()
+                results.append(self.store.resolve(
+                    entry.request_id, "deny", stamp, direct_mac,
+                    provider="claude", view_sha256=entry.view_sha256))
+
+            def relayed():
+                barrier.wait()
+                results.append(self.store.resolve_relay(
+                    relay_result, lambda _job, _result: True))
+
+            threads = [threading.Thread(target=direct),
+                       threading.Thread(target=relayed)]
+            for thread in threads:
+                thread.start()
+            barrier.wait()
+            for thread in threads:
+                thread.join(timeout=1)
+                self.assertFalse(thread.is_alive())
+
+            self.assertEqual(sum(accepted for accepted, _reason in results), 1)
+            self.assertIn(
+                self.store.await_result(entry).verdict, ("approve", "deny"))
+            self.assertIsNone(self.store.pending_public())
 
 
 class PrivacyTests(unittest.TestCase):
