@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,7 @@ MAX_DIAGNOSTIC_BYTES = 16 * 1024
 MAX_COMMAND_OUTPUT_BYTES = 16 * 1024
 COMMAND_TIMEOUT_SECONDS = 15
 NETWORK_TIMEOUT_SECONDS = 2
+PIPE_JOIN_TIMEOUT_SECONDS = 1
 _AUTO = object()
 
 _KNOWN_ABSENT = {
@@ -63,12 +65,6 @@ class _ExternalState:
     mcp: bool
     plugin: bool
     marketplace: bool
-
-
-@dataclass(frozen=True)
-class _RollbackStep:
-    argv: tuple[str, ...]
-    description: str
 
 
 class _ConfigPublishError(ConfigError):
@@ -208,6 +204,51 @@ def _known_absent(argv: Sequence[str], stderr: str) -> bool:
     return pattern.fullmatch(normalized) is not None
 
 
+def _close_process_pipes(process) -> None:
+    for pipe in (getattr(process, "stdout", None),
+                 getattr(process, "stderr", None)):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+
+def _terminate_process_tree(process) -> None:
+    """Terminate a probe and descendants without invoking a shell."""
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+    else:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=PIPE_JOIN_TIMEOUT_SECONDS,
+                check=False, shell=False)
+        except (OSError, subprocess.SubprocessError):
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+    try:
+        process.wait(timeout=PIPE_JOIN_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError):
+        if process.poll() is None:
+            try:
+                process.kill()
+                process.wait(timeout=PIPE_JOIN_TIMEOUT_SECONDS)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+
 def _bounded_process(argv: Sequence[str]) -> _CommandResult | None:
     """Run one argv while retaining only a bounded prefix of both pipes."""
     process = None
@@ -228,39 +269,52 @@ def _bounded_process(argv: Sequence[str]) -> _CommandResult | None:
             reader_errors.append(exc)
 
     try:
+        process_kwargs = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "shell": False,
+            "close_fds": True,
+        }
+        if os.name == "posix":
+            process_kwargs["start_new_session"] = True
+        else:
+            process_kwargs["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         process = subprocess.Popen(
-            [str(value) for value in argv], stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
-            close_fds=True)
+            [str(value) for value in argv], **process_kwargs)
         assert process.stdout is not None and process.stderr is not None
         for label, pipe in (("stdout", process.stdout),
                             ("stderr", process.stderr)):
             thread = threading.Thread(
                 target=drain, args=(label, pipe),
-                name=f"vibepulse-drain-{label}")
+                name=f"vibepulse-drain-{label}", daemon=True)
             thread.start()
             threads.append(thread)
         try:
             returncode = process.wait(timeout=COMMAND_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+            _terminate_process_tree(process)
             return None
     except (OSError, subprocess.SubprocessError):
         return None
     except BaseException:
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait()
+        if process is not None:
+            _terminate_process_tree(process)
         raise
     finally:
         for thread in threads:
-            thread.join()
+            thread.join(PIPE_JOIN_TIMEOUT_SECONDS)
         if process is not None:
-            if process.stdout is not None:
-                process.stdout.close()
-            if process.stderr is not None:
-                process.stderr.close()
+            if any(thread.is_alive() for thread in threads):
+                _terminate_process_tree(process)
+            _close_process_pipes(process)
+        for thread in threads:
+            if thread.is_alive():
+                thread.join(PIPE_JOIN_TIMEOUT_SECONDS)
+
+    if any(thread.is_alive() for thread in threads):
+        return None
 
     if (reader_errors or
             len(captured["stdout"]) > MAX_COMMAND_OUTPUT_BYTES or
@@ -676,7 +730,7 @@ def _setup_transaction_path(path: Path) -> Path:
 
 def _inspect_external(
         *, repo_root: Path, python: Path, codex: Path, run,
-        stdout) -> _ExternalState | None:
+        stdout, report_failure: bool = True) -> _ExternalState | None:
     codex_text = str(Path(codex).resolve())
     commands = [
         [codex_text, "mcp", "list", "--json"],
@@ -693,8 +747,9 @@ def _inspect_external(
     if results[2] is not None and results[2].returncode == 0:
         states[2] = _marketplace_state(results[2].stdout, repo_root)
     if any(state is None for state in states):
-        print("FIX Codex resources are foreign or unreadable; leaving all "
-              "external state unchanged", file=stdout)
+        if report_failure:
+            print("FIX Codex resources are foreign or unreadable; leaving all "
+                  "external state unchanged", file=stdout)
         return None
     return _ExternalState(
         mcp=states[0], plugin=states[1], marketplace=states[2])
@@ -709,25 +764,82 @@ def _command_ok(
               _known_absent(argv, completed.stderr))))
 
 
-def _rollback(
-        journal: Sequence[_RollbackStep], run, stdout,
-        failed_step: str) -> bool:
-    failures = []
-    for step in reversed(journal):
-        try:
-            completed = _invoke(step.argv, run)
-            if not _command_ok(
-                    completed, step.argv, absent_allowed=True):
-                failures.append(step.description)
-        except BaseException:
-            failures.append(step.description)
-    if failures:
-        print("FIX irrecoverable divergence after " + failed_step +
-              "; rollback failed: " + ", ".join(failures), file=stdout)
+def _state_reconciliation_commands(
+        current: _ExternalState, target: _ExternalState, *,
+        repo_root: Path, python: Path, codex: Path) -> list[list[str]]:
+    install = plan_codex_install(repo_root, python, codex)
+    uninstall = plan_codex_uninstall(codex)
+    commands = []
+    if current.mcp and not target.mcp:
+        commands.append(uninstall[0])
+    if current.plugin and not target.plugin:
+        commands.append(uninstall[1])
+    if current.marketplace and not target.marketplace:
+        commands.append(uninstall[2])
+    if not current.marketplace and target.marketplace:
+        commands.append(install[0])
+    if not current.plugin and target.plugin:
+        commands.append(install[1])
+    if not current.mcp and target.mcp:
+        commands.append(install[3])
+    return commands
+
+
+def _reconcile_external(
+        target: _ExternalState, *, repo_root: Path, python: Path,
+        codex: Path, run, stdout) -> bool:
+    """Observe, reconcile twice only on progress, then verify exact state."""
+    try:
+        current = _inspect_external(
+            repo_root=repo_root, python=python, codex=codex, run=run,
+            stdout=stdout, report_failure=False)
+    except BaseException:
         return False
-    print(f"FIX Setup failed at {failed_step}; external state restored",
-          file=stdout)
-    return True
+    if current is None:
+        return False
+    if current == target:
+        return True
+
+    for _attempt in range(2):
+        for argv in _state_reconciliation_commands(
+                current, target, repo_root=repo_root, python=python,
+                codex=codex):
+            try:
+                _invoke(argv, run)
+            except BaseException:
+                pass
+        try:
+            observed = _inspect_external(
+                repo_root=repo_root, python=python, codex=codex, run=run,
+                stdout=stdout, report_failure=False)
+        except BaseException:
+            return False
+        if observed is None:
+            return False
+        if observed == target:
+            return True
+        if observed == current:
+            return False
+        current = observed
+    return False
+
+
+def _fail_after_external_mutation(
+        target: _ExternalState, *, failed_step: str, repo_root: Path,
+        python: Path, codex: Path, run, stdout) -> None:
+    restored = _reconcile_external(
+        target, repo_root=repo_root, python=python, codex=codex, run=run,
+        stdout=stdout)
+    config_diverged = "irrecoverable configuration divergence" in failed_step
+    if restored and not config_diverged:
+        print(f"FIX Setup failed at {failed_step}; external state restored",
+              file=stdout)
+    elif restored:
+        print(f"FIX irrecoverable divergence after {failed_step}; external "
+              "state restored", file=stdout)
+    else:
+        print(f"FIX irrecoverable divergence after {failed_step}; external "
+              "state could not be verified or restored", file=stdout)
 
 
 def _publish_config(
@@ -773,7 +885,7 @@ def _install_transaction(
         with config_lock(path):
             snapshot = load_config(path)
         target = _chosen_config(providers, detail)
-        journal: list[_RollbackStep] = []
+        before = None
         failed_step = "runtime preflight"
         try:
             if not _python_probe_ok(python, run):
@@ -792,32 +904,44 @@ def _install_transaction(
                 return False
 
             install = plan_codex_install(repo_root, python, codex)
-            uninstall = plan_codex_uninstall(codex)
             steps = (
-                ("marketplace add", install[0], not before.marketplace,
-                 _RollbackStep(tuple(uninstall[2]), "marketplace remove")),
-                ("plugin add", install[1], not before.plugin,
-                 _RollbackStep(tuple(uninstall[1]), "plugin remove")),
-                ("MCP remove", install[2], before.mcp,
-                 _RollbackStep(tuple(install[3]), "MCP restore")),
-                ("MCP add", install[3], True,
-                 _RollbackStep(tuple(uninstall[0]), "MCP remove")),
+                ("marketplace add", install[0]),
+                ("plugin add", install[1]),
+                ("MCP remove", install[2]),
+                ("MCP add", install[3]),
             )
-            for failed_step, argv, changes_state, compensation in steps:
+            for failed_step, argv in steps:
                 completed = _invoke(argv, run)
                 if not _command_ok(completed, argv):
-                    _rollback(journal, run, stdout, failed_step)
+                    _fail_after_external_mutation(
+                        before, failed_step=failed_step, repo_root=repo_root,
+                        python=python, codex=codex, run=run, stdout=stdout)
                     return False
-                if changes_state:
-                    journal.append(compensation)
+
+            failed_step = "desired external state verification"
+            desired = _inspect_external(
+                repo_root=repo_root, python=python, codex=codex, run=run,
+                stdout=stdout, report_failure=False)
+            if desired != _ExternalState(
+                    mcp=True, plugin=True, marketplace=True):
+                _fail_after_external_mutation(
+                    before, failed_step=failed_step, repo_root=repo_root,
+                    python=python, codex=codex, run=run, stdout=stdout)
+                return False
 
             failed_step = "configuration publish"
             _publish_config(path, snapshot, target)
             return True
         except BaseException as exc:
-            _rollback(
-                journal, run, stdout,
-                _failed_step_with_publish_state(failed_step, exc))
+            if before is None:
+                print(f"FIX Setup failed at {failed_step}", file=stdout)
+            else:
+                _fail_after_external_mutation(
+                    before,
+                    failed_step=_failed_step_with_publish_state(
+                        failed_step, exc),
+                    repo_root=repo_root, python=python, codex=codex, run=run,
+                    stdout=stdout)
             return False
 
 
@@ -829,7 +953,7 @@ def _uninstall_transaction(
         with config_lock(path):
             snapshot = load_config(path)
         target = _disabled_config(snapshot, "codex")
-        journal: list[_RollbackStep] = []
+        before = None
         failed_step = "resource ownership preflight"
         try:
             before = _inspect_external(
@@ -837,31 +961,44 @@ def _uninstall_transaction(
                 stdout=stdout)
             if before is None:
                 return False
-            install = plan_codex_install(repo_root, python, codex)
             uninstall = plan_codex_uninstall(codex)
             steps = (
-                ("MCP remove", uninstall[0], before.mcp,
-                 _RollbackStep(tuple(install[3]), "MCP restore")),
-                ("plugin remove", uninstall[1], before.plugin,
-                 _RollbackStep(tuple(install[1]), "plugin restore")),
-                ("marketplace remove", uninstall[2], before.marketplace,
-                 _RollbackStep(tuple(install[0]), "marketplace restore")),
+                ("MCP remove", uninstall[0], before.mcp),
+                ("plugin remove", uninstall[1], before.plugin),
+                ("marketplace remove", uninstall[2], before.marketplace),
             )
-            for failed_step, argv, changes_state, compensation in steps:
+            for failed_step, argv, owned_before in steps:
                 completed = _invoke(argv, run)
                 if not _command_ok(
-                        completed, argv, absent_allowed=not changes_state):
-                    _rollback(journal, run, stdout, failed_step)
+                        completed, argv, absent_allowed=not owned_before):
+                    _fail_after_external_mutation(
+                        before, failed_step=failed_step, repo_root=repo_root,
+                        python=python, codex=codex, run=run, stdout=stdout)
                     return False
-                if changes_state:
-                    journal.append(compensation)
+
+            failed_step = "desired external state verification"
+            desired = _inspect_external(
+                repo_root=repo_root, python=python, codex=codex, run=run,
+                stdout=stdout, report_failure=False)
+            if desired != _ExternalState(
+                    mcp=False, plugin=False, marketplace=False):
+                _fail_after_external_mutation(
+                    before, failed_step=failed_step, repo_root=repo_root,
+                    python=python, codex=codex, run=run, stdout=stdout)
+                return False
             failed_step = "configuration publish"
             _publish_config(path, snapshot, target)
             return True
         except BaseException as exc:
-            _rollback(
-                journal, run, stdout,
-                _failed_step_with_publish_state(failed_step, exc))
+            if before is None:
+                print(f"FIX Setup failed at {failed_step}", file=stdout)
+            else:
+                _fail_after_external_mutation(
+                    before,
+                    failed_step=_failed_step_with_publish_state(
+                        failed_step, exc),
+                    repo_root=repo_root, python=python, codex=codex, run=run,
+                    stdout=stdout)
             return False
 
 
