@@ -49,6 +49,7 @@
 #include "wifi_creds.h"
 #include "wifi_setup.h"
 #include "wifi_setup_ui.h"
+#include "wifi_signal_state.h"
 #include "wifi_slots.h"
 
 static const char *TAG = "torget";
@@ -86,7 +87,7 @@ static EventGroupHandle_t s_net_events;
 
 /* Lock-free presentation input only. The network task owns radio sampling;
  * LVGL merely reads the last 0..3 value through torget_wifi_signal_bars(). */
-static atomic_uchar s_wifi_signal_bars;
+static tg_wifi_signal_state s_wifi_signal = TG_WIFI_SIGNAL_STATE_INIT;
 
 /* ------------------------------------------------- plattforms-API:t (torget.h) */
 
@@ -112,7 +113,7 @@ void torget_net_wait(void) {
 }
 
 uint8_t torget_wifi_signal_bars(void) {
-  return atomic_load_explicit(&s_wifi_signal_bars, memory_order_relaxed);
+  return tg_wifi_signal_bars(&s_wifi_signal);
 }
 
 void torget_keep_awake(void) { s_last_activity_us = esp_timer_get_time(); }
@@ -285,7 +286,7 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (s_first_start) { s_first_start = false; return; } /* nättasken sköter första */
     if (!atomic_load(&s_sta_paused)) esp_wifi_connect();
   } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-    atomic_store_explicit(&s_wifi_signal_bars, 0, memory_order_relaxed);
+    tg_wifi_signal_event(&s_wifi_signal, 0);
     xEventGroupClearBits(s_net_events, WIFI_GOT_IP);
     int reason = ((wifi_event_sta_disconnected_t *)data)->reason;
     wifi_note_reason(reason);
@@ -314,7 +315,7 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (!atomic_load(&s_sta_paused)) esp_wifi_connect();
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
     /* GOT_IP is enough to say connected even before the first RSSI sample. */
-    atomic_store_explicit(&s_wifi_signal_bars, 1, memory_order_relaxed);
+    tg_wifi_signal_event(&s_wifi_signal, 1);
     char ssid[TG_WIFI_SSID_CAP];
     wifi_copy_current_ssid(ssid, sizeof ssid);
     ESP_LOGI(TAG, "WiFi uppe (\"%s\")", ssid);
@@ -422,13 +423,14 @@ static void net_task(void *arg) {
 static void wifi_signal_task(void *arg) {
   (void)arg;
   for (;;) {
+    unsigned sampled = tg_wifi_signal_sample_begin(&s_wifi_signal);
     wifi_ap_record_t ap;
     uint8_t bars = 0;
     if ((xEventGroupGetBits(s_net_events) & WIFI_GOT_IP) != 0 &&
         esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
       bars = ap.rssi >= -55 ? 3 : ap.rssi >= -70 ? 2 : 1;
     }
-    atomic_store_explicit(&s_wifi_signal_bars, bars, memory_order_relaxed);
+    (void)tg_wifi_signal_sample_commit(&s_wifi_signal, sampled, bars);
     vTaskDelay(pdMS_TO_TICKS(5000));
   }
 }

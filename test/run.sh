@@ -200,6 +200,11 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 /tmp/torget-wifi-slots-test
 
 cc -std=c11 -Wall -Wextra -Werror -O1 \
+  test_wifi_signal_state.c \
+  -o /tmp/torget-wifi-signal-state-test
+/tmp/torget-wifi-signal-state-test
+
+cc -std=c11 -Wall -Wextra -Werror -O1 \
   ../components/torget_wifi/wifi_form.c \
   ../components/torget_wifi/wifi_slots.c \
   test_wifi_form.c \
