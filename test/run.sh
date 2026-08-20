@@ -19,6 +19,19 @@ then
   exit 1
 fi
 
+# Relay crypto stays an optional runtime dependency, but its security vectors
+# are part of the host gate once this repository is being developed/tested.
+if ! "$PYTHON_BIN" -c \
+  'import cryptography; raise SystemExit(0 if cryptography.__version__ == "49.0.0" else 1)' \
+  2>/dev/null
+then
+  printf '%s\n' \
+    'ERROR: De krypterade interaktionstesterna kräver cryptography 49.0.0.' \
+    'Kör från Torget-repots rot:' \
+    '  .venv/bin/python -m pip install -r requirements-interaction-relay.txt' >&2
+  exit 1
+fi
+
 cc -std=c11 -Wall -Wextra -Werror -O1 \
   ../components/torget_fmt/fmt_sv.c \
   ../components/torget_ticker/ticker.c \
@@ -253,6 +266,7 @@ cd ..
   tools.tokenserver.test_vibepulse_config \
   tools.tokenserver.test_codex_interactions \
   tools.tokenserver.test_interactions \
+  tools.tokenserver.test_interaction_relay_crypto \
   tools.tokenserver.test_publisher \
   tools.tokenserver.test_smoke -v
 
