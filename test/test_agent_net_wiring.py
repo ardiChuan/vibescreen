@@ -75,6 +75,18 @@ assert re.search(r"static\s+tk_agent_http_response\s+response\s*;", source), (
     "the 1536-byte response state must live in static .bss"
 )
 assert re.search(
+    r'#define\s+AGENT_TASK_STACK_BYTES\s+\(10\s*\*\s*1024\)', source
+), (
+    "agent-status needs 10 KiB: strict v2 pending-view canonicalization "
+    "overflowed the original 6 KiB stack on the panel"
+)
+assert re.search(
+    r'xTaskCreate\(agent_net_task,\s*"agent-status",\s*'
+    r'AGENT_TASK_STACK_BYTES,\s*NULL,\s*5,\s*NULL\)',
+    source,
+    re.DOTALL,
+), "agent-status must use the guarded v2 interaction stack budget"
+assert re.search(
     r"torget_ui_lock\(\);\s*tokens_apply_agent_status\(&snapshot\);\s*"
     r"torget_ui_unlock\(\);",
     source,

@@ -18,6 +18,12 @@ static const char *TAG = "agent-net";
 
 #define AGENT_POLL_MS 1000
 #define AGENT_LOG_EVERY_MS 30000
+/* A v2 Needs You item adds a 2 KiB snapshot plus the bounded 1 KiB
+ * canonical-view buffer and SHA/cJSON call frames to the poll path. The old
+ * 6 KiB budget overflowed on the ESP32-S3 as soon as the first real Codex
+ * approval arrived. Keep explicit headroom for the strict parser: this task
+ * may die while owning UI work immediately after a successful parse. */
+#define AGENT_TASK_STACK_BYTES (10 * 1024)
 
 #ifdef TK_AGENT_STATUS_URL
 
@@ -138,7 +144,10 @@ static void agent_net_task(void *arg) {
 }
 
 void tokens_agent_net_start(void) {
-  xTaskCreate(agent_net_task, "agent-status", 6144, NULL, 5, NULL);
+  if (xTaskCreate(agent_net_task, "agent-status", AGENT_TASK_STACK_BYTES,
+                  NULL, 5, NULL) != pdPASS) {
+    ESP_LOGE(TAG, "agentstatus-tasken kunde inte starta");
+  }
 }
 
 #else
