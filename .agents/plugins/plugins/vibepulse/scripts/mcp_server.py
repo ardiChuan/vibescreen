@@ -180,15 +180,18 @@ def _context():
     return values
 
 
-def _valid_server_result(value):
+def _valid_server_result(value, options):
     if not isinstance(value, dict):
         return False
     if value.get("status") == "answered":
         if set(value) != {"status", "option_index", "answer"}:
             return False
         index = value["option_index"]
-        return isinstance(index, int) and not isinstance(index, bool) and \
-            0 <= index <= 2 and _clean_text(value["answer"], 64)
+        recommended = [position for position, option in enumerate(options)
+                       if option.get("recommended") is True]
+        return type(index) is int and 0 <= index < len(options) and \
+            recommended == [index] and _clean_text(value["answer"], 64) and \
+            value["answer"] == options[index]["label"]
     if value.get("status") == "computer":
         return set(value) == {"status", "reason"} and \
             _clean_text(value["reason"], 128)
@@ -261,7 +264,7 @@ def _dispatch(method, params):
     response = post_json(
         f"http://127.0.0.1:{port}/api/codex/question", payload,
         read_timeout=_read_timeout())
-    if not _valid_server_result(response):
+    if not _valid_server_result(response, params["arguments"]["options"]):
         response = _computer_fallback()
     return _tool_success(response)
 
@@ -273,8 +276,9 @@ def _handle(value):
     if not set(value).issubset(allowed) or value.get("jsonrpc") != "2.0" or \
             not _protocol_text(value.get("method"), 128):
         return _error(None, -32600, "Invalid Request")
-    request_id = value.get("id", _MISSING)
-    if request_id is not _MISSING and (isinstance(request_id, bool) or
+    has_id = "id" in value
+    request_id = value["id"] if has_id else _MISSING
+    if has_id and (isinstance(request_id, bool) or
             not (request_id is None or isinstance(request_id, (str, int)))):
         return _error(None, -32600, "Invalid Request")
     if isinstance(request_id, str) and not _protocol_text(
@@ -282,19 +286,18 @@ def _handle(value):
         return _error(None, -32600, "Invalid Request")
     method = value["method"]
     params = value.get("params", _MISSING)
+    if method == "notifications/initialized":
+        if has_id:
+            return _error(request_id, -32600, "Invalid Request")
+        return None
+    if not has_id:
+        return None
     if method != "tools/call" and params is not _MISSING and \
             not _bounded_tree(params):
-        return None if request_id is _MISSING else \
-            _error(request_id, -32602, "Invalid params")
-    if method == "notifications/initialized":
-        _dispatch(method, params)
-        return None
-    is_notification = request_id is _MISSING
+        return _error(request_id, -32602, "Invalid params")
     if method not in METHODS:
-        return None if is_notification else _error(request_id, -32601, "Method not found")
+        return _error(request_id, -32601, "Method not found")
     dispatched = _dispatch(method, params)
-    if is_notification:
-        return None
     if dispatched is _MISSING:
         return _error(request_id, -32602, "Invalid params")
     return _result(request_id, dispatched)

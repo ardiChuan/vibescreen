@@ -16,6 +16,10 @@ MAX_BODY_BYTES = 4096
 CONNECT_TIMEOUT_SECONDS = 0.75
 READ_TIMEOUT_SECONDS = 125.0
 _IPV4_TEXT = re.compile(r"[0-9]+(?:\.[0-9]+){3}\Z")
+_JSON_CONTENT_TYPE = re.compile(
+    r'[ \t]*application/json[ \t]*'
+    r'(?:;[ \t]*charset[ \t]*=[ \t]*(?:"(?:utf-8|ascii)"|utf-8|ascii)'
+    r'[ \t]*)?\Z', re.IGNORECASE | re.ASCII)
 
 
 def _reject_json_constant(value):
@@ -70,6 +74,18 @@ def is_loopback_http_url(url: object) -> bool:
     except ipaddress.AddressValueError:
         return False
     return address.is_loopback
+
+
+def _has_json_content_type(headers) -> bool:
+    values = headers.get_all("Content-Type", [])
+    if len(values) != 1:
+        return False
+    value = values[0]
+    try:
+        value.encode("ascii", errors="strict")
+    except (AttributeError, UnicodeEncodeError):
+        return False
+    return _JSON_CONTENT_TYPE.fullmatch(value) is not None
 
 
 class _SplitTimeoutHTTPConnection(http.client.HTTPConnection):
@@ -130,6 +146,8 @@ def post_json(url: str, value: object, *,
         )
         with opener.open(request, timeout=float(connect_timeout)) as response:
             if response.status != 200:
+                return None
+            if not _has_json_content_type(response.headers):
                 return None
             length = response.headers.get("Content-Length")
             if length is not None and int(length) > MAX_BODY_BYTES:

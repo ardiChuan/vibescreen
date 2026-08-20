@@ -76,7 +76,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         if "location" in behavior:
             self.send_header("Location", behavior["location"])
-        self.send_header("Content-Type", "application/json")
+        for content_type in behavior.get("content_types", ["application/json"]):
+            self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         first = behavior.get("first_bytes")
@@ -274,6 +275,32 @@ class LoopbackTests(unittest.TestCase):
                 f"http://127.0.0.1:{server.port}/api", {}))
         self.assertEqual(len(server.requests), 1)
 
+    def test_response_requires_one_clean_json_content_type(self):
+        loopback = load_loopback()
+        accepted = (
+            ["application/json"],
+            ["Application/JSON; charset=UTF-8"],
+            ["application/json; charset=ascii"],
+        )
+        rejected = (
+            [],
+            ["text/plain"],
+            ["application/json; charset=latin-1"],
+            ["application/json; boundary=nope"],
+            ["application/json", "application/json"],
+            ["application/json", "text/plain"],
+        )
+        for content_types in accepted:
+            with self.subTest(content_types=content_types), LocalServer(
+                    body=b'{"ok":true}', content_types=content_types) as server:
+                self.assertEqual(loopback.post_json(
+                    f"http://127.0.0.1:{server.port}/api", {}), {"ok": True})
+        for content_types in rejected:
+            with self.subTest(content_types=content_types), LocalServer(
+                    body=b'{"ok":true}', content_types=content_types) as server:
+                self.assertIsNone(loopback.post_json(
+                    f"http://127.0.0.1:{server.port}/api", {}))
+
 
 class PermissionHookTests(unittest.TestCase):
     def test_allow_and_deny_are_forwarded_semantically_unchanged(self):
@@ -346,6 +373,18 @@ class PermissionHookTests(unittest.TestCase):
                 "permission_hook.py", compact(PERMISSION).encode(), port=server.port,
                 env={"_VIBEPULSE_TEST_READ_TIMEOUT": "0.04"})
             self.assertEqual((completed.returncode, completed.stdout), (0, b""))
+
+    def test_valid_decision_with_untrusted_content_type_is_empty_success(self):
+        for content_types in ([], ["text/plain"],
+                              ["application/json", "text/plain"]):
+            with self.subTest(content_types=content_types), LocalServer(
+                    body=compact(ALLOW).encode(),
+                    content_types=content_types) as server:
+                completed = run_script(
+                    "permission_hook.py", compact(PERMISSION).encode(),
+                    port=server.port)
+                self.assertEqual((completed.returncode, completed.stdout),
+                                 (0, b""))
         with LocalServer(status=302, body=b"",
                          location="http://example.invalid/decision") as server:
             completed = run_script(
@@ -483,6 +522,68 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(
             responses[0]["result"]["structuredContent"]["status"], "computer")
 
+    def test_answered_json_with_untrusted_content_type_falls_back(self):
+        answered = {"status": "answered", "option_index": 0,
+                    "answer": "Use the trusted hook"}
+        for content_types in ([], ["text/plain"],
+                              ["application/json", "text/plain"]):
+            with self.subTest(content_types=content_types), LocalServer(
+                    body=compact(answered).encode(),
+                    content_types=content_types) as server:
+                _, responses = run_mcp([
+                    rpc("tools/call", 1, {"name": "ask", "arguments": QUESTION})
+                ], port=server.port)
+                result = responses[0]["result"]["structuredContent"]
+                self.assertEqual(result["status"], "computer")
+                self.assertIn("request_user_input", result["instruction"])
+
+    def test_answered_result_must_match_the_sole_recommended_option(self):
+        unmarked = dict(QUESTION)
+        unmarked["options"] = [
+            {"label": "First"}, {"label": "Second"},
+        ]
+        three = dict(QUESTION)
+        three["options"] = [
+            {"label": "First"},
+            {"label": "Second"},
+            {"label": "Third", "recommended": True},
+        ]
+        cases = (
+            (QUESTION, {"status": "answered", "option_index": 0,
+                        "answer": "Keep computer only"}),
+            (QUESTION, {"status": "answered", "option_index": 2,
+                        "answer": "Use the trusted hook"}),
+            (QUESTION, {"status": "answered", "option_index": False,
+                        "answer": "Use the trusted hook"}),
+            (unmarked, {"status": "answered", "option_index": 0,
+                        "answer": "First"}),
+            (three, {"status": "answered", "option_index": 0,
+                     "answer": "First"}),
+        )
+        for arguments, answered in cases:
+            with self.subTest(arguments=arguments, answered=answered), LocalServer(
+                    body=compact(answered).encode()) as server:
+                _, responses = run_mcp([
+                    rpc("tools/call", 1, {"name": "ask", "arguments": arguments})
+                ], port=server.port)
+                result = responses[0]["result"]["structuredContent"]
+                self.assertEqual(result["status"], "computer")
+                self.assertIn("request_user_input", result["instruction"])
+
+    def test_three_option_answer_preserves_exact_recommended_payload(self):
+        arguments = dict(QUESTION)
+        arguments["options"] = [
+            {"label": "First"}, {"label": "Second"},
+            {"label": "Third", "recommended": True},
+        ]
+        answered = {"status": "answered", "option_index": 2,
+                    "answer": "Third"}
+        with LocalServer(body=compact(answered).encode()) as server:
+            _, responses = run_mcp([
+                rpc("tools/call", 1, {"name": "ask", "arguments": arguments})
+            ], port=server.port)
+        self.assertEqual(responses[0]["result"]["structuredContent"], answered)
+
     def test_invalid_tool_calls_are_errors_and_never_reach_http(self):
         bad_calls = (
             {"name": "other", "arguments": QUESTION},
@@ -530,6 +631,40 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(responses[3]["error"]["code"], -32600)
         self.assertEqual(responses[4]["error"]["code"], -32600)
         self.assertEqual(responses[5]["error"]["code"], -32600)
+
+    def test_only_initialized_may_be_a_notification_and_ids_correlate(self):
+        deep_params = {"value": True}
+        for _ in range(20):
+            deep_params = {"nested": deep_params}
+        with LocalServer(body=compact({
+                "status": "answered", "option_index": 0,
+                "answer": "Use the trusted hook",
+        }).encode()) as server:
+            _, responses = run_mcp([
+                {"jsonrpc": "2.0", "method": "tools/call", "params": {
+                    "name": "ask", "arguments": QUESTION}},
+                {"jsonrpc": "2.0", "method": "initialize", "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"}}},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                rpc("notifications/initialized", 41),
+                rpc("notifications/initialized", 43, deep_params),
+                rpc("ping", None),
+                {"jsonrpc": "2.0", "id": False, "method": "ping"},
+                rpc("ping", 42),
+            ], port=server.port)
+        self.assertEqual(server.requests, [])
+        self.assertEqual(len(responses), 5)
+        self.assertEqual(responses[0]["id"], 41)
+        self.assertEqual(responses[0]["error"]["code"], -32600)
+        self.assertEqual(responses[1]["id"], 43)
+        self.assertEqual(responses[1]["error"]["code"], -32600)
+        self.assertEqual(responses[2], {"jsonrpc": "2.0", "id": None,
+                                        "result": {}})
+        self.assertEqual(responses[3]["id"], None)
+        self.assertEqual(responses[3]["error"]["code"], -32600)
+        self.assertEqual(responses[4], {"jsonrpc": "2.0", "id": 42,
+                                        "result": {}})
 
     def test_bad_lines_are_bounded_and_server_survives_for_next_message(self):
         oversized = b'{' + b'"x":' + b'"' + b'a' * (MAX_HOOK_INPUT + 1) + b'"}\n'
