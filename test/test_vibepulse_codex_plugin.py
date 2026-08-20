@@ -1266,6 +1266,32 @@ class PluginPackageTests(unittest.TestCase):
         runner = (ROOT / "test/run.sh").read_text(encoding="utf-8")
         self.assertEqual(runner.count("test_vibepulse_codex_plugin.py"), 1)
 
+    def test_user_guides_pin_opt_in_trust_fallback_and_safe_uninstall(self):
+        guides = {
+            "agent setup": ROOT / "docs/agent-setup.md",
+            "tokenserver README": ROOT / "tools/tokenserver/README.md",
+        }
+        commands = (
+            "python3 tools/vibepulse_setup.py install",
+            "python3 tools/vibepulse_setup.py status",
+            "python3 tools/vibepulse_setup.py doctor",
+            "python3 tools/vibepulse_setup.py disable codex",
+            "python3 tools/vibepulse_setup.py uninstall codex",
+        )
+        for name, path in guides.items():
+            text = path.read_text(encoding="utf-8")
+            prose = " ".join(text.split())
+            for command in commands:
+                self.assertIn(command, text, f"{name} must show {command}")
+            self.assertIn("/hooks", prose, f"{name} must require hook review")
+            self.assertIn("Start a new Codex task", prose)
+            self.assertIn("computer fallback", prose.lower())
+            self.assertIn("safe-command tier", prose.lower())
+            self.assertIn("legacy Claude v1 is insecure", prose)
+            self.assertIn("off by default", prose.lower())
+            self.assertIn("preserves Claude, relay, GitHub, device-key, and "
+                          "unrelated Codex settings", prose)
+
 
 class SetupPlanTests(unittest.TestCase):
     def test_disable_preserves_unrelated_switches_and_clears_legacy_with_claude(self):

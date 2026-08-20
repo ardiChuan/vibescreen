@@ -11,9 +11,10 @@ too: one command moves it onto whatever WiFi you are on today.**
 
 Claude Code and Codex usage, live agent activity, and a full-screen
 **NEEDS YOU** alert you can answer with a tap. A ~$30 ESP32-S3 panel plus a
-pure-stdlib Python service on your Mac. No cloud, no accounts, no API keys on the device. Agent data
-never leaves your LAN; the optional public-repository module makes only
-anonymous GitHub API reads from the Mac.
+pure-stdlib Python service on your Mac or Windows PC. Local mode needs no
+VibePulse account and keeps agent activity on your LAN. The optional
+numbers-only relay can carry quota data across isolated WiFi; an encrypted
+interaction relay is a separate, later option and is off by default.
 
 ## The problem
 
@@ -110,11 +111,15 @@ accent colour:
 
 ![Claude Max Tracker](docs/img/vibepulse-max-tracker-claude.png)
 
-### Answer Claude from the panel
+### Answer Claude or Codex from the panel
 
 The panel becomes an *input device*. With the opt-in Needs You bridge, when
-Claude Code blocks on a question or a permission the takeover appears and
-**a tap answers it in the same live session** — no window to switch to.
+Claude Code or Codex blocks on a supported question or permission, the
+takeover appears and **a tap answers it in the same live session** — no window
+to switch to. The computer must be on and running the tokenserver. Today the
+panel must also be able to reach that computer over the LAN; the planned
+encrypted interaction relay removes that LAN requirement without exposing
+question or command text to the mailbox provider.
 
 <table>
 <tr>
@@ -125,13 +130,39 @@ Claude Code blocks on a question or a permission the takeover appears and
 </table>
 
 **Attract → decision → done.** A held prompt surfaces as a mascot in a
-depleting countdown ring; a tap reveals it; **APPROVE** commits Claude's
-recommended option (or **LEAVE IT** hands it back to the terminal), and the
-flow closes on a short "ON IT" beat. The panel signs every verdict with a
-device key that lives only on the glass — it can answer a prompt this Mac was
+depleting countdown ring; a tap reveals it; **APPROVE** commits the agent's
+explicitly recommended option (or **LEAVE IT** hands it back to the computer),
+and the flow closes on a short "ON IT" beat. The panel signs every verdict with a
+key shared only with your computer — it can answer a prompt that computer was
 already going to ask about, and nothing more. Walking away always costs
 nothing: an unanswered prompt just falls back to the terminal. Setup is in
 [docs/agent-setup.md](docs/agent-setup.md).
+
+For Codex, only its narrow safe-command tier can show **ALLOW ONCE**. Unknown,
+mutating, secret-bearing, or text that does not fit stays on the computer;
+silence never means approval. Recommended questions are equally strict: Codex
+must mark one of two or three options itself. VibePulse never guesses.
+
+### Independent switches
+
+VibePulse is open source, so installing one part never silently enables
+another. Each row is an independent switch and every interaction/cloud choice
+starts off:
+
+| Switch | What it does | Default |
+|---|---|---|
+| **Claude interactions** | Lets Claude Code questions and permissions reach the panel | Off |
+| **Codex interactions** | Lets supported Codex questions and permissions reach the panel | Off |
+| **Numbers relay** | Publishes only quota, reset, Max Tracker, and optional public GitHub numbers | Off |
+| **Interaction relay** | Future end-to-end encrypted question/verdict mailbox for isolated WiFi | Off / not enabled yet |
+| **GitHub** | Shows one public repository's page and/or star notification | Off |
+
+Installing the Codex plugin does not enable Codex interactions. Setup asks
+whether to enable Claude, Codex, both, or neither, and whether bounded detail
+may reach the panel. The old `--interactions` is a legacy alias for Claude only;
+use the explicit setup command for new installations. The numbers relay and
+interaction relay are different privacy choices and neither is enabled by the
+plugin.
 
 ### Optional GitHub project pulse
 
@@ -240,10 +271,15 @@ the figure to a dash rather than being silently free.
      pure Python stdlib                polled every 30 s
 ```
 
-A tiny Python service on your Mac reads your local Claude Code / Codex logs
+A tiny Python service on your Mac or Windows PC reads your local Claude Code / Codex logs
 and rate-limit headers, and serves plain numbers over your LAN. The screen
-polls it every 30 seconds. Your OAuth token never leaves the Mac; the screen
+polls it every 30 seconds. Your OAuth token never leaves the computer; the screen
 only ever receives percentages, counts and coarse status.
+
+The computer must be on for fresh local data. It does not have to stay in the
+same house when a relay is enabled, but it does have to run the tokenserver so
+there is something to publish. A phone hotspot is fine after it has been taught
+to the panel; captive portals and 5 GHz-only networks are not.
 
 ## What you need
 
@@ -398,7 +434,9 @@ numbers in a tiny mailbox on the internet — a ~150-line Cloudflare Worker
 on your own account — and the panel falls back to it whenever the LAN
 does not answer. Quota, burn rate, Max Tracker and the GitHub pulse
 follow you anywhere with WiFi; agent activity and Needs You deliberately
-never leave your LAN. Several machines can feed the same mailbox
+never leave your LAN in the current release. A separate encrypted interaction
+relay is planned, off by default, so question text can be end-to-end encrypted
+between computer and panel instead of being readable by the mailbox. Several machines can feed the numbers mailbox
 (a Mac that sleeps, an always-on PC) and the freshest source wins per
 number. Setup and the full privacy boundary: [docs/relay.md](docs/relay.md).
 

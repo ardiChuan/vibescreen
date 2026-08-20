@@ -22,6 +22,10 @@ Designval, i linje med resten av repot:
   behöver.
 - pythonw.exe (inget konsolfönster). Loggarna hamnar där de redan bor:
   %LOCALAPPDATA%\VibePulse\ (tjänstens egen självroterande logg).
+- Interaction providers and detail are read from the tokenserver's saved config.
+  Keep those choices out of the scheduled command so setup changes cannot go
+  stale here. The optional publish arguments below are numbers-relay settings,
+  not interaction-provider choices.
 - Ingen hemlighet i den registrerade kommandoraden utom relä-URL:en, som
   användaren själv valt att ge — samma exponeringsnivå som secrets.h.
 - Starta om vid fel, var 5:e minut, utan tak — en hyllservice ska resa

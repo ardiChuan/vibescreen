@@ -38,10 +38,8 @@ cannot determine yourself.
 
 1. **macOS or Windows?** Both serve data. On Windows the Claude token comes
    from `%USERPROFILE%\.claude\.credentials.json` instead of the keychain,
-   and state and logs live under `%LOCALAPPDATA%\VibePulse\` — but there is
-   **no autostart**, so the service must be started by hand or wired into
-   Task Scheduler, and `smoke.py`'s advice still names `launchctl`
-   ([#3](https://github.com/niclasvestlund-YT/vibepulse/issues/3)). On Linux
+   and state and logs live under `%LOCALAPPDATA%\VibePulse\`. The supplied
+   `install-windows-task.ps1` adds autostart through Task Scheduler. On Linux
    the firmware still builds and the simulator still runs, but the service
    finds no Claude token at all — there is no keychain and the credential
    file is read only on Windows
@@ -145,6 +143,11 @@ Pure stdlib, nothing to install:
 python3 tools/tokenserver/tokenserver.py
 ```
 
+The computer must be on for the panel to receive fresh data. On the same LAN,
+the panel talks directly to it. On WiFi with client isolation, the optional
+numbers relay can still carry quota data as long as this service is running;
+it does not publish agent activity or Needs You prompts.
+
 **Verify**, from the same Mac:
 
 ```sh
@@ -188,46 +191,96 @@ For autostart on login, see [../tools/tokenserver/README.md](../tools/tokenserve
 The screen polls every 30 seconds, so wait that long before judging. Then
 confirm with the user that real numbers replaced the dashes.
 
-## Needs You — answer Claude from the panel (optional)
+## Needs You — answer Claude or Codex from the panel (optional)
 
-This turns the panel from a monitor into an input device: when Claude Code
-blocks on a question or a permission, the takeover appears and a tap answers
-it in the same live session. Everything below is opt-in; without it the panel
-is display-only and nothing changes. Full design: `docs/needs-you-investigation.md`.
+This turns the panel from a monitor into an input device. It is all off by
+default. Installing the Codex plugin does not enable Codex interactions, and
+enabling one provider does not enable the other, the numbers relay, the future
+interaction relay, or GitHub.
 
-Three things must line up — a device key, the bridge, and hooks.
+The computer must be on and running the tokenserver. The current answer path is
+direct LAN only, so panel and computer must also be allowed to reach each other.
+A future encrypted interaction relay will be a separate default-off option for
+isolated WiFi; it is not enabled by these steps.
 
-1. **Device key.** One shared secret authenticates the panel's answers. It is
-   the only new secret on the device, it grants nothing but the ability to
-   answer a prompt this Mac was already going to ask about, and revoking it is
-   changing it. Generate one and put the *same* value in two places:
+### 1. Pair the panel
 
-   ```sh
-   python3 -c "import secrets; print(secrets.token_hex(32))"
-   ```
+One shared secret authenticates answers. Generate one value and put the same
+value on the panel and computer; never paste the real value into an issue or
+commit it:
 
-   - In `secrets.h`: uncomment and set
-     `#define TK_VIBEPULSE_DEVICE_KEY "…64 hex…"`, then rebuild and flash (Step
-     2–3). Without this define the sender compiles out and the screens stay
-     display-only — that is the safe default, not a bug.
-   - On the Mac, so the bridge reads the same key: write it to
-     `~/.vibepulse-device-key` (`chmod 600`), or export `VIBEPULSE_DEVICE_KEY`,
-     or set `TK_VIBEPULSE_DEVICE_KEY` in `secrets.h` (the bridge reads it too).
+```sh
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
 
-2. **The bridge.** Run the tokenserver with interactions on:
+- In the gitignored `secrets.h`, set
+  `#define TK_VIBEPULSE_DEVICE_KEY "…64 hex…"`, then rebuild and flash only
+  after the user approves Step 3. Without it, the sender is display-only.
+- On the computer, write the value to `~/.vibepulse-device-key` and run
+  `chmod 600 ~/.vibepulse-device-key`, or export `VIBEPULSE_DEVICE_KEY`.
 
-   ```sh
-   python3 tools/tokenserver/tokenserver.py --interactions --interaction-detail
-   ```
+### 2. Choose providers explicitly
 
-   `--interactions` opens the held-hook endpoints and the signed answer path;
-   `--interaction-detail` lets the command/question text reach the glass (leave
-   it off to keep the panel to "something is waiting" only). Prove the whole
-   loop on the Mac alone first, before any hardware: `python3 tools/fake-panel.py`.
+Run the guided setup from the repo root:
 
-3. **Hooks.** Point Claude Code's hooks at the bridge on loopback (Claude Code
-   blocks http hooks that resolve to the LAN, which is why the bridge splits
-   loopback-in / LAN-out). In your Claude Code settings:
+```sh
+python3 tools/vibepulse_setup.py install
+```
+
+Choose `off`, `claude`, `codex`, or `both`. Then choose whether bounded
+question/command detail may reach the local panel; the safe default is no.
+This saves the choices for the tokenserver and installs the optional Codex
+adapter. It does not start a cloud relay. A non-interactive install with no
+provider choice leaves both providers off.
+
+Useful lifecycle commands:
+
+```sh
+python3 tools/vibepulse_setup.py status
+python3 tools/vibepulse_setup.py doctor
+python3 tools/vibepulse_setup.py disable codex
+python3 tools/vibepulse_setup.py uninstall codex
+```
+
+`disable codex` turns off only Codex. `uninstall codex` removes the VibePulse
+Codex plugin/MCP and disables Codex; it preserves Claude, relay, GitHub,
+device-key, and unrelated Codex settings. It does not delete the repository or
+the shared device key.
+
+The service command remains plain:
+
+```sh
+python3 tools/tokenserver/tokenserver.py
+```
+
+It loads the saved choices. Do not put provider or detail switches into a
+launchd/Task Scheduler command, where they can go stale. `--interactions` is a
+legacy alias for Claude only. Current installations should use the setup tool.
+
+### 3. Review hooks instead of bypassing trust
+
+For Codex, open Codex and run `/hooks`. Review the VibePulse `SessionStart` and
+`PermissionRequest` command hooks and explicitly trust them. Then **Start a new
+Codex task** so the newly trusted hooks, skill, and MCP tool are loaded. Run
+`python3 tools/vibepulse_setup.py doctor` again; doctor reports the review
+state but never bypasses it.
+
+Codex permissions use a narrow safe-command tier. Only recognized read-only,
+test, and build commands can offer **ALLOW ONCE**. Unknown commands, mutations,
+secrets, truncated text, free-form questions, and questions without exactly
+one explicit recommendation use the computer fallback. Timeout and silence
+also return to the computer; nothing is approved by silence.
+
+For an old Claude-only panel, `--legacy-claude-panel-v1` is available solely
+as an explicit compatibility switch. **legacy Claude v1 is insecure** because
+its verdict is not bound to provider and exact rendered view; it is off by
+default and must never be used for Codex.
+
+### 4. Add Claude hooks only if Claude was selected
+
+Point Claude Code's hooks at the bridge on loopback (Claude Code blocks HTTP
+hooks that resolve to the LAN, which is why the bridge splits loopback-in and
+LAN-out). In Claude Code settings:
 
    ```json
    {
@@ -254,10 +307,11 @@ Three things must line up — a device key, the bridge, and hooks.
    }
    ```
 
-   Fail-safe by design: a held hook that times out or is left alone renders no
-   decision, so Claude Code falls back to its normal terminal prompt. Walking
-   away always costs nothing. A managed/enterprise `allowedHttpHookUrls` policy
-   can silently block http hooks — if the panel never reacts, check that first.
+Fail-safe by design: a held hook that times out or is left alone renders no
+decision, so Claude Code falls back to its normal terminal prompt. This is the
+same computer fallback as Codex. A managed/enterprise `allowedHttpHookUrls`
+policy can silently block HTTP hooks — if the panel never reacts, check that
+first.
 
 On the glass: a tap opens the decision; APPROVE / DENY / LEAVE IT answer it; on
 the private screen a tap hands it to the terminal. KEY3 held ~1.5–3 s and
