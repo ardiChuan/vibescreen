@@ -20,9 +20,15 @@ describe("interaction relay Worker configuration", () => {
     expect(config.exports).toEqual({
       InteractionMailbox: { type: "durable-object", storage: "sqlite" },
     });
+    expect(config.secrets).toEqual({
+      required: ["MAC_TOKEN", "PANEL_TOKEN"],
+    });
+    expect(config.vars).toEqual({
+      MAILBOX_ID: "vp_A1b2C3d4E5f6G7h8",
+    });
     expect(config).not.toHaveProperty("migrations");
     expect(config).not.toHaveProperty("kv_namespaces");
-    expect(raw).not.toContain("MAC_TOKEN");
-    expect(raw).not.toContain("PANEL_TOKEN");
+    expect(config.vars).not.toHaveProperty("MAC_TOKEN");
+    expect(config.vars).not.toHaveProperty("PANEL_TOKEN");
   });
 });

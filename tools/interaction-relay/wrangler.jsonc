@@ -21,7 +21,10 @@
       "storage": "sqlite"
     }
   },
+  "secrets": {
+    "required": ["MAC_TOKEN", "PANEL_TOKEN"]
+  },
   "vars": {
-    "MAILBOX_ID": "replace-with-random-mailbox-id"
+    "MAILBOX_ID": "vp_A1b2C3d4E5f6G7h8"
   }
 }
