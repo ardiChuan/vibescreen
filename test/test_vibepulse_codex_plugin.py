@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
@@ -208,7 +209,10 @@ class FakeRunner:
     def __call__(self, argv, **kwargs):
         self.calls.append((argv, kwargs))
         if self.responses:
-            return self.responses.pop(0)
+            response = self.responses.pop(0)
+            if isinstance(response, BaseException):
+                raise response
+            return response
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
@@ -271,6 +275,43 @@ def plugin_listing(*, plugin_id="vibepulse@torget", name="vibepulse",
     }
 
 
+def marketplace_listing(*, repo=ROOT, name="torget", root=None,
+                        source_type="local", source=None):
+    expected = Path(repo).resolve()
+    return {
+        "marketplaces": [{
+            "name": name,
+            "root": str(expected if root is None else root),
+            "marketplaceSource": {
+                "sourceType": source_type,
+                "source": str(expected if source is None else source),
+            },
+        }],
+    }
+
+
+def install_preflight(*, repo=ROOT, python=Path(sys.executable), mcp=(),
+                      plugin=None, marketplace=None):
+    if plugin is None:
+        plugin = {"installed": [], "available": []}
+    if marketplace is None:
+        marketplace = {"marketplaces": []}
+    return [
+        python_probe_ok(), codex_probe_ok(), json_result(list(mcp)),
+        json_result(plugin), json_result(marketplace),
+    ]
+
+
+def uninstall_preflight(*, repo=ROOT, python=Path(sys.executable), mcp=(),
+                        plugin=None, marketplace=None):
+    if plugin is None:
+        plugin = {"installed": [], "available": []}
+    if marketplace is None:
+        marketplace = {"marketplaces": []}
+    return [json_result(list(mcp)), json_result(plugin),
+            json_result(marketplace)]
+
+
 def json_result(value):
     return result(stdout=json.dumps(value, separators=(",", ":")) + "\n")
 
@@ -283,10 +324,23 @@ def codex_probe_ok():
     return result(stdout="codex-cli 0.148.0-alpha.9\n")
 
 
+class _Headers:
+    def __init__(self, content_types):
+        self.content_types = list(content_types)
+
+    def get_all(self, name, default=None):
+        if name.lower() == "content-type":
+            return list(self.content_types)
+        return default
+
+
 class BytesResponse:
-    def __init__(self, body):
+    def __init__(self, body, *, status=200,
+                 content_types=("application/json",)):
         self.body = body
         self.limits = []
+        self.status = status
+        self.headers = _Headers(content_types)
 
     def __enter__(self):
         return self
@@ -1161,7 +1215,7 @@ class SetupPlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             for providers, pair in expected.items():
                 path = Path(tmp) / providers / "config.json"
-                runner = FakeRunner([json_result([])])
+                runner = FakeRunner(install_preflight())
                 out = io.StringIO()
                 code = setup.main(
                     ["install", "--providers", providers, "--no-detail"],
@@ -1173,11 +1227,9 @@ class SetupPlanTests(unittest.TestCase):
                 self.assertEqual((saved.claude_interactions,
                                   saved.codex_interactions), pair)
                 self.assertFalse(saved.interaction_detail)
-                self.assertEqual(len(runner.calls), 5)
+                self.assertEqual(len(runner.calls), 9)
                 self.assertEqual(
-                    runner.calls[0][0], ["/codex", "mcp", "list", "--json"])
-                self.assertEqual(
-                    [call[0] for call in runner.calls[1:]],
+                    [call[0] for call in runner.calls[5:]],
                     setup.plan_codex_install(
                         ROOT, Path(sys.executable), Path("/codex")))
                 self.assertTrue(all(isinstance(call[0], list)
@@ -1191,7 +1243,7 @@ class SetupPlanTests(unittest.TestCase):
                 ["install", "--providers", "off", "--detail"],
                 repo_root=ROOT, config_path=path,
                 python=Path(sys.executable), codex=Path("/codex"),
-                run=FakeRunner([json_result([])]), stdout=io.StringIO(),
+                run=FakeRunner(install_preflight()), stdout=io.StringIO(),
                 stdin_isatty=False)
             self.assertTrue(setup.load_config(path).interaction_detail)
 
@@ -1202,7 +1254,7 @@ class SetupPlanTests(unittest.TestCase):
             code = setup.main(
                 ["install"], repo_root=ROOT, config_path=path,
                 python=Path(sys.executable), codex=Path("/codex"),
-                run=FakeRunner([json_result([])]), stdout=io.StringIO(),
+                run=FakeRunner(install_preflight()), stdout=io.StringIO(),
                 stdin_isatty=False)
             self.assertEqual(code, 0)
             self.assertEqual(setup.load_config(path), setup.VibePulseConfig())
@@ -1214,17 +1266,16 @@ class SetupPlanTests(unittest.TestCase):
             original = setup.VibePulseConfig(
                 claude_interactions=True, interaction_detail=True)
             setup.save_config(path, original)
-            runner = FakeRunner([
-                json_result([]), result(),
-                result(2, stderr="permission denied"),
-            ])
+            runner = FakeRunner(
+                install_preflight() + [result(),
+                                       result(2, stderr="permission denied")])
             output = io.StringIO()
             self.assertEqual(setup.main(
                 ["install", "--providers", "codex", "--no-detail"],
                 repo_root=ROOT, config_path=path,
                 python=Path(sys.executable), codex=Path("/codex"),
                 run=runner, stdout=output, stdin_isatty=False), 1)
-            self.assertEqual(len(runner.calls), 3)
+            self.assertEqual(len(runner.calls), 8)
             self.assertEqual(setup.load_config(path), original)
             self.assertNotIn("PASS", output.getvalue())
 
@@ -1246,6 +1297,9 @@ class SetupPlanTests(unittest.TestCase):
         secret = "DO_NOT_PRINT_f4390c"
 
         class Response:
+            status = 200
+            headers = _Headers(["application/json; charset=utf-8"])
+
             def __enter__(self):
                 return self
 
@@ -1331,7 +1385,7 @@ class SetupPlanTests(unittest.TestCase):
             setup.save_config(config, setup.VibePulseConfig(
                 claude_interactions=True, codex_interactions=True,
                 interaction_detail=True))
-            runner = FakeRunner([
+            runner = FakeRunner(uninstall_preflight() + [
                 result(stdout="No MCP server named 'vibepulse' found.\n"),
                 result(stdout="Removed plugin `vibepulse` from marketplace "
                               "`torget`.\n"),
@@ -1342,7 +1396,7 @@ class SetupPlanTests(unittest.TestCase):
                 ["uninstall", "codex"], config_path=config,
                 codex=Path("/codex"), run=runner,
                 stdout=io.StringIO()), 0)
-            self.assertEqual([call[0] for call in runner.calls], [
+            self.assertEqual([call[0] for call in runner.calls[3:]], [
                 ["/codex", "mcp", "remove", "vibepulse"],
                 ["/codex", "plugin", "remove", "vibepulse@torget"],
                 ["/codex", "plugin", "marketplace", "remove", "torget"],
@@ -1362,7 +1416,7 @@ class SetupPlanTests(unittest.TestCase):
             setup.save_config(path, setup.VibePulseConfig(
                 claude_interactions=True, codex_interactions=True,
                 interaction_detail=True))
-            one_pass = [
+            one_pass = uninstall_preflight() + [
                 result(stdout="No MCP server named 'vibepulse' found.\n"),
                 result(stdout="Removed plugin `vibepulse` from marketplace "
                               "`torget`.\n"),
@@ -1385,7 +1439,7 @@ class SetupPlanTests(unittest.TestCase):
             setup.save_config(path, setup.VibePulseConfig(
                 claude_interactions=True, codex_interactions=True,
                 interaction_detail=True))
-            failed = FakeRunner([
+            failed = FakeRunner(uninstall_preflight() + [
                 result(), result(),
                 result(1, stderr="Error: marketplace 'torget' is not "
                                   "configured or installed"),
@@ -1394,7 +1448,7 @@ class SetupPlanTests(unittest.TestCase):
                 ["uninstall", "codex"], config_path=path,
                 codex=Path("/codex"), run=failed,
                 stdout=io.StringIO()), 1)
-            self.assertEqual(len(failed.calls), 3)
+            self.assertEqual(len(failed.calls), 6)
             self.assertTrue(setup.load_config(path).codex_interactions)
 
     def test_malformed_config_causes_zero_external_mutation(self):
@@ -1425,7 +1479,7 @@ class SetupPlanTests(unittest.TestCase):
                 claude_interactions=True, interaction_detail=True)
             setup.save_config(path, original)
             seen = []
-            responses = [json_result([]), result(), result(), result(), result()]
+            responses = install_preflight() + [result()] * 4
 
             def runner(argv, **kwargs):
                 seen.append((list(argv), setup.load_config(path), kwargs))
@@ -1436,13 +1490,11 @@ class SetupPlanTests(unittest.TestCase):
                 repo_root=ROOT, config_path=path,
                 python=Path(sys.executable), codex=Path("/codex"),
                 run=runner, stdout=io.StringIO(), stdin_isatty=False), 0)
-            self.assertEqual(len(seen), 5)
+            self.assertEqual(len(seen), 9)
             self.assertTrue(all(saved == original for _, saved, _ in seen))
             self.assertEqual(setup.load_config(path), setup.VibePulseConfig(
                 codex_interactions=True))
-            self.assertEqual(seen[0][0],
-                             ["/codex", "mcp", "list", "--json"])
-            self.assertEqual([entry[0] for entry in seen[1:]],
+            self.assertEqual([entry[0] for entry in seen[5:]],
                              setup.plan_codex_install(
                                  ROOT, Path(sys.executable), Path("/codex")))
             self.assertTrue(all(entry[2].get("shell") is False for entry in seen))
@@ -1468,14 +1520,18 @@ class SetupPlanTests(unittest.TestCase):
                     setup.save_config(path, original)
                     response = (result(stdout=payload) if isinstance(payload, str)
                                 else json_result(payload))
-                    runner = FakeRunner([response])
+                    runner = FakeRunner([
+                        python_probe_ok(), codex_probe_ok(), response,
+                        json_result({"installed": [], "available": []}),
+                        json_result({"marketplaces": []}),
+                    ])
                     output = io.StringIO()
                     self.assertEqual(setup.main(
                         ["install", "--providers", "codex", "--no-detail"],
                         repo_root=ROOT, config_path=path,
                         python=Path(sys.executable), codex=Path("/codex"),
                         run=runner, stdout=output, stdin_isatty=False), 1)
-                    self.assertEqual(len(runner.calls), 1)
+                    self.assertEqual(len(runner.calls), 5)
                     self.assertEqual(setup.load_config(path), original)
                     self.assertNotIn("hidden", output.getvalue())
 
@@ -1488,8 +1544,9 @@ class SetupPlanTests(unittest.TestCase):
                     original = setup.VibePulseConfig(
                         claude_interactions=True, interaction_detail=True)
                     setup.save_config(path, original)
-                    runner = FakeRunner([
-                        json_result([owned_mcp()]),
+                    runner = FakeRunner(install_preflight(
+                        mcp=[owned_mcp()], plugin=plugin_listing(),
+                        marketplace=marketplace_listing()) + [
                         result(), result(), result(),
                         result(7, stderr="original add failure"),
                         (result() if rollback_ok else
@@ -1501,14 +1558,15 @@ class SetupPlanTests(unittest.TestCase):
                         repo_root=ROOT, config_path=path,
                         python=Path(sys.executable), codex=Path("/codex"),
                         run=runner, stdout=output, stdin_isatty=False), 1)
-                    self.assertEqual(len(runner.calls), 6)
+                    self.assertEqual(len(runner.calls), 10)
                     self.assertEqual(runner.calls[-1][0], runner.calls[-2][0])
                     self.assertEqual(setup.load_config(path), original)
-                    self.assertIn("MCP add failed", output.getvalue())
+                    self.assertIn("MCP add", output.getvalue())
                     if rollback_ok:
                         self.assertIn("restored", output.getvalue())
                     else:
-                        self.assertIn("rollback also failed", output.getvalue())
+                        self.assertIn("irrecoverable divergence",
+                                      output.getvalue())
                     self.assertNotIn("SECRET", output.getvalue())
 
     def test_doctor_executes_bounded_python_and_codex_probes(self):
@@ -1770,6 +1828,530 @@ class SetupPlanTests(unittest.TestCase):
                     self.assertEqual(response.limits,
                                      [setup.MAX_DIAGNOSTIC_BYTES + 1])
 
+    def test_uninstall_preflights_all_resources_and_refuses_foreign_ownership(self):
+        setup = load_setup()
+        foreign_mcp = [owned_mcp(python=Path("/bin/echo"))]
+        foreign_plugin = plugin_listing(
+            repo=ROOT, plugin_path=ROOT.parent / "foreign-plugin")
+        foreign_marketplace = marketplace_listing(
+            repo=ROOT, root=ROOT.parent, source=ROOT.parent)
+        cases = {
+            "mcp": uninstall_preflight(
+                mcp=foreign_mcp, plugin=plugin_listing(),
+                marketplace=marketplace_listing()),
+            "plugin": uninstall_preflight(
+                mcp=[owned_mcp()], plugin=foreign_plugin,
+                marketplace=marketplace_listing()),
+            "marketplace": uninstall_preflight(
+                mcp=[owned_mcp()], plugin=plugin_listing(),
+                marketplace=foreign_marketplace),
+            "malformed": [json_result([owned_mcp()]),
+                          result(stdout="not-json\n"),
+                          json_result(marketplace_listing())],
+        }
+        expected_preflight = [
+            ["/codex", "mcp", "list", "--json"],
+            ["/codex", "plugin", "list", "--json"],
+            ["/codex", "plugin", "marketplace", "list", "--json"],
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            for label, responses in cases.items():
+                with self.subTest(label=label):
+                    path = Path(tmp) / f"{label}.json"
+                    original = setup.VibePulseConfig(
+                        claude_interactions=True, codex_interactions=True,
+                        interaction_detail=True)
+                    setup.save_config(path, original)
+                    runner = FakeRunner(responses)
+                    output = io.StringIO()
+                    self.assertEqual(setup.main(
+                        ["uninstall", "codex"], repo_root=ROOT,
+                        config_path=path, python=Path(sys.executable),
+                        codex=Path("/codex"), run=runner, stdout=output), 1)
+                    self.assertEqual([call[0] for call in runner.calls],
+                                     expected_preflight)
+                    self.assertEqual(setup.load_config(path), original)
+                    self.assertNotIn("PASS", output.getvalue())
+
+    def test_install_runtime_probes_abort_before_resource_or_mutation_calls(self):
+        setup = load_setup()
+        cases = [
+            [result(stdout="unsupported\n")],
+            [python_probe_ok(), result(stdout="not-codex 0.148.0\n")],
+            [result(1, stderr="invalid utf8 boundary")],
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            for index, responses in enumerate(cases):
+                with self.subTest(index=index):
+                    path = Path(tmp) / f"runtime-{index}.json"
+                    original = setup.VibePulseConfig(
+                        claude_interactions=True, interaction_detail=True)
+                    setup.save_config(path, original)
+                    runner = FakeRunner(responses)
+                    self.assertEqual(setup.main(
+                        ["install", "--providers", "codex", "--no-detail"],
+                        repo_root=ROOT, config_path=path,
+                        python=Path("/bin/sh"), codex=Path("/codex"),
+                        run=runner, stdout=io.StringIO(),
+                        stdin_isatty=False), 1)
+                    self.assertLessEqual(len(runner.calls), 2)
+                    self.assertFalse(any("list" in call[0]
+                                         for call in runner.calls))
+                    self.assertEqual(setup.load_config(path), original)
+
+    def test_install_rolls_back_every_new_resource_on_each_failure(self):
+        setup = load_setup()
+        mutations = setup.plan_codex_install(
+            ROOT, Path(sys.executable), Path("/codex"))
+        compensations = {
+            0: [],
+            1: [["/codex", "plugin", "marketplace", "remove", "torget"]],
+            2: [
+                ["/codex", "plugin", "remove", "vibepulse@torget"],
+                ["/codex", "plugin", "marketplace", "remove", "torget"],
+            ],
+            3: [
+                ["/codex", "plugin", "remove", "vibepulse@torget"],
+                ["/codex", "plugin", "marketplace", "remove", "torget"],
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for failed_index in range(4):
+                with self.subTest(failed_index=failed_index):
+                    path = Path(tmp) / f"install-{failed_index}.json"
+                    original = setup.VibePulseConfig(
+                        claude_interactions=True, interaction_detail=True)
+                    setup.save_config(path, original)
+                    responses = install_preflight()
+                    responses += [result() for _ in range(failed_index)]
+                    responses += [result(7, stderr="step failed SECRET")]
+                    responses += [result() for _ in compensations[failed_index]]
+                    runner = FakeRunner(responses)
+                    output = io.StringIO()
+                    self.assertEqual(setup.main(
+                        ["install", "--providers", "codex", "--no-detail"],
+                        repo_root=ROOT, config_path=path,
+                        python=Path(sys.executable), codex=Path("/codex"),
+                        run=runner, stdout=output,
+                        stdin_isatty=False), 1)
+                    calls = [call[0] for call in runner.calls]
+                    self.assertEqual(calls[5:5 + failed_index + 1],
+                                     mutations[:failed_index + 1])
+                    self.assertEqual(calls[5 + failed_index + 1:],
+                                     compensations[failed_index])
+                    self.assertEqual(setup.load_config(path), original)
+                    self.assertNotIn("SECRET", output.getvalue())
+
+    def test_install_restores_owned_mcp_and_reports_rollback_divergence(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            original = setup.VibePulseConfig(codex_interactions=True)
+            setup.save_config(path, original)
+            responses = install_preflight(
+                mcp=[owned_mcp()], plugin=plugin_listing(),
+                marketplace=marketplace_listing())
+            responses += [result(), result(), result(),
+                          result(8, stderr="add failed"),
+                          result(9, stderr="restore failed SECRET")]
+            runner = FakeRunner(responses)
+            output = io.StringIO()
+            self.assertEqual(setup.main(
+                ["install", "--providers", "codex", "--no-detail"],
+                repo_root=ROOT, config_path=path,
+                python=Path(sys.executable), codex=Path("/codex"),
+                run=runner, stdout=output, stdin_isatty=False), 1)
+            self.assertEqual(runner.calls[-1][0],
+                             setup.plan_codex_install(
+                                 ROOT, Path(sys.executable),
+                                 Path("/codex"))[-1])
+            self.assertIn("irrecoverable divergence", output.getvalue().lower())
+            self.assertNotIn("SECRET", output.getvalue())
+            self.assertEqual(setup.load_config(path), original)
+
+    def test_uninstall_compensates_in_reverse_at_each_failure(self):
+        setup = load_setup()
+        removes = setup.plan_codex_uninstall(Path("/codex"))
+        restore_mcp = setup.plan_codex_install(
+            ROOT, Path(sys.executable), Path("/codex"))[-1]
+        restore_plugin = setup.plan_codex_install(
+            ROOT, Path(sys.executable), Path("/codex"))[1]
+        expected = {
+            0: [],
+            1: [restore_mcp],
+            2: [restore_plugin, restore_mcp],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for failed_index in range(3):
+                with self.subTest(failed_index=failed_index):
+                    path = Path(tmp) / f"uninstall-{failed_index}.json"
+                    original = setup.VibePulseConfig(
+                        claude_interactions=True, codex_interactions=True,
+                        interaction_detail=True)
+                    setup.save_config(path, original)
+                    responses = uninstall_preflight(
+                        mcp=[owned_mcp()], plugin=plugin_listing(),
+                        marketplace=marketplace_listing())
+                    responses += [result() for _ in range(failed_index)]
+                    responses += [result(5, stderr="remove failed")]
+                    responses += [result() for _ in expected[failed_index]]
+                    runner = FakeRunner(responses)
+                    self.assertEqual(setup.main(
+                        ["uninstall", "codex"], repo_root=ROOT,
+                        config_path=path, python=Path(sys.executable),
+                        codex=Path("/codex"), run=runner,
+                        stdout=io.StringIO()), 1)
+                    calls = [call[0] for call in runner.calls]
+                    self.assertEqual(calls[3:3 + failed_index + 1],
+                                     removes[:failed_index + 1])
+                    self.assertEqual(calls[3 + failed_index + 1:],
+                                     expected[failed_index])
+                    self.assertEqual(setup.load_config(path), original)
+
+    def test_config_conflict_after_install_rolls_back_external_state(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            original = setup.VibePulseConfig(claude_interactions=True)
+            changed = setup.VibePulseConfig(interaction_detail=True)
+            setup.save_config(path, original)
+            responses = install_preflight() + [result()] * 4 + [result()] * 3
+            base = FakeRunner(responses)
+
+            def runner(argv, **kwargs):
+                answer = base(argv, **kwargs)
+                if argv[1:4] == ["mcp", "add", "vibepulse"]:
+                    setup.save_config(path, changed)
+                return answer
+
+            output = io.StringIO()
+            self.assertEqual(setup.main(
+                ["install", "--providers", "codex", "--no-detail"],
+                repo_root=ROOT, config_path=path,
+                python=Path(sys.executable), codex=Path("/codex"),
+                run=runner, stdout=output, stdin_isatty=False), 1)
+            self.assertEqual(setup.load_config(path), changed)
+            self.assertEqual([call[0] for call in base.calls[-3:]], [
+                ["/codex", "mcp", "remove", "vibepulse"],
+                ["/codex", "plugin", "remove", "vibepulse@torget"],
+                ["/codex", "plugin", "marketplace", "remove", "torget"],
+            ])
+            self.assertIn("config", output.getvalue().lower())
+
+    def test_disable_is_not_blocked_by_slow_install_external_command(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            setup.save_config(path, setup.VibePulseConfig(
+                claude_interactions=True, codex_interactions=True))
+            entered = threading.Event()
+            release = threading.Event()
+            responses = install_preflight() + [result()] * 4 + [result()] * 3
+            base = FakeRunner(responses)
+
+            def slow_runner(argv, **kwargs):
+                if not entered.is_set():
+                    entered.set()
+                    release.wait(3)
+                return base(argv, **kwargs)
+
+            install_result = []
+            thread = threading.Thread(target=lambda: install_result.append(
+                setup.main(
+                    ["install", "--providers", "codex", "--no-detail"],
+                    repo_root=ROOT, config_path=path,
+                    python=Path(sys.executable), codex=Path("/codex"),
+                    run=slow_runner, stdout=io.StringIO(),
+                    stdin_isatty=False)))
+            thread.start()
+            self.assertTrue(entered.wait(1))
+            started = time.monotonic()
+            self.assertEqual(setup.main(
+                ["disable", "codex"], config_path=path,
+                stdout=io.StringIO()), 0)
+            elapsed = time.monotonic() - started
+            release.set()
+            thread.join(timeout=4)
+            self.assertFalse(thread.is_alive())
+            self.assertLess(elapsed, 1.0)
+            self.assertEqual(install_result, [1])
+            self.assertFalse(setup.load_config(path).codex_interactions)
+
+    def test_doctor_default_opener_ignores_proxy_and_rejects_forged_pass(self):
+        setup = load_setup()
+
+        class ProxyHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.server.requests.append(self.path)
+                body = healthy_diagnostics()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *_args):
+                pass
+
+        proxy = ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler)
+        proxy.requests = []
+        thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "config.json"
+                setup.save_config(path, setup.VibePulseConfig(
+                    claude_interactions=True))
+                unavailable = closed_port()
+                proxy_url = f"http://127.0.0.1:{proxy.server_address[1]}"
+                with mock.patch.object(
+                        setup, "TOKEN_SERVER_URL",
+                        f"http://127.0.0.1:{unavailable}/"), mock.patch.dict(
+                            os.environ, {
+                                "HTTP_PROXY": proxy_url,
+                                "HTTPS_PROXY": proxy_url,
+                                "ALL_PROXY": proxy_url,
+                                "NO_PROXY": "",
+                            }, clear=False):
+                    output = io.StringIO()
+                    self.assertEqual(setup.main(
+                        ["doctor"], config_path=path,
+                        python=Path(sys.executable), codex=None,
+                        run=FakeRunner([python_probe_ok()]),
+                        stdout=output), 1)
+                self.assertEqual(proxy.requests, [])
+                self.assertIn("FIX Tokenserver", output.getvalue())
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+            thread.join(timeout=2)
+
+    def test_production_process_boundary_drains_caps_utf8_and_recovers(self):
+        setup = load_setup()
+        noisy = [
+            sys.executable, "-c",
+            "import os; b=b'x'*20000; os.write(1,b); os.write(2,b)",
+        ]
+        invalid = [sys.executable, "-c", "import os; os.write(1,b'\\xff')"]
+        valid = [sys.executable, "-c", "print('ok')"]
+        self.assertIsNone(setup._invoke(noisy, setup._AUTO))
+        self.assertIsNone(setup._invoke(invalid, setup._AUTO))
+        completed = setup._invoke(valid, setup._AUTO)
+        self.assertIsNotNone(completed)
+        self.assertEqual(completed.stdout, "ok\n")
+        self.assertFalse(any(thread.name.startswith("vibepulse-drain-")
+                             for thread in threading.enumerate()))
+
+    def test_loopback_requires_status_and_one_utf8_json_content_type(self):
+        setup = load_setup()
+        bad_responses = [
+            BytesResponse(healthy_diagnostics(), status=201),
+            BytesResponse(healthy_diagnostics(), content_types=()),
+            BytesResponse(healthy_diagnostics(),
+                          content_types=("application/json", "application/json")),
+            BytesResponse(healthy_diagnostics(),
+                          content_types=("application/json; charset=latin-1",)),
+            BytesResponse(healthy_diagnostics(),
+                          content_types=("text/plain",)),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            setup.save_config(path, setup.VibePulseConfig(
+                claude_interactions=True))
+            for response in bad_responses:
+                with self.subTest(status=response.status,
+                                  types=response.headers.content_types):
+                    output = io.StringIO()
+                    self.assertEqual(setup.main(
+                        ["doctor"], config_path=path,
+                        python=Path(sys.executable), codex=None,
+                        run=FakeRunner([python_probe_ok()]),
+                        urlopen=lambda *_args, **_kwargs: response,
+                        stdout=output), 1)
+                    self.assertIn("FIX Tokenserver", output.getvalue())
+
+    def test_install_refuses_foreign_plugin_or_marketplace_before_mutation(self):
+        setup = load_setup()
+        cases = [
+            install_preflight(
+                plugin=plugin_listing(
+                    repo=ROOT, plugin_path=ROOT.parent / "foreign")),
+            install_preflight(
+                marketplace=marketplace_listing(
+                    repo=ROOT, root=ROOT.parent, source=ROOT.parent)),
+            [python_probe_ok(), codex_probe_ok(), json_result([]),
+             result(stdout="{\"installed\":[]}"),
+             json_result({"marketplaces": []})],
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            for index, responses in enumerate(cases):
+                with self.subTest(index=index):
+                    path = Path(tmp) / f"foreign-{index}.json"
+                    original = setup.VibePulseConfig(
+                        claude_interactions=True, interaction_detail=True)
+                    setup.save_config(path, original)
+                    runner = FakeRunner(responses)
+                    self.assertEqual(setup.main(
+                        ["install", "--providers", "codex", "--no-detail"],
+                        repo_root=ROOT, config_path=path,
+                        python=Path(sys.executable), codex=Path("/codex"),
+                        run=runner, stdout=io.StringIO(),
+                        stdin_isatty=False), 1)
+                    self.assertEqual(len(runner.calls), 5)
+                    self.assertEqual(setup.load_config(path), original)
+
+    def test_config_save_failure_restores_full_external_prestate(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = setup.VibePulseConfig(
+                claude_interactions=True, codex_interactions=True,
+                interaction_detail=True)
+
+            install_path = root / "install.json"
+            setup.save_config(install_path, original)
+            install_runner = FakeRunner(
+                install_preflight() + [result()] * 4 + [result()] * 3)
+            install_output = io.StringIO()
+            with mock.patch.object(
+                    setup, "save_config",
+                    side_effect=setup.ConfigError("atomic save failed")):
+                self.assertEqual(setup.main(
+                    ["install", "--providers", "codex", "--no-detail"],
+                    repo_root=ROOT, config_path=install_path,
+                    python=Path(sys.executable), codex=Path("/codex"),
+                    run=install_runner, stdout=install_output,
+                    stdin_isatty=False), 1)
+            self.assertEqual([call[0] for call in install_runner.calls[-3:]], [
+                ["/codex", "mcp", "remove", "vibepulse"],
+                ["/codex", "plugin", "remove", "vibepulse@torget"],
+                ["/codex", "plugin", "marketplace", "remove", "torget"],
+            ])
+            self.assertEqual(setup.load_config(install_path), original)
+
+            uninstall_path = root / "uninstall.json"
+            setup.save_config(uninstall_path, original)
+            uninstall_runner = FakeRunner(uninstall_preflight(
+                mcp=[owned_mcp()], plugin=plugin_listing(),
+                marketplace=marketplace_listing()) + [result()] * 6)
+            uninstall_output = io.StringIO()
+            with mock.patch.object(
+                    setup, "save_config",
+                    side_effect=setup.ConfigError("atomic save failed")):
+                self.assertEqual(setup.main(
+                    ["uninstall", "codex"], repo_root=ROOT,
+                    config_path=uninstall_path,
+                    python=Path(sys.executable), codex=Path("/codex"),
+                    run=uninstall_runner, stdout=uninstall_output), 1)
+            self.assertEqual([call[0]
+                              for call in uninstall_runner.calls[-3:]], [
+                ["/codex", "plugin", "marketplace", "add", str(ROOT)],
+                ["/codex", "plugin", "add", "vibepulse@torget"],
+                setup.plan_codex_install(
+                    ROOT, Path(sys.executable), Path("/codex"))[-1],
+            ])
+            self.assertEqual(setup.load_config(uninstall_path), original)
+            self.assertNotIn("PASS", install_output.getvalue() +
+                             uninstall_output.getvalue())
+
+    def test_post_commit_config_error_restores_snapshot_or_reports_divergence(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            for restore_ok in (True, False):
+                with self.subTest(restore_ok=restore_ok):
+                    path = Path(tmp) / f"post-commit-{restore_ok}.json"
+                    original = setup.VibePulseConfig(
+                        claude_interactions=True, interaction_detail=True)
+                    target = setup.VibePulseConfig(codex_interactions=True)
+                    setup.save_config(path, original)
+                    real_save = setup.save_config
+                    calls = []
+
+                    def post_commit_failure(save_path, config):
+                        calls.append(config)
+                        if len(calls) == 1:
+                            real_save(save_path, config)
+                            raise setup.ConfigError("failure after replace")
+                        if restore_ok:
+                            real_save(save_path, config)
+                        else:
+                            raise setup.ConfigError("restore failed")
+
+                    runner = FakeRunner(
+                        install_preflight() + [result()] * 4 + [result()] * 3)
+                    output = io.StringIO()
+                    with mock.patch.object(
+                            setup, "save_config", side_effect=post_commit_failure):
+                        self.assertEqual(setup.main(
+                            ["install", "--providers", "codex", "--no-detail"],
+                            repo_root=ROOT, config_path=path,
+                            python=Path(sys.executable), codex=Path("/codex"),
+                            run=runner, stdout=output,
+                            stdin_isatty=False), 1)
+                    self.assertEqual(calls, [target, original])
+                    self.assertEqual(setup.load_config(path),
+                                     original if restore_ok else target)
+                    if restore_ok:
+                        self.assertNotIn("irrecoverable configuration",
+                                         output.getvalue().lower())
+                    else:
+                        self.assertIn("irrecoverable configuration",
+                                      output.getvalue().lower())
+
+    def test_keyboard_interrupt_compensates_and_does_not_escape_cli(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            original = setup.VibePulseConfig(claude_interactions=True)
+            setup.save_config(path, original)
+            runner = FakeRunner(
+                install_preflight() + [result(), KeyboardInterrupt(), result()])
+            output = io.StringIO()
+            self.assertEqual(setup.main(
+                ["install", "--providers", "codex", "--no-detail"],
+                repo_root=ROOT, config_path=path,
+                python=Path(sys.executable), codex=Path("/codex"),
+                run=runner, stdout=output, stdin_isatty=False), 1)
+            self.assertEqual(runner.calls[-1][0],
+                             ["/codex", "plugin", "marketplace", "remove",
+                              "torget"])
+            self.assertEqual(setup.load_config(path), original)
+            self.assertNotIn("PASS", output.getvalue())
+
+    def test_uninstall_reports_irrecoverable_divergence_on_restore_failure(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            original = setup.VibePulseConfig(codex_interactions=True)
+            setup.save_config(path, original)
+            runner = FakeRunner(uninstall_preflight(
+                mcp=[owned_mcp()], plugin=plugin_listing(),
+                marketplace=marketplace_listing()) + [
+                    result(), result(3, stderr="remove failure"),
+                    result(4, stderr="restore failure SECRET")])
+            output = io.StringIO()
+            self.assertEqual(setup.main(
+                ["uninstall", "codex"], repo_root=ROOT, config_path=path,
+                python=Path(sys.executable), codex=Path("/codex"),
+                run=runner, stdout=output), 1)
+            self.assertIn("irrecoverable divergence", output.getvalue().lower())
+            self.assertNotIn("SECRET", output.getvalue())
+            self.assertEqual(setup.load_config(path), original)
+
+    def test_production_process_timeout_kills_reaps_and_recovers(self):
+        setup = load_setup()
+        sleeping = [sys.executable, "-c", "import time; time.sleep(10)"]
+        with mock.patch.object(setup, "COMMAND_TIMEOUT_SECONDS", 0.1):
+            started = time.monotonic()
+            self.assertIsNone(setup._invoke(sleeping, setup._AUTO))
+            self.assertLess(time.monotonic() - started, 2)
+        completed = setup._invoke(
+            [sys.executable, "-c", "print('recovered')"], setup._AUTO)
+        self.assertIsNotNone(completed)
+        self.assertEqual(completed.stdout, "recovered\n")
+        self.assertFalse(any(thread.name.startswith("vibepulse-drain-")
+                             for thread in threading.enumerate()))
+
     def test_absence_allowlist_is_exact_anchored_and_command_scoped(self):
         setup = load_setup()
         accepted = "Error: marketplace `torget` is not configured or installed\n"
@@ -1785,8 +2367,8 @@ class SetupPlanTests(unittest.TestCase):
                     path = Path(tmp) / f"rejected-{index}.json"
                     setup.save_config(path, setup.VibePulseConfig(
                         codex_interactions=True))
-                    runner = FakeRunner([result(), result(),
-                                         result(1, stderr=message)])
+                    runner = FakeRunner(uninstall_preflight() + [
+                        result(), result(), result(1, stderr=message)])
                     self.assertEqual(setup.main(
                         ["uninstall", "codex"], config_path=path,
                         codex=Path("/codex"), run=runner,
@@ -1796,12 +2378,13 @@ class SetupPlanTests(unittest.TestCase):
             path = Path(tmp) / "wrong-command.json"
             setup.save_config(path, setup.VibePulseConfig(
                 codex_interactions=True))
-            runner = FakeRunner([result(1, stderr=accepted)])
+            runner = FakeRunner(uninstall_preflight() + [
+                result(1, stderr=accepted)])
             self.assertEqual(setup.main(
                 ["uninstall", "codex"], config_path=path,
                 codex=Path("/codex"), run=runner,
                 stdout=io.StringIO()), 1)
-            self.assertEqual(len(runner.calls), 1)
+            self.assertEqual(len(runner.calls), 4)
             self.assertTrue(setup.load_config(path).codex_interactions)
 
 

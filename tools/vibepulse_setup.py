@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from typing import Callable, Sequence
 import urllib.request
 
@@ -55,6 +56,25 @@ class _CommandResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+@dataclass(frozen=True)
+class _ExternalState:
+    mcp: bool
+    plugin: bool
+    marketplace: bool
+
+
+@dataclass(frozen=True)
+class _RollbackStep:
+    argv: tuple[str, ...]
+    description: str
+
+
+class _ConfigPublishError(ConfigError):
+    def __init__(self, message: str, *, irrecoverable: bool) -> None:
+        super().__init__(message)
+        self.irrecoverable = irrecoverable
 
 
 def default_config_path() -> Path:
@@ -188,7 +208,75 @@ def _known_absent(argv: Sequence[str], stderr: str) -> bool:
     return pattern.fullmatch(normalized) is not None
 
 
-def _invoke(argv: Sequence[str], run: Callable[..., object]) -> _CommandResult | None:
+def _bounded_process(argv: Sequence[str]) -> _CommandResult | None:
+    """Run one argv while retaining only a bounded prefix of both pipes."""
+    process = None
+    threads: list[threading.Thread] = []
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    reader_errors: list[BaseException] = []
+
+    def drain(label: str, pipe) -> None:
+        try:
+            while True:
+                chunk = pipe.read(8192)
+                if not chunk:
+                    return
+                remaining = MAX_COMMAND_OUTPUT_BYTES + 1 - len(captured[label])
+                if remaining > 0:
+                    captured[label].extend(chunk[:remaining])
+        except BaseException as exc:
+            reader_errors.append(exc)
+
+    try:
+        process = subprocess.Popen(
+            [str(value) for value in argv], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
+            close_fds=True)
+        assert process.stdout is not None and process.stderr is not None
+        for label, pipe in (("stdout", process.stdout),
+                            ("stderr", process.stderr)):
+            thread = threading.Thread(
+                target=drain, args=(label, pipe),
+                name=f"vibepulse-drain-{label}")
+            thread.start()
+            threads.append(thread)
+        try:
+            returncode = process.wait(timeout=COMMAND_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    except BaseException:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        raise
+    finally:
+        for thread in threads:
+            thread.join()
+        if process is not None:
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+
+    if (reader_errors or
+            len(captured["stdout"]) > MAX_COMMAND_OUTPUT_BYTES or
+            len(captured["stderr"]) > MAX_COMMAND_OUTPUT_BYTES):
+        return None
+    try:
+        stdout = bytes(captured["stdout"]).decode("utf-8", errors="strict")
+        stderr = bytes(captured["stderr"]).decode("utf-8", errors="strict")
+    except UnicodeError:
+        return None
+    return _CommandResult(returncode, stdout, stderr)
+
+
+def _invoke(argv: Sequence[str], run) -> _CommandResult | None:
+    if run is _AUTO:
+        return _bounded_process(argv)
     try:
         completed = run(
             [str(value) for value in argv], capture_output=True, text=True,
@@ -208,22 +296,6 @@ def _invoke(argv: Sequence[str], run: Callable[..., object]) -> _CommandResult |
     except UnicodeError:
         return None
     return _CommandResult(returncode, stdout, stderr)
-
-
-def _run_commands(
-        commands: Sequence[Sequence[str]], run: Callable[..., object],
-        stdout, *, allow_absent: bool) -> bool:
-    for argv_value in commands:
-        argv = [str(value) for value in argv_value]
-        completed = _invoke(argv, run)
-        if completed is None:
-            print(f"FIX Command failed: {' '.join(argv[1:])}", file=stdout)
-            return False
-        if completed.returncode != 0 and not (
-                allow_absent and _known_absent(argv, completed.stderr)):
-            print(f"FIX Command failed: {' '.join(argv[1:])}", file=stdout)
-            return False
-    return True
 
 
 def _print_status(config: VibePulseConfig, stdout) -> None:
@@ -261,8 +333,8 @@ def _strict_json(text: str):
         return json.loads(
             text, parse_constant=_reject_json_constant,
             object_pairs_hook=_unique_json_object)
-    except RecursionError as exc:
-        raise ValueError("JSON nesting is too deep") from exc
+    except (RecursionError, UnicodeError, ValueError) as exc:
+        raise ValueError("invalid strict JSON") from exc
 
 
 def _expected_mcp_item(repo_root: Path, python: Path) -> dict:
@@ -337,27 +409,13 @@ def _is_exact_existing_directory(value, expected: Path) -> bool:
         return False
 
 
-def _plugin_installed(text: str, repo_root: Path) -> bool:
-    try:
-        value = _strict_json(text)
-    except (TypeError, ValueError, json.JSONDecodeError, UnicodeError):
+def _owned_plugin_item(item, repo_root: Path) -> bool:
+    if not isinstance(item, dict):
         return False
-    if not isinstance(value, dict):
-        return False
-    installed = value.get("installed")
-    available = value.get("available")
-    if (not isinstance(installed, list) or
-            not isinstance(available, list) or
-            any(not isinstance(item, dict) for item in installed)):
-        return False
-    matches = [item for item in installed if isinstance(item, dict) and
-               item.get("pluginId") == "vibepulse@torget"]
-    if len(matches) != 1:
-        return False
-    item = matches[0]
     source = item.get("source")
     marketplace_source = item.get("marketplaceSource")
-    if (item.get("name") != "vibepulse" or
+    if (item.get("pluginId") != "vibepulse@torget" or
+            item.get("name") != "vibepulse" or
             item.get("marketplaceName") != "torget" or
             item.get("installed") is not True or
             item.get("enabled") is not True or
@@ -385,6 +443,112 @@ def _plugin_installed(text: str, repo_root: Path) -> bool:
     ))
 
 
+def _plugin_state(text: str, repo_root: Path) -> bool | None:
+    try:
+        value = _strict_json(text)
+    except (TypeError, ValueError, json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(value, dict) or set(value) != {"installed", "available"}:
+        return None
+    installed = value.get("installed")
+    available = value.get("available")
+    if (not isinstance(installed, list) or
+            not isinstance(available, list) or
+            any(not isinstance(item, dict) for item in installed) or
+            any(not isinstance(item, dict) for item in available)):
+        return None
+    matches = [item for item in installed
+               if (item.get("pluginId") == "vibepulse@torget" or
+                   item.get("name") == "vibepulse")]
+    if not matches:
+        return False
+    if len(matches) != 1 or not _owned_plugin_item(matches[0], repo_root):
+        return None
+    return True
+
+
+def _plugin_installed(text: str, repo_root: Path) -> bool:
+    return _plugin_state(text, repo_root) is True
+
+
+def _marketplace_state(text: str, repo_root: Path) -> bool | None:
+    try:
+        value = _strict_json(text)
+    except (TypeError, ValueError, json.JSONDecodeError, UnicodeError):
+        return None
+    if (not isinstance(value, dict) or set(value) != {"marketplaces"} or
+            not isinstance(value.get("marketplaces"), list) or
+            any(not isinstance(item, dict)
+                for item in value.get("marketplaces", []))):
+        return None
+    matches = [item for item in value["marketplaces"]
+               if item.get("name") == MARKETPLACE_NAME]
+    if not matches:
+        return False
+    if len(matches) != 1:
+        return None
+    item = matches[0]
+    source = item.get("marketplaceSource")
+    if (set(item) != {"name", "root", "marketplaceSource"} or
+            not isinstance(source, dict) or
+            set(source) != {"sourceType", "source"} or
+            source.get("sourceType") != "local"):
+        return None
+    try:
+        expected = Path(repo_root).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if (not _is_exact_existing_directory(item.get("root"), expected) or
+            not _is_exact_existing_directory(source.get("source"), expected)):
+        return None
+    return True
+
+
+def _python_probe_ok(python: Path | None, run) -> bool:
+    if python is None:
+        return False
+    probe = _invoke([str(Path(python).resolve()), "-c", _PYTHON_PROBE], run)
+    return (probe is not None and probe.returncode == 0 and
+            probe.stdout == "vibepulse-python-3.11+\n" and
+            probe.stderr == "")
+
+
+def _codex_probe_ok(codex: Path | None, run) -> bool:
+    if codex is None:
+        return False
+    probe = _invoke([str(Path(codex).resolve()), "--version"], run)
+    return (probe is not None and probe.returncode == 0 and
+            probe.stderr == "" and
+            _CODEX_VERSION.fullmatch(probe.stdout) is not None)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _default_urlopen(request, *, timeout):
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), _NoRedirect())
+    return opener.open(request, timeout=timeout)
+
+
+def _response_content_type(response) -> bool:
+    headers = getattr(response, "headers", None)
+    get_all = getattr(headers, "get_all", None)
+    if not callable(get_all):
+        return False
+    values = get_all("Content-Type", [])
+    if not isinstance(values, list) or len(values) != 1:
+        return False
+    value = values[0]
+    if not isinstance(value, str):
+        return False
+    return re.fullmatch(
+        r"application/json(?:;[ \t]*charset=[Uu][Tt][Ff]-8)?", value
+    ) is not None
+
+
 def _doctor(
         config: VibePulseConfig, *, python: Path | None, codex: Path | None,
         repo_root: Path, run: Callable[..., object],
@@ -392,11 +556,7 @@ def _doctor(
         ) -> bool:
     fixes = False
 
-    python_ok = False
-    if python is not None:
-        probe = _invoke([str(Path(python).resolve()), "-c", _PYTHON_PROBE], run)
-        python_ok = (probe is not None and probe.returncode == 0 and
-                     probe.stdout == "vibepulse-python-3.11+\n")
+    python_ok = _python_probe_ok(python, run)
     if not python_ok:
         print("FIX Python executable: install Python 3.11 or newer", file=stdout)
         fixes = True
@@ -411,9 +571,7 @@ def _doctor(
         print("FIX Codex executable: install or expose codex on PATH", file=stdout)
         fixes = True
     else:
-        probe = _invoke([str(Path(codex).resolve()), "--version"], run)
-        codex_ok = (probe is not None and probe.returncode == 0 and
-                    _CODEX_VERSION.fullmatch(probe.stdout) is not None)
+        codex_ok = _codex_probe_ok(codex, run)
         if codex_ok:
             print("PASS Codex executable", file=stdout)
         else:
@@ -464,7 +622,11 @@ def _doctor(
         try:
             request = urllib.request.Request(
                 TOKEN_SERVER_URL, headers={"Accept": "application/json"})
-            with urlopen(request, timeout=NETWORK_TIMEOUT_SECONDS) as response:
+            open_url = (_default_urlopen if urlopen is _AUTO else urlopen)
+            with open_url(request, timeout=NETWORK_TIMEOUT_SECONDS) as response:
+                if (getattr(response, "status", None) != 200 or
+                        not _response_content_type(response)):
+                    raise ValueError("untrusted diagnostic response")
                 raw = response.read(MAX_DIAGNOSTIC_BYTES + 1)
             if (not isinstance(raw, bytes) or
                     len(raw) > MAX_DIAGNOSTIC_BYTES):
@@ -507,70 +669,206 @@ def _resolve_executables(python, codex):
     return python_path, codex_path
 
 
+def _setup_transaction_path(path: Path) -> Path:
+    path = Path(path)
+    return path.with_name(f".{path.name}.vibepulse-setup-transaction")
+
+
+def _inspect_external(
+        *, repo_root: Path, python: Path, codex: Path, run,
+        stdout) -> _ExternalState | None:
+    codex_text = str(Path(codex).resolve())
+    commands = [
+        [codex_text, "mcp", "list", "--json"],
+        [codex_text, "plugin", "list", "--json"],
+        [codex_text, "plugin", "marketplace", "list", "--json"],
+    ]
+    results = [_invoke(argv, run) for argv in commands]
+    states: list[bool | None] = [None, None, None]
+    if results[0] is not None and results[0].returncode == 0:
+        states[0] = _owned_mcp_state(
+            results[0].stdout, repo_root, python)
+    if results[1] is not None and results[1].returncode == 0:
+        states[1] = _plugin_state(results[1].stdout, repo_root)
+    if results[2] is not None and results[2].returncode == 0:
+        states[2] = _marketplace_state(results[2].stdout, repo_root)
+    if any(state is None for state in states):
+        print("FIX Codex resources are foreign or unreadable; leaving all "
+              "external state unchanged", file=stdout)
+        return None
+    return _ExternalState(
+        mcp=states[0], plugin=states[1], marketplace=states[2])
+
+
+def _command_ok(
+        completed: _CommandResult | None, argv: Sequence[str], *,
+        absent_allowed: bool = False) -> bool:
+    return (completed is not None and
+            (completed.returncode == 0 or
+             (absent_allowed and
+              _known_absent(argv, completed.stderr))))
+
+
+def _rollback(
+        journal: Sequence[_RollbackStep], run, stdout,
+        failed_step: str) -> bool:
+    failures = []
+    for step in reversed(journal):
+        try:
+            completed = _invoke(step.argv, run)
+            if not _command_ok(
+                    completed, step.argv, absent_allowed=True):
+                failures.append(step.description)
+        except BaseException:
+            failures.append(step.description)
+    if failures:
+        print("FIX irrecoverable divergence after " + failed_step +
+              "; rollback failed: " + ", ".join(failures), file=stdout)
+        return False
+    print(f"FIX Setup failed at {failed_step}; external state restored",
+          file=stdout)
+    return True
+
+
+def _publish_config(
+        path: Path, snapshot: VibePulseConfig,
+        target: VibePulseConfig) -> None:
+    with config_lock(path):
+        if load_config(path) != snapshot:
+            raise _ConfigPublishError(
+                "configuration changed during setup", irrecoverable=False)
+        try:
+            save_config(path, target)
+        except BaseException as exc:
+            restored = False
+            try:
+                current = load_config(path)
+                if current == snapshot:
+                    restored = True
+                elif current == target:
+                    try:
+                        save_config(path, snapshot)
+                    except BaseException:
+                        pass
+                    restored = load_config(path) == snapshot
+            except BaseException:
+                restored = False
+            raise _ConfigPublishError(
+                "configuration publish failed",
+                irrecoverable=not restored) from exc
+
+
+def _failed_step_with_publish_state(
+        failed_step: str, exc: BaseException) -> str:
+    if isinstance(exc, _ConfigPublishError) and exc.irrecoverable:
+        return failed_step + " (irrecoverable configuration divergence)"
+    return failed_step
+
+
 def _install_transaction(
         *, path: Path, providers: str, detail: bool, repo_root: Path,
-        python: Path, codex: Path, run: Callable[..., object], stdout) -> bool:
-    """Validate state, mutate Codex, then atomically publish saved routing."""
-    with config_lock(path):
-        load_config(path)
+        python: Path, codex: Path, run, stdout) -> bool:
+    """Mutate owned Codex resources and publish routing transactionally."""
+    with config_lock(_setup_transaction_path(path)):
+        with config_lock(path):
+            snapshot = load_config(path)
         target = _chosen_config(providers, detail)
-        codex_text = str(Path(codex).resolve())
-        preflight_argv = [codex_text, "mcp", "list", "--json"]
-        preflight = _invoke(preflight_argv, run)
-        if preflight is None or preflight.returncode != 0:
-            print("FIX Cannot inspect existing Codex MCP registration",
-                  file=stdout)
-            return False
-        owned_before = _owned_mcp_state(
-            preflight.stdout, repo_root, python)
-        if owned_before is None:
-            print("FIX Existing vibepulse MCP is foreign or unreadable; "
-                  "leaving it unchanged", file=stdout)
-            return False
+        journal: list[_RollbackStep] = []
+        failed_step = "runtime preflight"
+        try:
+            if not _python_probe_ok(python, run):
+                print("FIX Python executable: install Python 3.11 or newer",
+                      file=stdout)
+                return False
+            if not _codex_probe_ok(codex, run):
+                print("FIX Codex executable: candidate is not Codex",
+                      file=stdout)
+                return False
+            failed_step = "resource ownership preflight"
+            before = _inspect_external(
+                repo_root=repo_root, python=python, codex=codex, run=run,
+                stdout=stdout)
+            if before is None:
+                return False
 
-        commands = plan_codex_install(repo_root, python, codex)
-        for index, argv in enumerate(commands):
-            completed = _invoke(argv, run)
-            if completed is not None and completed.returncode == 0:
-                continue
-            if index == len(commands) - 1:
-                if owned_before:
-                    rollback = _invoke(argv, run)
-                    if rollback is not None and rollback.returncode == 0:
-                        print("FIX MCP add failed; previous owned registration "
-                              "restored", file=stdout)
-                    else:
-                        print("FIX MCP add failed; rollback also failed",
-                              file=stdout)
-                else:
-                    print("FIX MCP add failed; no previous registration to "
-                          "restore", file=stdout)
-            else:
-                print(f"FIX Command failed: {' '.join(argv[1:])}", file=stdout)
+            install = plan_codex_install(repo_root, python, codex)
+            uninstall = plan_codex_uninstall(codex)
+            steps = (
+                ("marketplace add", install[0], not before.marketplace,
+                 _RollbackStep(tuple(uninstall[2]), "marketplace remove")),
+                ("plugin add", install[1], not before.plugin,
+                 _RollbackStep(tuple(uninstall[1]), "plugin remove")),
+                ("MCP remove", install[2], before.mcp,
+                 _RollbackStep(tuple(install[3]), "MCP restore")),
+                ("MCP add", install[3], True,
+                 _RollbackStep(tuple(uninstall[0]), "MCP remove")),
+            )
+            for failed_step, argv, changes_state, compensation in steps:
+                completed = _invoke(argv, run)
+                if not _command_ok(completed, argv):
+                    _rollback(journal, run, stdout, failed_step)
+                    return False
+                if changes_state:
+                    journal.append(compensation)
+
+            failed_step = "configuration publish"
+            _publish_config(path, snapshot, target)
+            return True
+        except BaseException as exc:
+            _rollback(
+                journal, run, stdout,
+                _failed_step_with_publish_state(failed_step, exc))
             return False
-        save_config(path, target)
-        return True
 
 
 def _uninstall_transaction(
-        *, path: Path, codex: Path, run: Callable[..., object], stdout) -> bool:
-    """Disable Codex only after its owned registrations are removed."""
-    with config_lock(path):
-        saved = load_config(path)
-        target = _disabled_config(saved, "codex")
-        if not _run_commands(
-                plan_codex_uninstall(codex), run, stdout,
-                allow_absent=True):
+        *, path: Path, repo_root: Path, python: Path, codex: Path,
+        run, stdout) -> bool:
+    """Remove only proven-owned resources and compensate every failure."""
+    with config_lock(_setup_transaction_path(path)):
+        with config_lock(path):
+            snapshot = load_config(path)
+        target = _disabled_config(snapshot, "codex")
+        journal: list[_RollbackStep] = []
+        failed_step = "resource ownership preflight"
+        try:
+            before = _inspect_external(
+                repo_root=repo_root, python=python, codex=codex, run=run,
+                stdout=stdout)
+            if before is None:
+                return False
+            install = plan_codex_install(repo_root, python, codex)
+            uninstall = plan_codex_uninstall(codex)
+            steps = (
+                ("MCP remove", uninstall[0], before.mcp,
+                 _RollbackStep(tuple(install[3]), "MCP restore")),
+                ("plugin remove", uninstall[1], before.plugin,
+                 _RollbackStep(tuple(install[1]), "plugin restore")),
+                ("marketplace remove", uninstall[2], before.marketplace,
+                 _RollbackStep(tuple(install[0]), "marketplace restore")),
+            )
+            for failed_step, argv, changes_state, compensation in steps:
+                completed = _invoke(argv, run)
+                if not _command_ok(
+                        completed, argv, absent_allowed=not changes_state):
+                    _rollback(journal, run, stdout, failed_step)
+                    return False
+                if changes_state:
+                    journal.append(compensation)
+            failed_step = "configuration publish"
+            _publish_config(path, snapshot, target)
+            return True
+        except BaseException as exc:
+            _rollback(
+                journal, run, stdout,
+                _failed_step_with_publish_state(failed_step, exc))
             return False
-        save_config(path, target)
-        return True
 
 
 def main(
         argv: Sequence[str] | None = None, *, repo_root: Path = REPO_ROOT,
         config_path: Path | None = None, python=_AUTO, codex=_AUTO,
-        run: Callable[..., object] = subprocess.run,
-        urlopen: Callable[..., object] = urllib.request.urlopen,
+        run=_AUTO, urlopen=_AUTO,
         input_fn: Callable[[str], str] = input, stdout=None,
         stdin_isatty: bool | None = None) -> int:
     """Run the strict CLI with injectable process and network boundaries."""
@@ -600,11 +898,12 @@ def main(
             return 0
 
         if args.command == "uninstall":
-            if codex_path is None:
-                print("FIX Codex executable not found", file=output)
+            if codex_path is None or python_path is None:
+                print("FIX Python or Codex executable not found", file=output)
                 return 1
             if not _uninstall_transaction(
-                    path=path, codex=codex_path, run=run, stdout=output):
+                    path=path, repo_root=Path(repo_root), python=python_path,
+                    codex=codex_path, run=run, stdout=output):
                 return 1
             print("PASS Removed only VibePulse Codex registration", file=output)
             return 0
