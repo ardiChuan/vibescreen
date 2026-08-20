@@ -63,6 +63,7 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 cc -std=c11 -Wall -Wextra -Werror -O1 \
   -DFIXTURES_DIR="\"$(cd ../sim-fixtures && pwd)\"" \
   ../components/app_tokens/agent_status_parse.c \
+  ../components/app_tokens/needs_you_send_policy.c \
   test_agent_status.c /tmp/torget-cjson.o \
   -lm \
   -o /tmp/torget-agent-status-test
@@ -91,11 +92,11 @@ actual = sign_answer_v2(
     "a" * 64,
     "codex",
     "ABEiM0RVZneImaq7zN3u_w",
-    "9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a",
+    "df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d",
     "approve",
     1787097720,
 )
-expected = "eeaae64073b070863e3833a1483e24bd41e2da5aa1849ef8663798c32401c6a8"
+expected = "49357b233c81c9979606a52b94aaab578c18fc95c16d0037949b1018c298bbbf"
 assert actual == expected, (actual, expected)
 print("OK: panelens och tokenserverns v2-HMAC-vektor är identisk")
 PY

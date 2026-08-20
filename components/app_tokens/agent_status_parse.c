@@ -1,5 +1,7 @@
 #include "agent_status_parse.h"
+#include "needs_you_send_policy.h"
 
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -8,6 +10,7 @@
 /* V2-kontraktet behöver bara djup 5. Extra metadata får gott om marginal,
  * men rekursionen i både cJSON och råtoken-vandringen hålls ESP-säker. */
 #define TK_AGENT_JSON_MAX_DEPTH 16U
+#define TK_PENDING_CANONICAL_VIEW_CAP 1024U
 
 typedef struct {
   const char *name;
@@ -60,6 +63,12 @@ static const char *const job_required_keys[] = {
 static const char *const job_allowed_keys[] = {
     "task_id", "event_id", "state", "project", "activity", "updated_ms",
     "model", "effort", NULL,
+};
+
+static const char *const pending_v2_allowed_keys[] = {
+    "provider", "request_id", "view_sha256", "kind", "project",
+    "expires_in_ms", "hold_ms", "options_total", "marked", "prompt",
+    "title", "subtitle", "tool", "can_approve", NULL,
 };
 
 static bool json_whitespace(unsigned char byte) {
@@ -540,6 +549,194 @@ static bool pending_request_id_valid(const char *value) {
   return true;
 }
 
+/* cJSON returns decoded UTF-8 bytes. Validate their shortest-form structure
+ * before copying them into LVGL-facing strings. Python's producer has already
+ * rejected Unicode controls/format characters; the device independently
+ * rejects the common control/format ranges too. */
+static bool pending_utf8_valid(const char *value) {
+  const unsigned char *p = (const unsigned char *)value;
+  while (*p) {
+    uint32_t cp = 0;
+    size_t width = 0;
+    if (*p < 0x80) {
+      cp = *p;
+      width = 1;
+    } else if (*p >= 0xC2 && *p <= 0xDF &&
+               (p[1] & 0xC0) == 0x80) {
+      cp = ((uint32_t)(p[0] & 0x1F) << 6) | (uint32_t)(p[1] & 0x3F);
+      width = 2;
+    } else if (*p >= 0xE0 && *p <= 0xEF &&
+               (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+      cp = ((uint32_t)(p[0] & 0x0F) << 12) |
+           ((uint32_t)(p[1] & 0x3F) << 6) | (uint32_t)(p[2] & 0x3F);
+      if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+      width = 3;
+    } else if (*p >= 0xF0 && *p <= 0xF4 &&
+               (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 &&
+               (p[3] & 0xC0) == 0x80) {
+      cp = ((uint32_t)(p[0] & 0x07) << 18) |
+           ((uint32_t)(p[1] & 0x3F) << 12) |
+           ((uint32_t)(p[2] & 0x3F) << 6) | (uint32_t)(p[3] & 0x3F);
+      if (cp < 0x10000 || cp > 0x10FFFF) return false;
+      width = 4;
+    } else {
+      return false;
+    }
+    if (cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) ||
+        (cp >= 0x200B && cp <= 0x200F) ||
+        (cp >= 0x202A && cp <= 0x202E) ||
+        (cp >= 0x2060 && cp <= 0x206F) || cp == 0xFEFF) {
+      return false;
+    }
+    p += width;
+  }
+  return true;
+}
+
+static bool strict_optional_pending_string(const cJSON *object,
+                                           const char *key,
+                                           char *destination,
+                                           size_t capacity,
+                                           bool *has_value) {
+  const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
+  *has_value = false;
+  destination[0] = '\0';
+  if (!item) return true;
+  if (!cJSON_IsString(item) || !item->valuestring || !item->valuestring[0] ||
+      !pending_utf8_valid(item->valuestring)) {
+    return false;
+  }
+  size_t length = strlen(item->valuestring);
+  if (length >= capacity) return false;
+  memcpy(destination, item->valuestring, length + 1);
+  *has_value = true;
+  return true;
+}
+
+static bool exact_bool_member(const cJSON *object, const char *key,
+                              bool *out) {
+  const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
+  if (!cJSON_IsBool(item)) return false;
+  *out = cJSON_IsTrue(item);
+  return true;
+}
+
+typedef struct {
+  char *data;
+  size_t cap;
+  size_t len;
+  bool ok;
+} canonical_builder;
+
+static void canonical_bytes(canonical_builder *builder, const char *data,
+                            size_t len) {
+  if (!builder->ok || len >= builder->cap - builder->len) {
+    builder->ok = false;
+    return;
+  }
+  memcpy(builder->data + builder->len, data, len);
+  builder->len += len;
+  builder->data[builder->len] = '\0';
+}
+
+static void canonical_literal(canonical_builder *builder,
+                              const char *literal) {
+  canonical_bytes(builder, literal, strlen(literal));
+}
+
+static void canonical_string(canonical_builder *builder, const char *value) {
+  canonical_literal(builder, "\"");
+  for (const char *p = value; builder->ok && *p; p++) {
+    if (*p == '"' || *p == '\\') canonical_literal(builder, "\\");
+    canonical_bytes(builder, p, 1);
+  }
+  canonical_literal(builder, "\"");
+}
+
+static void canonical_uint(canonical_builder *builder, uint32_t value) {
+  char number[11];
+  int written = snprintf(number, sizeof number, "%lu", (unsigned long)value);
+  if (written < 0 || (size_t)written >= sizeof number) {
+    builder->ok = false;
+    return;
+  }
+  canonical_bytes(builder, number, (size_t)written);
+}
+
+static void canonical_key_string(canonical_builder *builder, bool *first,
+                                 const char *key, const char *value) {
+  canonical_literal(builder, *first ? "\"" : ",\"");
+  canonical_literal(builder, key);
+  canonical_literal(builder, "\":");
+  canonical_string(builder, value);
+  *first = false;
+}
+
+static void canonical_key_uint(canonical_builder *builder, bool *first,
+                               const char *key, uint32_t value) {
+  canonical_literal(builder, *first ? "\"" : ",\"");
+  canonical_literal(builder, key);
+  canonical_literal(builder, "\":");
+  canonical_uint(builder, value);
+  *first = false;
+}
+
+static void canonical_key_bool(canonical_builder *builder, bool *first,
+                               const char *key, bool value) {
+  canonical_literal(builder, *first ? "\"" : ",\"");
+  canonical_literal(builder, key);
+  canonical_literal(builder, value ? "\":true" : "\":false");
+  *first = false;
+}
+
+static bool pending_view_digest_matches(const tk_pending_interaction *view) {
+  char canonical[TK_PENDING_CANONICAL_VIEW_CAP];
+  canonical_builder builder = {
+      .data = canonical, .cap = sizeof canonical, .len = 0, .ok = true};
+  bool first = true;
+  canonical_literal(&builder, "{");
+  canonical_key_bool(&builder, &first, "can_approve", view->can_approve);
+  canonical_key_uint(&builder, &first, "hold_ms", view->hold_ms);
+  canonical_key_string(&builder, &first, "kind",
+                       view->kind == TK_PENDING_QUESTION ? "question" :
+                                                         "approval");
+  if (view->kind == TK_PENDING_QUESTION) {
+    canonical_key_bool(&builder, &first, "marked", view->marked);
+    canonical_key_uint(&builder, &first, "options_total",
+                       view->options_total);
+  }
+  if (view->has_project) {
+    canonical_key_string(&builder, &first, "project", view->project);
+  }
+  if (view->kind == TK_PENDING_QUESTION && view->has_prompt) {
+    canonical_key_string(&builder, &first, "prompt", view->prompt);
+  }
+  canonical_key_string(&builder, &first, "provider",
+                       view->provider == TK_AGENT_PROVIDER_CODEX ? "codex" :
+                                                                  "claude");
+  canonical_key_string(&builder, &first, "request_id", view->request_id);
+  if (view->has_subtitle) {
+    canonical_key_string(&builder, &first, "subtitle", view->subtitle);
+  }
+  if (view->has_title) {
+    canonical_key_string(&builder, &first, "title", view->title);
+  }
+  if (view->kind == TK_PENDING_APPROVAL && view->has_tool) {
+    canonical_key_string(&builder, &first, "tool", view->tool);
+  }
+  canonical_literal(&builder, "}");
+  if (!builder.ok) return false;
+
+  char calculated[TK_PENDING_VIEW_SHA256_CAP];
+  tk_needs_you_sha256_hex(calculated, canonical, builder.len);
+  unsigned difference = 0;
+  for (size_t i = 0; i < 64; i++) {
+    difference |= (unsigned char)calculated[i] ^
+                  (unsigned char)view->view_sha256[i];
+  }
+  return difference == 0;
+}
+
 /* The pending interaction is OPTIONAL and parsed softly on purpose.
  *
  * Every other field here is all-or-nothing, because half a quota number is a
@@ -588,10 +785,14 @@ static void parse_pending(const char *json, size_t len, const cJSON *root,
     memset(out, 0, sizeof *out);
     return;
   }
-  /* A digest without a provider must never be guessed to be Claude. Codex
-   * requires both fields, preventing a malformed v2 item from downgrading. */
-  if ((!has_provider && has_view_sha256) ||
-      (out->provider == TK_AGENT_PROVIDER_CODEX && !has_view_sha256)) {
+  /* Provider and digest are the v2 marker and must travel as a pair for both
+   * providers. Only a payload missing BOTH is genuine Claude v1. */
+  if (has_provider != has_view_sha256) {
+    memset(out, 0, sizeof *out);
+    return;
+  }
+  bool uses_v2 = has_provider;
+  if (uses_v2 && !allowed_keys_once(pending, pending_v2_allowed_keys)) {
     memset(out, 0, sizeof *out);
     return;
   }
@@ -623,36 +824,90 @@ static void parse_pending(const char *json, size_t len, const cJSON *root,
   }
   out->expires_in_ms = expires_in_ms;
 
-  /* Optional: the original hold, for the countdown ring. Absent on an older
-   * service, which just leaves the ring reading full — never a wrong time. */
   uint32_t hold_ms = 0;
-  if (uint32_member(json, len, root, pending, "hold_ms", &hold_ms)) {
+  bool has_hold_ms = uint32_member(json, len, root, pending, "hold_ms",
+                                   &hold_ms);
+  if (uses_v2 && (!has_hold_ms || hold_ms == 0)) {
+    memset(out, 0, sizeof *out);
+    return;
+  }
+  /* Optional only on legacy: an older service did not send the original hold
+   * and the countdown ring simply reads full. */
+  if (has_hold_ms) {
     out->hold_ms = hold_ms;
   }
 
   uint32_t options_total = 0;
-  if (uint32_member(json, len, root, pending, "options_total",
-                    &options_total) && options_total <= 0xFF) {
-    out->options_total = (uint8_t)options_total;
+  if (uses_v2) {
+    const cJSON *marked_item = cJSON_GetObjectItemCaseSensitive(
+        pending, "marked");
+    const cJSON *options_item = cJSON_GetObjectItemCaseSensitive(
+        pending, "options_total");
+    const cJSON *prompt_item = cJSON_GetObjectItemCaseSensitive(
+        pending, "prompt");
+    const cJSON *tool_item = cJSON_GetObjectItemCaseSensitive(pending, "tool");
+    if (out->kind == TK_PENDING_QUESTION) {
+      if (!uint32_member(json, len, root, pending, "options_total",
+                         &options_total) || options_total == 0 ||
+          options_total > UINT8_MAX ||
+          !exact_bool_member(pending, "marked", &out->marked) || tool_item) {
+        memset(out, 0, sizeof *out);
+        return;
+      }
+      out->options_total = (uint8_t)options_total;
+    } else if (marked_item || options_item || prompt_item) {
+      memset(out, 0, sizeof *out);
+      return;
+    }
+
+    if (!strict_optional_pending_string(
+            pending, "project", out->project, sizeof out->project,
+            &out->has_project) ||
+        !strict_optional_pending_string(
+            pending, "prompt", out->prompt, sizeof out->prompt,
+            &out->has_prompt) ||
+        !strict_optional_pending_string(
+            pending, "title", out->title, sizeof out->title,
+            &out->has_title) ||
+        !strict_optional_pending_string(
+            pending, "subtitle", out->subtitle, sizeof out->subtitle,
+            &out->has_subtitle) ||
+        !strict_optional_pending_string(
+            pending, "tool", out->tool, sizeof out->tool, &out->has_tool) ||
+        !exact_bool_member(pending, "can_approve", &out->can_approve) ||
+        (out->can_approve &&
+         (!out->has_title ||
+          (out->kind == TK_PENDING_QUESTION && !out->marked)))) {
+      memset(out, 0, sizeof *out);
+      return;
+    }
+    if (!pending_view_digest_matches(out)) {
+      memset(out, 0, sizeof *out);
+      return;
+    }
+  } else {
+    if (uint32_member(json, len, root, pending, "options_total",
+                      &options_total) && options_total <= 0xFF) {
+      out->options_total = (uint8_t)options_total;
+    }
+    optional_pending_string(pending, "project", out->project,
+                            sizeof out->project, &out->has_project);
+    optional_pending_string(pending, "prompt", out->prompt,
+                            sizeof out->prompt, &out->has_prompt);
+    optional_pending_string(pending, "title", out->title,
+                            sizeof out->title, &out->has_title);
+    optional_pending_string(pending, "subtitle", out->subtitle,
+                            sizeof out->subtitle, &out->has_subtitle);
+    optional_pending_string(pending, "tool", out->tool,
+                            sizeof out->tool, &out->has_tool);
+    out->marked = pending_bool(pending, "marked");
+    out->can_approve = pending_bool(pending, "can_approve") && out->has_title;
   }
 
-  optional_pending_string(pending, "project", out->project,
-                          sizeof out->project, &out->has_project);
-  optional_pending_string(pending, "prompt", out->prompt,
-                          sizeof out->prompt, &out->has_prompt);
-  optional_pending_string(pending, "title", out->title,
-                          sizeof out->title, &out->has_title);
-  optional_pending_string(pending, "subtitle", out->subtitle,
-                          sizeof out->subtitle, &out->has_subtitle);
-  optional_pending_string(pending, "tool", out->tool,
-                          sizeof out->tool, &out->has_tool);
-
-  out->marked = pending_bool(pending, "marked");
   /* APPROVE exists only when the service says so AND there is something
    * readable to approve. Two independent reasons to withhold it, because
    * approving text you cannot see is the failure this whole feature must not
    * ship with. */
-  out->can_approve = pending_bool(pending, "can_approve") && out->has_title;
   out->present = true;
 }
 

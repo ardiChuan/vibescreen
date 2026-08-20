@@ -48,6 +48,12 @@ int tk_needs_you_canonical_message_v2(
 void tk_needs_you_hmac_hex(char out[TK_NEEDS_YOU_HMAC_HEX_CAP],
                            const char *key, const char *message);
 
+/* SHA-256 over an exact byte span, as 64 lowercase hex plus NUL. Shared with
+ * the agent-status parser so the panel independently binds the public view it
+ * decoded rather than trusting the digest supplied beside it. */
+void tk_needs_you_sha256_hex(char out[TK_NEEDS_YOU_HMAC_HEX_CAP],
+                             const void *data, size_t len);
+
 /* The JSON body the device POSTs to /api/interaction/<request_id>. Returns the
  * length written, or -1 on a bad argument or overflow. */
 int tk_needs_you_answer_body(char *out, size_t cap, const char *verdict_name,

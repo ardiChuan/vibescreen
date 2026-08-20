@@ -112,6 +112,21 @@ def worst_case_pending() -> dict:
 
 
 class AgentStatusBodyCapacityTests(unittest.TestCase):
+    def test_codex_fixtures_carry_the_production_public_view_digest(self):
+        fixture_dir = REPO_ROOT / "sim-fixtures"
+        for name in (
+                "agent-status-needs-you-codex-question.json",
+                "agent-status-needs-you-codex-approval.json"):
+            with self.subTest(fixture=name):
+                payload = json.loads(
+                    (fixture_dir / name).read_text(encoding="utf-8"))
+                pending = payload["pending"]
+                self.assertEqual(
+                    pending["view_sha256"],
+                    interactions.view_digest(pending),
+                    interactions.view_bytes(pending),
+                )
+
     def test_pending_ids_fit_and_preserve_the_legacy_32_hex_envelope(self):
         store = interactions.InteractionStore(secret="a" * 64,
                                               reveal_detail=True)

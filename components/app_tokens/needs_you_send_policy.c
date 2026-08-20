@@ -134,6 +134,26 @@ static void hmac_sha256(const uint8_t *key, size_t key_len,
   sha256_final(&ctx, out);
 }
 
+static void bytes_to_hex(char out[TK_NEEDS_YOU_HMAC_HEX_CAP],
+                         const uint8_t bytes[32]) {
+  static const char hex[] = "0123456789abcdef";
+  for (int i = 0; i < 32; i++) {
+    out[i * 2] = hex[bytes[i] >> 4];
+    out[i * 2 + 1] = hex[bytes[i] & 0x0f];
+  }
+  out[64] = '\0';
+}
+
+void tk_needs_you_sha256_hex(char out[TK_NEEDS_YOU_HMAC_HEX_CAP],
+                             const void *data, size_t len) {
+  sha256_ctx ctx;
+  uint8_t digest[32];
+  sha256_init(&ctx);
+  if (data && len) sha256_update(&ctx, (const uint8_t *)data, len);
+  sha256_final(&ctx, digest);
+  bytes_to_hex(out, digest);
+}
+
 /* -- policy --------------------------------------------------------------- */
 
 const char *tk_needs_you_verdict_name(tk_needs_you_verdict verdict) {
@@ -208,17 +228,12 @@ int tk_needs_you_canonical_message_v2(
 
 void tk_needs_you_hmac_hex(char out[TK_NEEDS_YOU_HMAC_HEX_CAP],
                            const char *key, const char *message) {
-  static const char hex[] = "0123456789abcdef";
   uint8_t mac[32];
   const char *safe_key = key ? key : "";
   const char *safe_msg = message ? message : "";
   hmac_sha256((const uint8_t *)safe_key, strlen(safe_key),
               (const uint8_t *)safe_msg, strlen(safe_msg), mac);
-  for (int i = 0; i < 32; i++) {
-    out[i * 2] = hex[mac[i] >> 4];
-    out[i * 2 + 1] = hex[mac[i] & 0x0f];
-  }
-  out[64] = '\0';
+  bytes_to_hex(out, mac);
 }
 
 int tk_needs_you_answer_body(char *out, size_t cap, const char *verdict_name,

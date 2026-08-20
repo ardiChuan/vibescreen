@@ -613,6 +613,7 @@ class _Pending:
     view: Mapping[str, Any]
     recommended_index: Optional[int]
     view_sha256: str
+    requires_v2: bool
     project: Optional[str]
     session_key: Optional[str]
     hold_ms: int
@@ -686,9 +687,24 @@ class InteractionStore:
         """Register an interaction. None means "we cannot show this" — the
         caller returns no decision and the terminal handles it.
 
-        This is the legacy Claude boundary.  New adapters hand their validated
-        provider-neutral boundary to ``park_normalized`` instead.
+        Claude's hook input remains compatible, but a newly published panel
+        view is v2-bound exactly like Codex. ``park_legacy`` is the explicit
+        compatibility boundary for a genuine old panel payload.
         """
+        return self._park_claude(kind, event, hold_s, requires_v2=True)
+
+    def park_legacy(self, kind: str, event: Dict[str, Any],
+                    hold_s: float) -> Optional[_Pending]:
+        """Create the genuine provider/digest-free Claude v1 contract.
+
+        This explicit marker prevents stripping the v2 fields from a current
+        Claude entry from silently changing how the same stored request is
+        authenticated.
+        """
+        return self._park_claude(kind, event, hold_s, requires_v2=False)
+
+    def _park_claude(self, kind: str, event: Dict[str, Any], hold_s: float,
+                     *, requires_v2: bool) -> Optional[_Pending]:
         if kind not in KINDS or not isinstance(event, dict):
             return None
         if not _claude_event_text_is_safe(kind, event):
@@ -704,18 +720,22 @@ class InteractionStore:
             view = approval_view(event.get("tool_name"), tool_input,
                                  self._reveal)
             option_index = None
-        return self.park_normalized({
+        return self._park_normalized({
             "provider": InteractionProvider.CLAUDE.value,
             "kind": kind,
             "project": sanitize_project(cwd),
             "event": event,
             "recommended_index": option_index,
             "view": view,
-        }, hold_s)
+        }, hold_s, requires_v2=requires_v2)
 
     def park_normalized(self, normalized: Any,
                         hold_s: float) -> Optional[_Pending]:
         """Park a validated Claude/Codex boundary without publishing raw data."""
+        return self._park_normalized(normalized, hold_s, requires_v2=True)
+
+    def _park_normalized(self, normalized: Any, hold_s: float, *,
+                         requires_v2: bool) -> Optional[_Pending]:
         if not isinstance(normalized, dict):
             return None
         provider = _provider(normalized.get("provider"))
@@ -822,6 +842,7 @@ class InteractionStore:
                 view=view,
                 recommended_index=recommended,
                 view_sha256=view_digest(stable),
+                requires_v2=requires_v2,
                 project=project,
                 session_key=_session_key(session_id),
                 hold_ms=hold_ms,
@@ -908,8 +929,7 @@ class InteractionStore:
             self._sweep_locked(self._now())
             entry = self._pending.get(request_id)
         uses_v2 = provider is not None or view_sha256 is not None
-        if entry is not None and \
-                entry.provider is InteractionProvider.CODEX and \
+        if entry is not None and entry.requires_v2 and \
                 (provider is None or view_sha256 is None):
             return False, "v2 verdict required"
         if uses_v2:
@@ -923,8 +943,7 @@ class InteractionStore:
                                             entry.view_sha256)):
                 return False, "interaction binding rejected"
         else:
-            if entry is not None and \
-                    entry.provider is not InteractionProvider.CLAUDE:
+            if entry is not None and entry.requires_v2:
                 return False, "v2 verdict required"
             if not verify_answer(self._secret, request_id, verdict, ts, mac,
                                  self._wall()):
@@ -986,7 +1005,6 @@ class InteractionStore:
             entry = min(self._pending.values(),
                         key=lambda item: (item.created_at, item.request_id))
             payload = {
-                "provider": entry.provider.value,
                 "request_id": entry.request_id,
                 "project": entry.project,
                 "expires_in_ms": max(
@@ -995,8 +1013,11 @@ class InteractionStore:
                 # REAL terminal-fallback time rather than guessing a duration.
                 "hold_ms": entry.hold_ms,
             }
+            if entry.requires_v2:
+                payload["provider"] = entry.provider.value
             payload.update(entry.view)
-            payload["view_sha256"] = entry.view_sha256
+            if entry.requires_v2:
+                payload["view_sha256"] = entry.view_sha256
         payload = {key: value for key, value in payload.items()
                    if value is not None}
         encoded = len(json.dumps(payload).encode())

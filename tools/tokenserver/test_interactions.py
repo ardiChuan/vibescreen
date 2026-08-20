@@ -263,7 +263,7 @@ class SignatureTests(unittest.TestCase):
             1000.0 + interactions.FRESHNESS_S + 1))
 
 
-class StoreTests(unittest.TestCase):
+class ProviderStoreTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.wall = Clock(50_000.0)
@@ -275,9 +275,13 @@ class StoreTests(unittest.TestCase):
 
     def answer(self, request_id, verdict="approve"):
         stamp = int(self.wall())
-        return self.store.resolve(request_id, verdict, stamp,
-                                  sign_answer(SECRET, request_id, verdict,
-                                              stamp))
+        entry = self.store._pending[request_id]
+        mac = interactions.sign_answer_v2(
+            SECRET, entry.provider.value, request_id, entry.view_sha256,
+            verdict, stamp)
+        return self.store.resolve(
+            request_id, verdict, stamp, mac, provider=entry.provider.value,
+            view_sha256=entry.view_sha256)
 
     def test_park_publish_resolve_round_trip(self):
         entry = self.store.park("question", question_event(), 120)
@@ -373,10 +377,13 @@ class StoreTests(unittest.TestCase):
         terminal = store.park("approval", approval_event(), 120)
         seen.add(terminal.request_id)
         stamp = int(self.wall())
-        terminal_mac = sign_answer(
-            SECRET, terminal.request_id, "deny", stamp)
+        terminal_mac = interactions.sign_answer_v2(
+            SECRET, "claude", terminal.request_id, terminal.view_sha256,
+            "deny", stamp)
         self.assertEqual(store.resolve(
-            terminal.request_id, "deny", stamp, terminal_mac), (True, "ok"))
+            terminal.request_id, "deny", stamp, terminal_mac,
+            provider="claude", view_sha256=terminal.view_sha256),
+            (True, "ok"))
 
         for _ in range(history_limit * 3):
             entry = store.park("approval", approval_event(), 120)
@@ -384,9 +391,13 @@ class StoreTests(unittest.TestCase):
             self.assertNotIn(entry.request_id, seen)
             seen.add(entry.request_id)
             stamp = int(self.wall())
-            mac = sign_answer(SECRET, entry.request_id, "deny", stamp)
+            mac = interactions.sign_answer_v2(
+                SECRET, "claude", entry.request_id, entry.view_sha256,
+                "deny", stamp)
             self.assertEqual(
-                store.resolve(entry.request_id, "deny", stamp, mac),
+                store.resolve(
+                    entry.request_id, "deny", stamp, mac,
+                    provider="claude", view_sha256=entry.view_sha256),
                 (True, "ok"))
             self.assertIsNotNone(store.await_verdict(entry))
 
@@ -402,13 +413,36 @@ class StoreTests(unittest.TestCase):
 
     def test_v1_claude_compatibility_returns_the_exact_hook_shape(self):
         event = approval_event()
-        entry = self.store.park("approval", event, 120)
+        entry = self.store.park_legacy("approval", event, 120)
 
-        ok, reason = self.answer(entry.request_id, "approve")
+        public = self.store.pending_public()
+        self.assertNotIn("provider", public)
+        self.assertNotIn("view_sha256", public)
+
+        stamp = int(self.wall())
+        mac = sign_answer(SECRET, entry.request_id, "approve", stamp)
+        ok, reason = self.store.resolve(
+            entry.request_id, "approve", stamp, mac)
 
         self.assertEqual((ok, reason), (True, "ok"))
         self.assertEqual(self.store.await_verdict(entry),
                          hook_response("approval", "approve", event))
+
+    def test_new_claude_entry_cannot_be_resolved_by_stripping_v2_binding(self):
+        entry = self.store.park("approval", approval_event(), 120)
+        shown = self.store.pending_public()
+        self.assertEqual(shown["provider"], "claude")
+        self.assertEqual(shown["view_sha256"], entry.view_sha256)
+
+        stamp = int(self.wall())
+        stripped_mac = sign_answer(
+            SECRET, entry.request_id, "approve", stamp)
+        ok, reason = self.store.resolve(
+            entry.request_id, "approve", stamp, stripped_mac)
+
+        self.assertEqual((ok, reason), (False, "v2 verdict required"))
+        self.assertEqual(self.store.pending_public()["request_id"],
+                         entry.request_id)
 
     def test_hold_ms_is_the_original_duration_for_the_ring(self):
         # The countdown ring needs the original hold, not just the remaining
@@ -465,7 +499,13 @@ class StoreTests(unittest.TestCase):
         second = self.store.park("approval", approval_event(), 120)
         # The device re-sends the first tap (flaky WiFi). It must not resolve
         # the approval now on screen.
-        ok, reason = self.answer(first.request_id)
+        stamp = int(self.wall())
+        mac = interactions.sign_answer_v2(
+            SECRET, "claude", first.request_id, first.view_sha256,
+            "approve", stamp)
+        ok, reason = self.store.resolve(
+            first.request_id, "approve", stamp, mac, provider="claude",
+            view_sha256=first.view_sha256)
         self.assertFalse(ok)
         self.assertIn("no such pending", reason)
         self.assertIsNotNone(self.store.pending_public())
@@ -483,10 +523,13 @@ class StoreTests(unittest.TestCase):
         entry = self.store.park("approval", approval_event(), 120)
         stamp = int(self.wall())
         ok, reason = self.store.resolve(entry.request_id, "approve", stamp,
-                                        "0" * 64)
+                                        "0" * 64, provider="claude",
+                                        view_sha256=entry.view_sha256)
         self.assertFalse(ok)
         self.assertEqual(reason, "signature rejected")
-        ok, _ = self.store.resolve(entry.request_id, "approve", stamp, None)
+        ok, _ = self.store.resolve(
+            entry.request_id, "approve", stamp, None, provider="claude",
+            view_sha256=entry.view_sha256)
         self.assertFalse(ok)
         # ...and the interaction is still pending, not consumed by the attempt
         self.assertIsNotNone(self.store.pending_public())
@@ -494,10 +537,13 @@ class StoreTests(unittest.TestCase):
     def test_replay_outside_the_freshness_window_is_refused(self):
         entry = self.store.park("approval", approval_event(), 600)
         stamp = int(self.wall())
-        mac = sign_answer(SECRET, entry.request_id, "approve", stamp)
+        mac = interactions.sign_answer_v2(
+            SECRET, "claude", entry.request_id, entry.view_sha256,
+            "approve", stamp)
         self.wall.advance(interactions.FRESHNESS_S + 5)
-        ok, reason = self.store.resolve(entry.request_id, "approve", stamp,
-                                        mac)
+        ok, reason = self.store.resolve(
+            entry.request_id, "approve", stamp, mac, provider="claude",
+            view_sha256=entry.view_sha256)
         self.assertFalse(ok)
         self.assertEqual(reason, "signature rejected")
 
@@ -810,9 +856,12 @@ class AbandonedHookTests(unittest.TestCase):
         thread.start()
         time.sleep(0.05)
         stamp = int(time.time())
+        mac = interactions.sign_answer_v2(
+            SECRET, "claude", entry.request_id, entry.view_sha256,
+            "approve", stamp)
         ok, _ = self.store.resolve(
-            entry.request_id, "approve", stamp,
-            sign_answer(SECRET, entry.request_id, "approve", stamp))
+            entry.request_id, "approve", stamp, mac, provider="claude",
+            view_sha256=entry.view_sha256)
         self.assertTrue(ok)
         thread.join(timeout=5)
         self.assertEqual(
@@ -920,11 +969,16 @@ class HttpEndToEndTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail("the interaction never reached /api/agent-status")
 
-    def answer(self, request_id, verdict="approve"):
+    def answer(self, shown, verdict="approve"):
+        request_id = shown["request_id"]
         stamp = int(time.time())
+        mac = interactions.sign_answer_v2(
+            SECRET, shown["provider"], request_id, shown["view_sha256"],
+            verdict, stamp)
         return self.request("POST", f"/api/interaction/{request_id}", {
-            "verdict": verdict, "ts": stamp,
-            "hmac": sign_answer(SECRET, request_id, verdict, stamp)})
+            "provider": shown["provider"],
+            "view_sha256": shown["view_sha256"],
+            "verdict": verdict, "ts": stamp, "hmac": mac})
 
     def test_question_travels_claude_to_device_to_claude(self):
         result = {}
@@ -946,7 +1000,7 @@ class HttpEndToEndTests(unittest.TestCase):
         thread.join(timeout=0.3)
         self.assertTrue(thread.is_alive())
 
-        status, raw = self.answer(shown["request_id"])
+        status, raw = self.answer(shown)
         self.assertEqual(status, 200)
         self.assertTrue(json.loads(raw)["ok"])
 
@@ -973,7 +1027,7 @@ class HttpEndToEndTests(unittest.TestCase):
         shown = self.wait_for_pending()
         self.assertEqual(shown["kind"], "approval")
         self.assertEqual(shown["title"], "npm test")
-        self.answer(shown["request_id"], "approve")
+        self.answer(shown, "approve")
         thread.join(timeout=10)
         self.assertEqual(
             json.loads(result["raw"])["hookSpecificOutput"]["decision"],

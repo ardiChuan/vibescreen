@@ -50,25 +50,25 @@ int main(void) {
   check("v2 canonical bytes",
         tk_needs_you_canonical_message_v2(
             message, sizeof message, "codex", "ABEiM0RVZneImaq7zN3u_w",
-            "9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a",
+            "df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d",
             "approve", 1787097720ULL) > 0);
   expect("v2 canonical exact", message,
          "v2|codex|ABEiM0RVZneImaq7zN3u_w|"
-         "9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a|"
+         "df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d|"
          "approve|1787097720");
   tk_needs_you_hmac_hex(mac, key64, message);
   expect("v2 Python cross-vector", mac,
-         "eeaae64073b070863e3833a1483e24bd41e2da5aa1849ef8663798c32401c6a8");
+         "49357b233c81c9979606a52b94aaab578c18fc95c16d0037949b1018c298bbbf");
   check("v2 body length",
         tk_needs_you_answer_body_v2(
             body, sizeof body, "codex",
-            "9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a",
+            "df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d",
             "approve", 1787097720ULL, mac) > 0);
   expect("v2 body exact", body,
          "{\"provider\":\"codex\",\"view_sha256\":"
-         "\"9f4f6ec7a3519df610be969b66100fc0fefbe53a54cc59a82fb49dc70ba6e22a\","
+         "\"df55d0b8c9bcccae1eab3d28b985f696b27422f368358169248a4b797991a38d\","
          "\"verdict\":\"approve\",\"ts\":1787097720,\"hmac\":"
-         "\"eeaae64073b070863e3833a1483e24bd41e2da5aa1849ef8663798c32401c6a8\"}");
+         "\"49357b233c81c9979606a52b94aaab578c18fc95c16d0037949b1018c298bbbf\"}");
 
   /* HMAC vectors — byte-for-byte with interactions.sign_answer("a"*64, ...). */
   tk_needs_you_hmac_hex(mac, key64, "abc|approve|1000");
