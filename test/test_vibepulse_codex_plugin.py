@@ -362,6 +362,7 @@ def healthy_diagnostics():
             "codex": True,
             "detail": False,
             "legacyClaudePanelV1": False,
+            "relay": {"status": "off"},
             "transport": "lan",
         },
     }).encode()
@@ -1298,17 +1299,26 @@ class SetupPlanTests(unittest.TestCase):
         setup = load_setup()
         saved = setup.VibePulseConfig(
             claude_interactions=True, codex_interactions=True,
-            interaction_detail=True, legacy_claude_panel_v1=True)
+            interaction_detail=True, legacy_claude_panel_v1=True,
+            interaction_relay=True,
+            interaction_relay_url="https://relay.example",
+            interaction_mailbox="vp_A1b2C3d4E5f6G7h8")
 
         self.assertEqual(
             setup._disabled_config(saved, "codex"),
             setup.VibePulseConfig(
                 claude_interactions=True, interaction_detail=True,
-                legacy_claude_panel_v1=True))
+                legacy_claude_panel_v1=True,
+                interaction_relay=True,
+                interaction_relay_url="https://relay.example",
+                interaction_mailbox="vp_A1b2C3d4E5f6G7h8"))
         self.assertEqual(
             setup._disabled_config(saved, "claude"),
             setup.VibePulseConfig(
-                codex_interactions=True, interaction_detail=True))
+                codex_interactions=True, interaction_detail=True,
+                interaction_relay=True,
+                interaction_relay_url="https://relay.example",
+                interaction_mailbox="vp_A1b2C3d4E5f6G7h8"))
 
     def test_setup_help_exposes_explicit_legacy_claude_opt_in_and_opt_out(self):
         setup = load_setup()
@@ -1318,6 +1328,14 @@ class SetupPlanTests(unittest.TestCase):
         self.assertIn("--legacy-claude-panel-v1", help_text)
         self.assertIn("--no-legacy-claude-panel-v1", help_text)
         self.assertIn("insecure", help_text.lower())
+
+    def test_setup_exposes_explicit_relay_lifecycle(self):
+        setup = load_setup()
+        choices = setup._parser()._subparsers._group_actions[0].choices
+        self.assertIn("relay", choices)
+        relay_choices = choices["relay"]._subparsers._group_actions[0].choices
+        self.assertEqual(set(relay_choices), {
+            "install", "status", "doctor", "disable", "uninstall"})
 
     def test_install_plan_is_exact_and_paths_with_spaces_stay_one_argv(self):
         setup = load_setup()
@@ -1478,8 +1496,326 @@ class SetupPlanTests(unittest.TestCase):
                 ["status"], config_path=path, stdout=output), 0)
             self.assertEqual(output.getvalue().splitlines(), [
                 "Claude: ON", "Codex: OFF", "Detail: ON",
-                "Legacy Claude panel v1: OFF"])
+                "Legacy Claude panel v1: OFF",
+                "Interaction relay: OFF"])
             self.assertNotIn("key", output.getvalue().lower())
+
+
+class RelaySetupTests(unittest.TestCase):
+    URL = "https://vibepulse-relay.example"
+    MAILBOX_SUFFIX = "A1b2C3d4E5f6G7h8"
+    MAC_TOKEN = "ERERERERERERERERERERERERERERERERERERERERERE"
+    PANEL_TOKEN = "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI"
+    DEVICE_KEY = "ab" * 32
+
+    def make_paths(self, root):
+        root = Path(root)
+        config = root / "state/config.json"
+        token = root / "home/.vibepulse-interaction-relay-token"
+        secrets = root / "repo/secrets.h"
+        service = root / "repo/tools/interaction-relay"
+        wrangler = service / "node_modules/.bin/wrangler"
+        wrangler.parent.mkdir(parents=True)
+        wrangler.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+        wrangler.chmod(0o700)
+        secrets.parent.mkdir(parents=True, exist_ok=True)
+        secrets.write_text(
+            '#define TK_VIBEPULSE_DEVICE_KEY "' + self.DEVICE_KEY + '"\n'
+            '#define UNRELATED_SETTING "keep-me"\n', encoding="utf-8")
+        return config, token, secrets, service, wrangler
+
+    def random_values(self):
+        values = iter((self.MAILBOX_SUFFIX,
+                       self.MAC_TOKEN, self.PANEL_TOKEN))
+
+        def generate(_size):
+            return next(values)
+        return generate
+
+    def test_relay_install_uses_private_ephemeral_secrets_and_never_prints(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory(prefix="relay-setup-") as tmp:
+            config, token, secrets_h, service, wrangler = \
+                self.make_paths(tmp)
+            setup.save_config(config, setup.VibePulseConfig(
+                claude_interactions=True, interaction_detail=True))
+            observed = {}
+
+            def run(argv, **kwargs):
+                self.assertFalse(kwargs["shell"])
+                if "bulk" in argv:
+                    secret_file = Path(argv[-1])
+                    observed["secret_path"] = secret_file
+                    observed["secret_mode"] = (
+                        secret_file.stat().st_mode & 0o777)
+                    observed["secret_payload"] = json.loads(
+                        secret_file.read_text(encoding="utf-8"))
+                observed.setdefault("calls", []).append(argv)
+                return result()
+
+            output = io.StringIO()
+            code = setup.main(
+                ["relay", "install", "--url", self.URL,
+                 "--yes-e2e-cloud"],
+                config_path=config, relay_token_path=token,
+                secrets_path=secrets_h, interaction_relay_dir=service,
+                token_urlsafe=self.random_values(), run=run,
+                stdout=output, stdin_isatty=False)
+
+            self.assertEqual(code, 0, output.getvalue())
+            saved = setup.load_config(config)
+            self.assertTrue(saved.interaction_relay)
+            self.assertEqual(saved.interaction_relay_url, self.URL)
+            self.assertEqual(
+                saved.interaction_mailbox, "vp_" + self.MAILBOX_SUFFIX)
+            self.assertEqual(token.read_text(encoding="ascii"),
+                             self.MAC_TOKEN + "\n")
+            if os.name == "posix":
+                self.assertEqual(token.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(observed["secret_mode"], 0o600)
+            self.assertEqual(observed["secret_payload"], {
+                "MAC_TOKEN": self.MAC_TOKEN,
+                "PANEL_TOKEN": self.PANEL_TOKEN,
+            })
+            self.assertFalse(observed["secret_path"].exists())
+            self.assertEqual(observed["calls"], [
+                [str(wrangler), "--cwd", str(service), "secret", "bulk",
+                 str(observed["secret_path"])],
+                [str(wrangler), "--cwd", str(service), "deploy", "--var",
+                 "MAILBOX_ID:vp_" + self.MAILBOX_SUFFIX],
+            ])
+            contents = secrets_h.read_text(encoding="utf-8")
+            self.assertIn('UNRELATED_SETTING "keep-me"', contents)
+            self.assertIn("VIBEPULSE INTERACTION RELAY BEGIN", contents)
+            self.assertIn(self.PANEL_TOKEN, contents)
+            backup = config.parent / "secrets.h.before-interaction-relay"
+            self.assertTrue(backup.exists())
+            self.assertNotIn(self.MAC_TOKEN, output.getvalue())
+            self.assertNotIn(self.PANEL_TOKEN, output.getvalue())
+
+    def test_relay_install_requires_explicit_consent_provider_detail_and_key(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory(prefix="relay-consent-") as tmp:
+            config, token, secrets_h, service, _wrangler = \
+                self.make_paths(tmp)
+            cases = (
+                (setup.VibePulseConfig(
+                    claude_interactions=True, interaction_detail=True),
+                 ["relay", "install", "--url", self.URL], "consent"),
+                (setup.VibePulseConfig(interaction_detail=True),
+                 ["relay", "install", "--url", self.URL,
+                  "--yes-e2e-cloud"], "provider"),
+                (setup.VibePulseConfig(claude_interactions=True),
+                 ["relay", "install", "--url", self.URL,
+                  "--yes-e2e-cloud"], "detail"),
+            )
+            for saved, argv, word in cases:
+                with self.subTest(word=word):
+                    setup.save_config(config, saved)
+                    out = io.StringIO()
+                    self.assertEqual(setup.main(
+                        argv, config_path=config, relay_token_path=token,
+                        secrets_path=secrets_h,
+                        interaction_relay_dir=service,
+                        token_urlsafe=self.random_values(),
+                        run=FakeRunner(), stdout=out,
+                        stdin_isatty=False), 1)
+                    self.assertIn(word, out.getvalue().lower())
+                    self.assertEqual(setup.load_config(config), saved)
+
+            setup.save_config(config, setup.VibePulseConfig(
+                claude_interactions=True, interaction_detail=True))
+            secrets_h.write_text(
+                '#define UNRELATED_SETTING "keep-me"\n', encoding="utf-8")
+            out = io.StringIO()
+            self.assertEqual(setup.main(
+                ["relay", "install", "--url", self.URL,
+                 "--yes-e2e-cloud"], config_path=config,
+                relay_token_path=token, secrets_path=secrets_h,
+                interaction_relay_dir=service,
+                token_urlsafe=self.random_values(), run=FakeRunner(),
+                stdout=out, stdin_isatty=False), 1)
+            self.assertIn("device key", out.getvalue().lower())
+
+    def test_relay_disable_and_uninstall_preserve_every_unrelated_setting(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory(prefix="relay-remove-") as tmp:
+            config, token, secrets_h, service, wrangler = \
+                self.make_paths(tmp)
+            original = setup.VibePulseConfig(
+                claude_interactions=True, codex_interactions=True,
+                interaction_detail=True, legacy_claude_panel_v1=True,
+                interaction_relay=True,
+                interaction_relay_url=self.URL,
+                interaction_mailbox="vp_" + self.MAILBOX_SUFFIX)
+            setup.save_config(config, original)
+            token.parent.mkdir(parents=True)
+            token.write_text(self.MAC_TOKEN + "\n", encoding="ascii")
+            token.chmod(0o600)
+            secrets_h.write_text(
+                secrets_h.read_text(encoding="utf-8") +
+                setup._relay_secrets_block(
+                    self.URL, "vp_" + self.MAILBOX_SUFFIX,
+                    self.PANEL_TOKEN), encoding="utf-8")
+
+            self.assertEqual(setup.main(
+                ["relay", "disable"], config_path=config,
+                relay_token_path=token, secrets_path=secrets_h,
+                interaction_relay_dir=service,
+                stdout=io.StringIO()), 0)
+            disabled = setup.load_config(config)
+            self.assertFalse(disabled.interaction_relay)
+            self.assertEqual(disabled.interaction_relay_url, self.URL)
+            self.assertTrue(token.exists())
+            self.assertIn(self.PANEL_TOKEN,
+                          secrets_h.read_text(encoding="utf-8"))
+
+            setup.save_config(config, original)
+            runner = FakeRunner([result()])
+            output = io.StringIO()
+            self.assertEqual(setup.main(
+                ["relay", "uninstall", "--delete-worker"],
+                config_path=config, relay_token_path=token,
+                secrets_path=secrets_h, interaction_relay_dir=service,
+                run=runner, stdout=output, stdin_isatty=False), 0)
+            self.assertEqual(runner.calls[0][0], [
+                str(wrangler), "--cwd", str(service), "delete", "--force"])
+            self.assertEqual(setup.load_config(config), setup.VibePulseConfig(
+                claude_interactions=True, codex_interactions=True,
+                interaction_detail=True, legacy_claude_panel_v1=True))
+            self.assertFalse(token.exists())
+            contents = secrets_h.read_text(encoding="utf-8")
+            self.assertIn('UNRELATED_SETTING "keep-me"', contents)
+            self.assertNotIn("VIBEPULSE INTERACTION RELAY", contents)
+            self.assertNotIn(self.MAC_TOKEN, output.getvalue())
+            self.assertNotIn(self.PANEL_TOKEN, output.getvalue())
+
+    def test_relay_install_refuses_preexisting_credential_artifacts(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory(prefix="relay-existing-") as tmp:
+            config, token, secrets_h, service, _wrangler = \
+                self.make_paths(tmp)
+            saved = setup.VibePulseConfig(
+                claude_interactions=True, interaction_detail=True)
+            setup.save_config(config, saved)
+            token.parent.mkdir(parents=True)
+            token.write_text(self.MAC_TOKEN + "\n", encoding="ascii")
+            token.chmod(0o600)
+            before = token.read_bytes()
+            runner = FakeRunner()
+            output = io.StringIO()
+
+            self.assertEqual(setup.main(
+                ["relay", "install", "--url", self.URL,
+                 "--yes-e2e-cloud"], config_path=config,
+                relay_token_path=token, secrets_path=secrets_h,
+                interaction_relay_dir=service,
+                token_urlsafe=self.random_values(), run=runner,
+                stdout=output, stdin_isatty=False), 1)
+            self.assertEqual(token.read_bytes(), before)
+            self.assertEqual(setup.load_config(config), saved)
+            self.assertEqual(runner.calls, [])
+            self.assertIn("existing", output.getvalue().lower())
+
+    def test_relay_install_refuses_preexisting_panel_block(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory(prefix="relay-existing-block-") as tmp:
+            config, token, secrets_h, service, _wrangler = \
+                self.make_paths(tmp)
+            saved = setup.VibePulseConfig(
+                claude_interactions=True, interaction_detail=True)
+            setup.save_config(config, saved)
+            secrets_h.write_text(
+                secrets_h.read_text(encoding="utf-8") +
+                setup._relay_secrets_block(
+                    self.URL, "vp_" + self.MAILBOX_SUFFIX,
+                    self.PANEL_TOKEN), encoding="utf-8")
+            before = secrets_h.read_bytes()
+            runner = FakeRunner()
+            output = io.StringIO()
+
+            self.assertEqual(setup.main(
+                ["relay", "install", "--url", self.URL,
+                 "--yes-e2e-cloud"], config_path=config,
+                relay_token_path=token, secrets_path=secrets_h,
+                interaction_relay_dir=service,
+                token_urlsafe=self.random_values(), run=runner,
+                stdout=output, stdin_isatty=False), 1)
+            self.assertEqual(secrets_h.read_bytes(), before)
+            self.assertFalse(token.exists())
+            self.assertEqual(setup.load_config(config), saved)
+            self.assertEqual(runner.calls, [])
+            self.assertIn("existing", output.getvalue().lower())
+
+    def test_relay_uninstall_fails_closed_on_unreadable_secrets(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory(prefix="relay-bad-secrets-") as tmp:
+            config, token, secrets_h, service, _wrangler = \
+                self.make_paths(tmp)
+            saved = setup.VibePulseConfig(
+                claude_interactions=True, interaction_detail=True,
+                interaction_relay=True,
+                interaction_relay_url=self.URL,
+                interaction_mailbox="vp_" + self.MAILBOX_SUFFIX)
+            setup.save_config(config, saved)
+            secrets_h.unlink()
+            secrets_h.mkdir()
+            output = io.StringIO()
+
+            self.assertEqual(setup.main(
+                ["relay", "uninstall", "--keep-worker"],
+                config_path=config, relay_token_path=token,
+                secrets_path=secrets_h,
+                interaction_relay_dir=service, stdout=output,
+                stdin_isatty=False), 1)
+            self.assertTrue(secrets_h.is_dir())
+            self.assertEqual(setup.load_config(config), saved)
+            self.assertIn("could not safely", output.getvalue().lower())
+
+    def test_relay_block_parser_rejects_reversed_markers(self):
+        setup = load_setup()
+        malformed = (
+            setup._RELAY_BLOCK_END + "\n" +
+            setup._RELAY_BLOCK_BEGIN + "\n")
+        with self.assertRaises(setup.ConfigError):
+            setup._without_relay_block(malformed)
+
+    def test_relay_status_and_doctor_are_read_only_and_secret_free(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory(prefix="relay-doctor-") as tmp:
+            config, token, secrets_h, service, _wrangler = \
+                self.make_paths(tmp)
+            saved = setup.VibePulseConfig(
+                claude_interactions=True, interaction_detail=True,
+                interaction_relay=True,
+                interaction_relay_url=self.URL,
+                interaction_mailbox="vp_" + self.MAILBOX_SUFFIX)
+            setup.save_config(config, saved)
+            token.parent.mkdir(parents=True)
+            token.write_text(self.MAC_TOKEN + "\n", encoding="ascii")
+            token.chmod(0o600)
+            secrets_h.write_text(
+                secrets_h.read_text(encoding="utf-8") +
+                setup._relay_secrets_block(
+                    self.URL, "vp_" + self.MAILBOX_SUFFIX,
+                    self.PANEL_TOKEN), encoding="utf-8")
+            snapshots = (config.read_bytes(), token.read_bytes(),
+                         secrets_h.read_bytes())
+
+            for command in ("status", "doctor"):
+                with self.subTest(command=command):
+                    output = io.StringIO()
+                    self.assertEqual(setup.main(
+                        ["relay", command], config_path=config,
+                        relay_token_path=token, secrets_path=secrets_h,
+                        interaction_relay_dir=service,
+                        stdout=output), 0)
+                    text = output.getvalue()
+                    self.assertNotIn(self.MAC_TOKEN, text)
+                    self.assertNotIn(self.PANEL_TOKEN, text)
+            self.assertEqual(
+                (config.read_bytes(), token.read_bytes(),
+                 secrets_h.read_bytes()), snapshots)
 
     def test_doctor_uses_exact_json_evidence_and_never_claims_hook_trust(self):
         setup = load_setup()
@@ -1502,6 +1838,7 @@ class SetupPlanTests(unittest.TestCase):
                     "interactions": {"claude": False, "codex": True,
                                      "detail": False,
                                      "legacyClaudePanelV1": False,
+                                     "relay": {"status": "off"},
                                      "transport": "lan"},
                     "secret": secret,
                 }).encode()
@@ -1562,7 +1899,8 @@ class SetupPlanTests(unittest.TestCase):
                 "service": "torget-tokenserver",
                 "interactions": {
                     "claude": True, "codex": False, "detail": False,
-                    "legacyClaudePanelV1": True, "transport": "lan",
+                    "legacyClaudePanelV1": True,
+                    "relay": {"status": "off"}, "transport": "lan",
                 },
             }).encode())
             output = io.StringIO()

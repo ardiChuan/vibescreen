@@ -4,16 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import selectors
 import signal
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Callable, Sequence
@@ -42,6 +46,10 @@ COMMAND_TIMEOUT_SECONDS = 15
 NETWORK_TIMEOUT_SECONDS = 2
 PIPE_JOIN_TIMEOUT_SECONDS = 1
 _AUTO = object()
+_RELAY_BLOCK_BEGIN = "/* VIBEPULSE INTERACTION RELAY BEGIN */"
+_RELAY_BLOCK_END = "/* VIBEPULSE INTERACTION RELAY END */"
+_MAILBOX_RE = re.compile(r"vp_[A-Za-z0-9_-]{16}\Z")
+_BEARER_RE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 
 _KNOWN_ABSENT = {
     ("plugin", "marketplace", "remove", "torget"): re.compile(
@@ -151,6 +159,36 @@ def _parser() -> argparse.ArgumentParser:
     uninstall = commands.add_parser(
         "uninstall", help="remove only the selected Codex integration")
     uninstall.add_argument("target", choices=("codex",))
+
+    relay = commands.add_parser(
+        "relay", help="manage the optional encrypted interaction relay")
+    relay_commands = relay.add_subparsers(
+        dest="relay_command", required=True)
+    relay_install = relay_commands.add_parser(
+        "install", help="deploy and opt in to the E2E cloud mailbox")
+    relay_install.add_argument(
+        "--url", required=True, metavar="HTTPS_ORIGIN",
+        help="public HTTPS origin of this user-owned Worker")
+    relay_install.add_argument(
+        "--yes-e2e-cloud", action="store_true",
+        help="confirm that bounded encrypted panel views and verdicts may "
+             "cross the user-owned cloud mailbox")
+    relay_commands.add_parser(
+        "status", help="show relay switch and local credential readiness")
+    relay_commands.add_parser(
+        "doctor", help="validate relay setup without changing anything")
+    relay_commands.add_parser(
+        "disable", help="turn off relay traffic but keep its credentials")
+    relay_uninstall = relay_commands.add_parser(
+        "uninstall", help="remove only encrypted-relay settings")
+    worker = relay_uninstall.add_mutually_exclusive_group()
+    worker.add_argument(
+        "--delete-worker", action="store_true", dest="delete_worker",
+        help="also delete the user-owned Cloudflare Worker")
+    worker.add_argument(
+        "--keep-worker", action="store_false", dest="delete_worker",
+        help="leave the Cloudflare Worker deployed")
+    relay_uninstall.set_defaults(delete_worker=None)
     return parser
 
 
@@ -177,13 +215,18 @@ def _interactive_detail(input_fn: Callable[[str], str]) -> bool:
 
 
 def _chosen_config(providers: str, detail: bool,
-                   legacy_claude_panel_v1: bool = False) -> VibePulseConfig:
+                   legacy_claude_panel_v1: bool = False,
+                   saved: VibePulseConfig | None = None) -> VibePulseConfig:
+    saved = VibePulseConfig() if saved is None else saved
     return VibePulseConfig(
         claude_interactions=providers in {"claude", "both"},
         codex_interactions=providers in {"codex", "both"},
         interaction_detail=detail,
         legacy_claude_panel_v1=(legacy_claude_panel_v1 and
                                 providers in {"claude", "both"}),
+        interaction_relay=saved.interaction_relay,
+        interaction_relay_url=saved.interaction_relay_url,
+        interaction_mailbox=saved.interaction_mailbox,
     )
 
 
@@ -196,6 +239,9 @@ def _disabled_config(saved: VibePulseConfig, target: str) -> VibePulseConfig:
         interaction_detail=saved.interaction_detail,
         legacy_claude_panel_v1=(saved.legacy_claude_panel_v1
                                 if target == "codex" else False),
+        interaction_relay=saved.interaction_relay,
+        interaction_relay_url=saved.interaction_relay_url,
+        interaction_mailbox=saved.interaction_mailbox,
     )
 
 
@@ -203,6 +249,178 @@ def _disable(path: Path, target: str) -> None:
     with config_lock(path):
         saved = load_config(path)
         save_config(path, _disabled_config(saved, target))
+
+
+def _relay_config(saved: VibePulseConfig, *, enabled: bool,
+                  url=None, mailbox=None, clear=False) -> VibePulseConfig:
+    return VibePulseConfig(
+        claude_interactions=saved.claude_interactions,
+        codex_interactions=saved.codex_interactions,
+        interaction_detail=saved.interaction_detail,
+        legacy_claude_panel_v1=saved.legacy_claude_panel_v1,
+        interaction_relay=enabled,
+        interaction_relay_url=(None if clear else
+                               (saved.interaction_relay_url
+                                if url is None else url)),
+        interaction_mailbox=(None if clear else
+                             (saved.interaction_mailbox
+                              if mailbox is None else mailbox)),
+    )
+
+
+def _valid_bearer(value: str) -> bool:
+    if not isinstance(value, str) or _BEARER_RE.fullmatch(value) is None:
+        return False
+    try:
+        decoded = base64.b64decode(
+            value + "=", altchars=b"-_", validate=True)
+    except (ValueError, TypeError):
+        return False
+    return (len(decoded) == 32 and
+            base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii") ==
+            value)
+
+
+def _relay_secrets_block(url: str, mailbox: str, panel_token: str) -> str:
+    # VibePulseConfig validates the public values; the token validator keeps
+    # quote/backslash/newline characters out of this C-string boundary.
+    VibePulseConfig(
+        interaction_relay_url=url, interaction_mailbox=mailbox)
+    if not _valid_bearer(panel_token):
+        raise ConfigError("invalid panel relay token")
+    return (
+        f"{_RELAY_BLOCK_BEGIN}\n"
+        f'#define TK_VIBEPULSE_INTERACTION_RELAY_URL "{url}"\n'
+        f'#define TK_VIBEPULSE_INTERACTION_MAILBOX "{mailbox}"\n'
+        f'#define TK_VIBEPULSE_INTERACTION_PANEL_TOKEN "{panel_token}"\n'
+        f"{_RELAY_BLOCK_END}\n"
+    )
+
+
+def _without_relay_block(text: str) -> str:
+    if not isinstance(text, str):
+        raise ConfigError("secrets.h must be UTF-8 text")
+    begin_count = text.count(_RELAY_BLOCK_BEGIN)
+    end_count = text.count(_RELAY_BLOCK_END)
+    if begin_count == 0 and end_count == 0:
+        return text
+    if begin_count != 1 or end_count != 1:
+        raise ConfigError("secrets.h has a malformed relay block")
+    start = text.index(_RELAY_BLOCK_BEGIN)
+    end_start = text.index(_RELAY_BLOCK_END)
+    if end_start < start:
+        raise ConfigError("secrets.h has a malformed relay block")
+    end = end_start + len(_RELAY_BLOCK_END)
+    if end < len(text) and text[end] == "\n":
+        end += 1
+    return text[:start] + text[end:]
+
+
+def _with_relay_block(text: str, block: str) -> str:
+    base = _without_relay_block(text)
+    if base and not base.endswith("\n"):
+        base += "\n"
+    return base + block
+
+
+def _read_small_regular(path: Path, limit: int = 64 * 1024) -> bytes:
+    path = Path(path)
+    try:
+        before = os.lstat(path)
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise ConfigError("path must be a regular non-symlink file")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | \
+            getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(path, flags)
+        try:
+            descriptor = os.fstat(fd)
+            after = os.lstat(path)
+            if (not stat.S_ISREG(descriptor.st_mode) or
+                    stat.S_ISLNK(after.st_mode) or
+                    not os.path.samestat(before, descriptor) or
+                    not os.path.samestat(descriptor, after)):
+                raise ConfigError("path changed while opening")
+            value = os.read(fd, limit + 1)
+        finally:
+            os.close(fd)
+    except FileNotFoundError:
+        raise
+    except ConfigError:
+        raise
+    except OSError as exc:
+        raise ConfigError("cannot read private setup file") from exc
+    if len(value) > limit:
+        raise ConfigError("private setup file is too large")
+    return value
+
+
+def _atomic_private_write(path: Path, payload: bytes) -> None:
+    path = Path(path)
+    if not isinstance(payload, bytes):
+        raise ConfigError("private payload must be bytes")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name == "posix":
+        os.chmod(path.parent, 0o700)
+    try:
+        existing = os.lstat(path)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and stat.S_ISLNK(existing.st_mode):
+        raise ConfigError("private destination must not be a symlink")
+    temporary = None
+    try:
+        fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        temporary = Path(name)
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        os.replace(temporary, path)
+        temporary = None
+        if os.name == "posix":
+            os.chmod(path, 0o600)
+    except OSError as exc:
+        raise ConfigError("cannot save private setup file") from exc
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+
+def _device_key_from_secrets(text: str) -> str | None:
+    values = re.findall(
+        r'^\s*#\s*define\s+TK_VIBEPULSE_DEVICE_KEY\s+"([^"]*)"\s*$',
+        text, flags=re.MULTILINE)
+    if len(values) != 1 or re.fullmatch(
+            r"[0-9A-Fa-f]{64}", values[0]) is None:
+        return None
+    return values[0]
+
+
+def _wrangler_path(service_dir: Path) -> Path | None:
+    service = Path(service_dir)
+    candidate = service / "node_modules" / ".bin" / (
+        "wrangler.cmd" if os.name == "nt" else "wrangler")
+    try:
+        service_root = service.resolve(strict=True)
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(service_root / "node_modules")
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return candidate
 
 
 def _known_absent(argv: Sequence[str], stderr: str) -> bool:
@@ -504,6 +722,295 @@ def _invoke(argv: Sequence[str], run) -> _CommandResult | None:
     return _CommandResult(returncode, stdout, stderr)
 
 
+def _private_relay_token(path: Path) -> str | None:
+    try:
+        before = os.lstat(path)
+        if os.name == "posix" and stat.S_IMODE(before.st_mode) != 0o600:
+            return None
+        raw = _read_small_regular(path, 256)
+    except (FileNotFoundError, ConfigError, OSError):
+        return None
+    if raw.endswith(b"\n"):
+        raw = raw[:-1]
+    try:
+        value = raw.decode("ascii", "strict")
+    except UnicodeError:
+        return None
+    return value if _valid_bearer(value) else None
+
+
+def _relay_block_matches(text: str, config: VibePulseConfig) -> bool:
+    try:
+        start = text.index(_RELAY_BLOCK_BEGIN)
+        end = text.index(_RELAY_BLOCK_END, start) + len(_RELAY_BLOCK_END)
+    except ValueError:
+        return False
+    if text.count(_RELAY_BLOCK_BEGIN) != 1 or \
+            text.count(_RELAY_BLOCK_END) != 1:
+        return False
+    block = text[start:end]
+    values = {}
+    for name in (
+            "TK_VIBEPULSE_INTERACTION_RELAY_URL",
+            "TK_VIBEPULSE_INTERACTION_MAILBOX",
+            "TK_VIBEPULSE_INTERACTION_PANEL_TOKEN"):
+        matches = re.findall(
+            rf'^\s*#\s*define\s+{name}\s+"([^"]*)"\s*$',
+            block, flags=re.MULTILINE)
+        if len(matches) != 1:
+            return False
+        values[name] = matches[0]
+    return (
+        values["TK_VIBEPULSE_INTERACTION_RELAY_URL"] ==
+        config.interaction_relay_url and
+        values["TK_VIBEPULSE_INTERACTION_MAILBOX"] ==
+        config.interaction_mailbox and
+        _valid_bearer(
+            values["TK_VIBEPULSE_INTERACTION_PANEL_TOKEN"]) and
+        _device_key_from_secrets(text) is not None)
+
+
+def _relay_install(
+        *, path: Path, url: str, consent: bool, token_path: Path,
+        secrets_path: Path, service_dir: Path, token_urlsafe, run,
+        stdout) -> bool:
+    with config_lock(_setup_transaction_path(path)):
+        with config_lock(path):
+            snapshot = load_config(path)
+        if snapshot.interaction_relay:
+            print("FIX Relay is already installed; use relay status or "
+                  "uninstall before rotating credentials", file=stdout)
+            return False
+        if not consent:
+            print("FIX E2E cloud consent is required before relay install",
+                  file=stdout)
+            return False
+        if not (snapshot.claude_interactions or
+                snapshot.codex_interactions):
+            print("FIX Enable at least one provider before relay install",
+                  file=stdout)
+            return False
+        if not snapshot.interaction_detail:
+            print("FIX Enable detail before relay install; this is the "
+                  "bounded view that will be encrypted", file=stdout)
+            return False
+        try:
+            # Construction is the shared strict HTTPS-origin validator.
+            VibePulseConfig(interaction_relay_url=url)
+            secrets_raw = _read_small_regular(secrets_path)
+            secrets_text = secrets_raw.decode("utf-8", "strict")
+        except (ConfigError, FileNotFoundError, UnicodeError):
+            print("FIX secrets.h and the HTTPS relay URL must be valid",
+                  file=stdout)
+            return False
+        if _device_key_from_secrets(secrets_text) is None:
+            print("FIX A valid 64-hex device key is required in secrets.h",
+                  file=stdout)
+            return False
+        if (Path(token_path).exists() or Path(token_path).is_symlink() or
+                _RELAY_BLOCK_BEGIN in secrets_text or
+                _RELAY_BLOCK_END in secrets_text):
+            print("FIX Existing relay credentials require relay status or "
+                  "uninstall before install", file=stdout)
+            return False
+        wrangler = _wrangler_path(service_dir)
+        if wrangler is None:
+            print("FIX Pinned local Wrangler is missing; run npm ci in "
+                  "tools/interaction-relay", file=stdout)
+            return False
+        try:
+            mailbox = "vp_" + token_urlsafe(12)
+            mac_token = token_urlsafe(32)
+            panel_token = token_urlsafe(32)
+        except Exception:
+            print("FIX Secure credential generation failed", file=stdout)
+            return False
+        if (_MAILBOX_RE.fullmatch(mailbox) is None or
+                not _valid_bearer(mac_token) or
+                not _valid_bearer(panel_token) or
+                mac_token == panel_token):
+            print("FIX Secure credential generation failed", file=stdout)
+            return False
+        target = _relay_config(
+            snapshot, enabled=True, url=url, mailbox=mailbox)
+        block = _relay_secrets_block(url, mailbox, panel_token)
+
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        secret_temp = None
+        cloud_touched = False
+        try:
+            fd, name = tempfile.mkstemp(
+                prefix=".interaction-relay-secrets.", dir=path.parent)
+            secret_temp = Path(name)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(json.dumps(
+                    {"MAC_TOKEN": mac_token, "PANEL_TOKEN": panel_token},
+                    sort_keys=True, separators=(",", ":"),
+                ).encode("ascii") + b"\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            commands = (
+                [str(wrangler), "--cwd", str(service_dir),
+                 "secret", "bulk", str(secret_temp)],
+                [str(wrangler), "--cwd", str(service_dir),
+                 "deploy", "--var", f"MAILBOX_ID:{mailbox}"],
+            )
+            for command in commands:
+                cloud_touched = True
+                if not _command_ok(_invoke(command, run), command):
+                    raise ConfigError("Cloudflare relay deployment failed")
+
+            backup = path.parent / "secrets.h.before-interaction-relay"
+            _atomic_private_write(backup, secrets_raw)
+            _atomic_private_write(
+                secrets_path,
+                _with_relay_block(secrets_text, block).encode("utf-8"))
+            _atomic_private_write(
+                token_path, (mac_token + "\n").encode("ascii"))
+            _publish_config(path, snapshot, target)
+        except BaseException:
+            try:
+                _atomic_private_write(secrets_path, secrets_raw)
+            except BaseException:
+                pass
+            try:
+                if Path(token_path).exists() or Path(token_path).is_symlink():
+                    Path(token_path).unlink()
+            except OSError:
+                pass
+            if cloud_touched:
+                _invoke([str(wrangler), "--cwd", str(service_dir),
+                         "delete", "--force"], run)
+            print("FIX Relay install failed; local secrets and routing were "
+                  "not enabled", file=stdout)
+            return False
+        finally:
+            if secret_temp is not None:
+                try:
+                    secret_temp.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
+        print("PASS Encrypted interaction relay installed and enabled",
+              file=stdout)
+        return True
+
+
+def _relay_disable(path: Path, stdout) -> bool:
+    with config_lock(path):
+        saved = load_config(path)
+        save_config(path, _relay_config(saved, enabled=False))
+    print("PASS Encrypted interaction relay disabled; credentials kept",
+          file=stdout)
+    return True
+
+
+def _relay_uninstall(
+        *, path: Path, delete_worker: bool, token_path: Path,
+        secrets_path: Path, service_dir: Path, run, stdout) -> bool:
+    with config_lock(_setup_transaction_path(path)):
+        with config_lock(path):
+            snapshot = load_config(path)
+        wrangler = _wrangler_path(service_dir)
+        if delete_worker:
+            if wrangler is None:
+                print("FIX Pinned local Wrangler is missing; Worker was not "
+                      "deleted and local credentials were kept", file=stdout)
+                return False
+            command = [str(wrangler), "--cwd", str(service_dir),
+                       "delete", "--force"]
+            if not _command_ok(_invoke(command, run), command):
+                print("FIX Worker deletion failed; local credentials were "
+                      "kept so it can be retried", file=stdout)
+                return False
+
+        try:
+            try:
+                secrets_raw = _read_small_regular(secrets_path)
+                secrets_text = secrets_raw.decode("utf-8", "strict")
+            except FileNotFoundError:
+                secrets_raw = None
+                secrets_text = None
+            token_raw = None
+            if Path(token_path).exists() or Path(token_path).is_symlink():
+                token_raw = _read_small_regular(token_path, 256)
+            target = _relay_config(
+                snapshot, enabled=False, clear=True)
+            if secrets_raw is not None:
+                backup = path.parent / "secrets.h.before-interaction-relay"
+                _atomic_private_write(backup, secrets_raw)
+                _atomic_private_write(
+                    secrets_path,
+                    _without_relay_block(secrets_text).encode("utf-8"))
+            if token_raw is not None:
+                Path(token_path).unlink()
+            _publish_config(path, snapshot, target)
+        except BaseException:
+            try:
+                if secrets_raw is not None:
+                    _atomic_private_write(secrets_path, secrets_raw)
+                if token_raw is not None:
+                    _atomic_private_write(token_path, token_raw)
+            except BaseException:
+                pass
+            print("FIX Relay uninstall could not safely update local files",
+                  file=stdout)
+            return False
+        print("PASS Removed only encrypted interaction relay settings",
+              file=stdout)
+        return True
+
+
+def _relay_status(config: VibePulseConfig, *, token_path: Path,
+                  secrets_path: Path, stdout) -> None:
+    print(f"Interaction relay: {'ON' if config.interaction_relay else 'OFF'}",
+          file=stdout)
+    print("Relay endpoint: " + (
+        "CONFIGURED" if config.interaction_relay_url else "MISSING"),
+        file=stdout)
+    print("Relay mailbox: " + (
+        "CONFIGURED" if config.interaction_mailbox else "MISSING"),
+        file=stdout)
+    print("Mac relay token: " + (
+        "READY" if _private_relay_token(token_path) else "MISSING/UNSAFE"),
+        file=stdout)
+    try:
+        text = _read_small_regular(secrets_path).decode("utf-8", "strict")
+        panel_ready = _relay_block_matches(text, config)
+    except (FileNotFoundError, ConfigError, UnicodeError):
+        panel_ready = False
+    print("Panel relay block: " + ("READY" if panel_ready else "MISSING"),
+          file=stdout)
+
+
+def _relay_doctor(config: VibePulseConfig, *, token_path: Path,
+                  secrets_path: Path, service_dir: Path, stdout) -> bool:
+    if not config.interaction_relay:
+        print("OFF Encrypted interaction relay intentionally disabled",
+              file=stdout)
+        return True
+    checks = []
+    checks.append((bool(config.claude_interactions or
+                        config.codex_interactions), "provider"))
+    checks.append((config.interaction_detail, "bounded interaction detail"))
+    checks.append((_private_relay_token(token_path) is not None,
+                   "private Mac relay token"))
+    try:
+        text = _read_small_regular(secrets_path).decode("utf-8", "strict")
+        panel_ok = _relay_block_matches(text, config)
+    except (FileNotFoundError, ConfigError, UnicodeError):
+        panel_ok = False
+    checks.append((panel_ok, "matching panel relay block and device key"))
+    checks.append((_wrangler_path(service_dir) is not None,
+                   "pinned local Wrangler"))
+    for passed, label in checks:
+        print(f"{'PASS' if passed else 'FIX'} Relay {label}", file=stdout)
+    return all(passed for passed, _label in checks)
+
+
 def _print_status(config: VibePulseConfig, stdout) -> None:
     def switch(value: bool) -> str:
         return "ON" if value else "OFF"
@@ -515,6 +1022,8 @@ def _print_status(config: VibePulseConfig, stdout) -> None:
     suffix = " (INSECURE COMPATIBILITY MODE)" \
         if config.legacy_claude_panel_v1 else ""
     print(f"Legacy Claude panel v1: {legacy}{suffix}", file=stdout)
+    print(f"Interaction relay: {switch(config.interaction_relay)}",
+          file=stdout)
 
 
 def _reject_json_constant(value):
@@ -858,14 +1367,17 @@ def _doctor(
                 "codex": config.codex_interactions,
                 "detail": config.interaction_detail,
                 "legacyClaudePanelV1": config.legacy_claude_panel_v1,
-                "transport": "lan",
             }
+            expected_relay = {
+                "status": "ready" if config.interaction_relay else "off"}
+            expected_transport = ("lan+encrypted-relay"
+                                  if config.interaction_relay else "lan")
             if (payload.get("service") != "torget-tokenserver" or
                     not isinstance(interactions, dict) or
                     any(interactions.get(key) is not value
-                        for key, value in expected.items()
-                        if key != "transport") or
-                    interactions.get("transport") != "lan"):
+                        for key, value in expected.items()) or
+                    interactions.get("relay") != expected_relay or
+                    interactions.get("transport") != expected_transport):
                 raise ValueError("diagnostics mismatch")
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError,
                 RecursionError, TimeoutError):
@@ -1051,7 +1563,7 @@ def _install_transaction(
         with config_lock(path):
             snapshot = load_config(path)
         target = _chosen_config(
-            providers, detail, legacy_claude_panel_v1)
+            providers, detail, legacy_claude_panel_v1, snapshot)
         before = None
         failed_step = "runtime preflight"
         try:
@@ -1174,7 +1686,11 @@ def main(
         config_path: Path | None = None, python=_AUTO, codex=_AUTO,
         run=_AUTO, urlopen=_AUTO,
         input_fn: Callable[[str], str] = input, stdout=None,
-        stdin_isatty: bool | None = None) -> int:
+        stdin_isatty: bool | None = None,
+        relay_token_path: Path | None = None,
+        secrets_path: Path | None = None,
+        interaction_relay_dir: Path | None = None,
+        token_urlsafe=secrets.token_urlsafe) -> int:
     """Run the strict CLI with injectable process and network boundaries."""
     args = _parser().parse_args(argv)
     output = sys.stdout if stdout is None else stdout
@@ -1182,8 +1698,55 @@ def main(
     python_path, codex_path = _resolve_executables(python, codex)
     interactive = (sys.stdin.isatty() if stdin_isatty is None
                    else stdin_isatty)
+    relay_token = (Path.home() / ".vibepulse-interaction-relay-token"
+                   if relay_token_path is None else Path(relay_token_path))
+    secrets_header = (Path(repo_root) / "secrets.h"
+                      if secrets_path is None else Path(secrets_path))
+    relay_service = (Path(repo_root) / "tools" / "interaction-relay"
+                     if interaction_relay_dir is None
+                     else Path(interaction_relay_dir))
 
     try:
+        if args.command == "relay":
+            if args.relay_command == "status":
+                _relay_status(
+                    load_config(path), token_path=relay_token,
+                    secrets_path=secrets_header, stdout=output)
+                return 0
+            if args.relay_command == "doctor":
+                return 0 if _relay_doctor(
+                    load_config(path), token_path=relay_token,
+                    secrets_path=secrets_header,
+                    service_dir=relay_service, stdout=output) else 1
+            if args.relay_command == "disable":
+                return 0 if _relay_disable(path, output) else 1
+            if args.relay_command == "install":
+                consent = bool(args.yes_e2e_cloud)
+                if not consent and interactive:
+                    consent = input_fn(
+                        "This sends bounded E2E-encrypted panel views and "
+                        "verdicts through your Cloudflare Worker. Type YES "
+                        "to continue: ").strip() == "YES"
+                return 0 if _relay_install(
+                    path=path, url=args.url, consent=consent,
+                    token_path=relay_token, secrets_path=secrets_header,
+                    service_dir=relay_service,
+                    token_urlsafe=token_urlsafe, run=run,
+                    stdout=output) else 1
+            delete_worker = args.delete_worker
+            if delete_worker is None:
+                if interactive:
+                    delete_worker = input_fn(
+                        "Delete the Cloudflare Worker too? [y/N]: ").strip(
+                        ).lower() in {"y", "yes"}
+                else:
+                    delete_worker = False
+            return 0 if _relay_uninstall(
+                path=path, delete_worker=delete_worker,
+                token_path=relay_token, secrets_path=secrets_header,
+                service_dir=relay_service, run=run,
+                stdout=output) else 1
+
         if args.command == "status":
             _print_status(load_config(path), output)
             return 0

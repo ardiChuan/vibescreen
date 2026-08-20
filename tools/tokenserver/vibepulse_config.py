@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import tempfile
 import threading
@@ -11,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Tuple
+from urllib.parse import urlsplit
 
 try:
     import fcntl
@@ -27,10 +29,14 @@ _FIELDS = frozenset({
     "codex_interactions",
     "interaction_detail",
     "legacy_claude_panel_v1",
+    "interaction_relay",
+    "interaction_relay_url",
+    "interaction_mailbox",
 })
 _MAX_CONFIG_BYTES = 16 * 1024
 _PROCESS_LOCKS = {}
 _PROCESS_LOCKS_GUARD = threading.Lock()
+_MAILBOX_RE = re.compile(r"vp_[A-Za-z0-9_-]{16}\Z")
 
 
 class ConfigError(ValueError):
@@ -49,14 +55,40 @@ class VibePulseConfig:
     codex_interactions: bool = False
     interaction_detail: bool = False
     legacy_claude_panel_v1: bool = False
+    interaction_relay: bool = False
+    interaction_relay_url: str | None = None
+    interaction_mailbox: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
                 "claude_interactions", "codex_interactions",
-                "interaction_detail", "legacy_claude_panel_v1"):
+                "interaction_detail", "legacy_claude_panel_v1",
+                "interaction_relay"):
             if type(getattr(self, field_name)) is not bool:
                 raise ConfigError(
                     f"{field_name} must be a boolean")
+        if self.interaction_relay_url is not None:
+            if not isinstance(self.interaction_relay_url, str) or \
+                    not self.interaction_relay_url or \
+                    any(ord(char) < 0x21 or ord(char) > 0x7e
+                        for char in self.interaction_relay_url):
+                raise ConfigError("interaction_relay_url must be HTTPS")
+            parsed = urlsplit(self.interaction_relay_url)
+            try:
+                port = parsed.port or 443
+            except ValueError as exc:
+                raise ConfigError(
+                    "interaction_relay_url has an invalid port") from exc
+            if parsed.scheme != "https" or not parsed.hostname or \
+                    parsed.username is not None or \
+                    parsed.password is not None or \
+                    parsed.path not in ("", "/") or parsed.query or \
+                    parsed.fragment or not (1 <= port <= 65535):
+                raise ConfigError("interaction_relay_url must be an origin")
+        if self.interaction_mailbox is not None and (
+                not isinstance(self.interaction_mailbox, str) or
+                _MAILBOX_RE.fullmatch(self.interaction_mailbox) is None):
+            raise ConfigError("interaction_mailbox is invalid")
 
 
 def _strict_object(pairs: Iterable[Tuple[str, object]]) -> dict:
@@ -140,9 +172,12 @@ def load_config(path: Path) -> VibePulseConfig:
     unknown = set(payload) - _FIELDS
     if unknown:
         raise ConfigError("unknown configuration keys")
-    if any(type(value) is not bool for value in payload.values()):
-        raise ConfigError("configuration values must be booleans")
-    return VibePulseConfig(**payload)
+    try:
+        return VibePulseConfig(**payload)
+    except (TypeError, ConfigError) as exc:
+        if isinstance(exc, ConfigError):
+            raise
+        raise ConfigError("configuration values have invalid types") from exc
 
 
 def _config_lock_path(path: Path) -> Path:

@@ -32,6 +32,7 @@ Autostart: se README.md härintill (launchd-plist medföljer).
 """
 
 import argparse
+import base64
 import hashlib
 import ipaddress
 import json
@@ -43,6 +44,7 @@ import re
 import select
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -2064,6 +2066,8 @@ class Handler(BaseHTTPRequestHandler):
     codex_interactions = False
     interaction_detail = False
     legacy_claude_panel_v1 = False
+    interaction_relay_status = "off"
+    interaction_relay_reason = None
     json_body_timeout_s = JSON_BODY_TIMEOUT_S
 
     def _send(self, code, payload):
@@ -2535,7 +2539,16 @@ class Handler(BaseHTTPRequestHandler):
                     "detail": bool(self.interaction_detail),
                     "legacyClaudePanelV1": bool(
                         self.legacy_claude_panel_v1),
-                    "transport": "lan",
+                    "relay": ({
+                        "status": self.interaction_relay_status,
+                        **({"reason": self.interaction_relay_reason}
+                           if self.interaction_relay_reason is not None
+                           else {}),
+                    }),
+                    "transport": (
+                        "lan+encrypted-relay"
+                        if self.interaction_relay_status == "ready"
+                        else "lan"),
                 }}
 
     def log_message(self, fmt, *args):
@@ -2630,6 +2643,19 @@ def _build_arg_parser():
         help="enable or disable the saved INSECURE compatibility protocol "
              "for old Claude-only panel firmware. Default off. Current "
              "Claude and all Codex interactions remain provider/digest-bound")
+    interaction_relay = ap.add_mutually_exclusive_group()
+    interaction_relay.add_argument(
+        "--interaction-relay", metavar="HTTPS_ORIGIN", default=None,
+        help="enable the saved end-to-end encrypted Needs You relay at this "
+             "HTTPS origin. Requires a provider, --interaction-detail, the "
+             "paired device key, mailbox, private Mac token, and optional "
+             "relay dependency; a missing requirement disables only this "
+             "adapter")
+    interaction_relay.add_argument(
+        "--no-interaction-relay", action="store_const", const=False,
+        dest="interaction_relay",
+        help="disable the saved encrypted interaction relay without "
+             "removing its URL, mailbox, providers, or other features")
     ap.add_argument(
         "--interaction-timeout", type=float, default=120.0,
         help="seconds to hold a hook open before handing the decision back "
@@ -2672,11 +2698,21 @@ def _resolve_interaction_config(args, path=None):
             legacy_claude_panel_v1=chosen(
                 saved.legacy_claude_panel_v1,
                 args.legacy_claude_panel_v1),
+            interaction_relay=chosen(
+                saved.interaction_relay,
+                (True if isinstance(args.interaction_relay, str)
+                 else args.interaction_relay)),
+            interaction_relay_url=(
+                args.interaction_relay
+                if isinstance(args.interaction_relay, str)
+                else saved.interaction_relay_url),
+            interaction_mailbox=saved.interaction_mailbox,
         )
         explicit = (claude_override is not None or
                     args.codex_interactions is not None or
                     args.interaction_detail is not None or
-                    args.legacy_claude_panel_v1 is not None)
+                    args.legacy_claude_panel_v1 is not None or
+                    args.interaction_relay is not None)
         if explicit:
             # An explicit valid choice may repair a bad saved file. Keeping
             # this save under the same lock as the read prevents lost merges.
@@ -2701,6 +2737,131 @@ def _configure_interactions(config, interaction_timeout, audit=None):
         secret=secret or "", reveal_detail=config.interaction_detail,
         audit=audit)
     return secret
+
+
+def _read_interaction_mac_token(path=None, environ=None):
+    """Read one private Mac-role bearer without ever logging its value."""
+    def valid(value):
+        if not isinstance(value, str) or \
+                re.fullmatch(r"[A-Za-z0-9_-]{43}", value) is None:
+            return False
+        try:
+            decoded = base64.b64decode(
+                value + "=", altchars=b"-_", validate=True)
+        except (TypeError, ValueError):
+            return False
+        return (len(decoded) == 32 and
+                base64.urlsafe_b64encode(decoded).rstrip(b"=").decode(
+                    "ascii") == value)
+
+    environ = os.environ if environ is None else environ
+    value = environ.get("VIBEPULSE_INTERACTION_MAC_TOKEN")
+    if valid(value):
+        return value
+    if value is not None:
+        return None
+
+    token_path = (Path.home() / ".vibepulse-interaction-relay-token"
+                  if path is None else Path(path))
+    fd = None
+    try:
+        before = os.lstat(token_path)
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            return None
+        if os.name == "posix" and stat.S_IMODE(before.st_mode) != 0o600:
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | \
+            getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(token_path, flags)
+        descriptor = os.fstat(fd)
+        after = os.lstat(token_path)
+        if not stat.S_ISREG(descriptor.st_mode) or \
+                stat.S_ISLNK(after.st_mode) or \
+                not os.path.samestat(before, descriptor) or \
+                not os.path.samestat(descriptor, after) or \
+                (os.name == "posix" and
+                 stat.S_IMODE(descriptor.st_mode) != 0o600):
+            return None
+        raw = os.read(fd, 257)
+        if len(raw) > 256:
+            return None
+        try:
+            text = raw.decode("ascii", "strict")
+        except UnicodeError:
+            return None
+        if text.endswith("\n"):
+            text = text[:-1]
+        if not valid(text):
+            return None
+        return text
+    except (FileNotFoundError, OSError):
+        return None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _configure_interaction_relay(config, secret, *, environ=None,
+                                 relay_factory=None, audit=None):
+    """Start the optional adapter or fail closed without harming LAN mode."""
+    Handler.interaction_relay_status = "off"
+    Handler.interaction_relay_reason = None
+    if not config.interaction_relay:
+        return None
+
+    def disabled(reason):
+        Handler.interaction_relay_status = "disabled"
+        Handler.interaction_relay_reason = reason
+        return None
+
+    if not (config.claude_interactions or config.codex_interactions) or \
+            Handler.interaction_store is None:
+        return disabled("provider-required")
+    if not config.interaction_detail:
+        return disabled("detail-required")
+    if not isinstance(secret, str) or \
+            re.fullmatch(r"[0-9A-Fa-f]{64}", secret) is None:
+        return disabled("device-key-missing")
+    if config.interaction_relay_url is None:
+        return disabled("url-missing")
+    if config.interaction_mailbox is None:
+        return disabled("mailbox-missing")
+    mac_token = _read_interaction_mac_token(environ=environ)
+    if mac_token is None:
+        return disabled("mac-token-missing")
+
+    adapter = None
+    try:
+        if relay_factory is None:
+            if __package__:
+                from .interaction_relay import InteractionRelay
+            else:  # direct execution
+                from interaction_relay import InteractionRelay
+            relay_factory = InteractionRelay
+        adapter = relay_factory(
+            store=Handler.interaction_store,
+            base_url=config.interaction_relay_url,
+            mailbox=config.interaction_mailbox,
+            mac_token=mac_token,
+            device_key_hex=secret,
+            audit=audit,
+        )
+        adapter.start()
+    except ImportError:
+        return disabled("crypto-unavailable")
+    except Exception:
+        if adapter is not None:
+            try:
+                adapter.stop()
+            except Exception:
+                pass
+        return disabled("configuration-invalid")
+    Handler.interaction_relay_status = "ready"
+    Handler.interaction_relay_reason = None
+    return adapter
 
 
 def _run_max_tracker_backfill(store, stop_event):
@@ -2887,6 +3048,21 @@ def main():
                         "TK_VIBEPULSE_DEVICE_KEY i secrets.h (samma värde "
                         "som skärmen bygger med) för att kunna svara.")
 
+    interaction_relay_adapter = _configure_interaction_relay(
+        interaction_config,
+        secret,
+        audit=lambda action, row: log.info(
+            "krypterat interaktionsrelä %s: %s", action,
+            json.dumps(row, sort_keys=True)),
+    )
+    if Handler.interaction_relay_status == "ready":
+        log.info("krypterat Needs You-relä redo (E2E; inga "
+                 "frågor eller kommandon loggas)")
+    elif Handler.interaction_relay_status == "disabled":
+        log.warning("krypterat Needs You-relä avstängt: %s; LAN och "
+                    "terminalfallback fortsätter",
+                    Handler.interaction_relay_reason)
+
     relay_publisher = None
     if args.publish:
         # Producenterna ÄR handlarnas: reläet kan aldrig glida ifrån det
@@ -2942,6 +3118,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        if interaction_relay_adapter is not None:
+            interaction_relay_adapter.stop()
         if relay_publisher is not None:
             relay_publisher.stop()
         if github_monitor is not None:

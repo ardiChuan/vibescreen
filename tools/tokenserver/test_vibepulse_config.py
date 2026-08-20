@@ -35,13 +35,17 @@ class SavedConfigTests(unittest.TestCase):
         self.assertFalse(config.codex_interactions)
         self.assertFalse(config.interaction_detail)
         self.assertFalse(config.legacy_claude_panel_v1)
+        self.assertFalse(config.interaction_relay)
+        self.assertIsNone(config.interaction_relay_url)
+        self.assertIsNone(config.interaction_mailbox)
         with self.assertRaises(dataclasses.FrozenInstanceError):
             config.codex_interactions = True
 
     def test_direct_construction_rejects_every_non_boolean_field(self):
         for field in (
                 "claude_interactions", "codex_interactions",
-                "interaction_detail", "legacy_claude_panel_v1"):
+                "interaction_detail", "legacy_claude_panel_v1",
+                "interaction_relay"):
             for value in (0, 1, "yes", None):
                 values = {field: value}
                 with self.subTest(field=field, value=value):
@@ -54,6 +58,9 @@ class SavedConfigTests(unittest.TestCase):
         object.__setattr__(forged, "codex_interactions", 1)
         object.__setattr__(forged, "interaction_detail", False)
         object.__setattr__(forged, "legacy_claude_panel_v1", False)
+        object.__setattr__(forged, "interaction_relay", False)
+        object.__setattr__(forged, "interaction_relay_url", None)
+        object.__setattr__(forged, "interaction_mailbox", None)
 
         with self.assertRaises(ConfigError):
             save_config(self.path, forged)
@@ -233,6 +240,9 @@ class SavedConfigTests(unittest.TestCase):
             codex_interactions=True,
             interaction_detail=True,
             legacy_claude_panel_v1=True,
+            interaction_relay=True,
+            interaction_relay_url="https://relay.example",
+            interaction_mailbox="vp_A1b2C3d4E5f6G7h8",
         )
 
         save_config(self.path, expected)
@@ -243,6 +253,9 @@ class SavedConfigTests(unittest.TestCase):
             "codex_interactions": True,
             "interaction_detail": True,
             "legacy_claude_panel_v1": True,
+            "interaction_relay": True,
+            "interaction_relay_url": "https://relay.example",
+            "interaction_mailbox": "vp_A1b2C3d4E5f6G7h8",
         })
         self.assertNotIn("key", self.path.read_text(encoding="utf-8").lower())
 
@@ -266,13 +279,32 @@ class SavedConfigTests(unittest.TestCase):
         self.path.parent.mkdir()
         for field in (
                 "claude_interactions", "codex_interactions",
-                "interaction_detail", "legacy_claude_panel_v1"):
+                "interaction_detail", "legacy_claude_panel_v1",
+                "interaction_relay"):
             for value in (0, 1, "true", [], {}, None):
                 with self.subTest(field=field, value=value):
                     self.path.write_text(
                         json.dumps({field: value}), encoding="utf-8")
                     with self.assertRaises(ConfigError):
                         load_config(self.path)
+
+    def test_relay_url_and_mailbox_are_strict_nullable_public_fields(self):
+        valid = VibePulseConfig(
+            interaction_relay_url="https://relay.example",
+            interaction_mailbox="vp_A1b2C3d4E5f6G7h8")
+        save_config(self.path, valid)
+        self.assertEqual(load_config(self.path), valid)
+
+        for field, values in (
+                ("interaction_relay_url", (
+                    "", "http://relay.example", "https://user@relay.example",
+                    "https://relay.example/path", 1, True, [], {})),
+                ("interaction_mailbox", (
+                    "", "vp_short", "vp_A1b2C3d4E5f6G7h8=", 1, True, [], {}))):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(ConfigError):
+                        VibePulseConfig(**{field: value})
 
     def test_save_creates_private_directory_and_file_where_supported(self):
         save(self.path, VibePulseConfig(codex_interactions=True))

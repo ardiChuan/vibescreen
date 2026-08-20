@@ -266,6 +266,8 @@ cd ..
   tools.tokenserver.test_vibepulse_config \
   tools.tokenserver.test_codex_interactions \
   tools.tokenserver.test_interactions \
+  tools.tokenserver.test_interaction_relay \
+  tools.tokenserver.test_interaction_relay_integration \
   tools.tokenserver.test_interaction_relay_crypto \
   tools.tokenserver.test_publisher \
   tools.tokenserver.test_smoke -v
