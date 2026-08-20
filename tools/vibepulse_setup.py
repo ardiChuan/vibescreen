@@ -249,11 +249,20 @@ def _unique_json_object(pairs):
 
 
 def _strict_json(text: str):
-    if len(text.encode("utf-8")) > MAX_COMMAND_OUTPUT_BYTES:
+    if not isinstance(text, str):
+        raise ValueError("JSON input must be text")
+    try:
+        encoded_size = len(text.encode("utf-8"))
+    except UnicodeError as exc:
+        raise ValueError("JSON input is not valid UTF-8") from exc
+    if encoded_size > MAX_COMMAND_OUTPUT_BYTES:
         raise ValueError("JSON output is too large")
-    return json.loads(
-        text, parse_constant=_reject_json_constant,
-        object_pairs_hook=_unique_json_object)
+    try:
+        return json.loads(
+            text, parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object)
+    except RecursionError as exc:
+        raise ValueError("JSON nesting is too deep") from exc
 
 
 def _expected_mcp_item(repo_root: Path, python: Path) -> dict:
@@ -301,7 +310,19 @@ def _owned_mcp_state(
     return True
 
 
-def _plugin_installed(text: str) -> bool:
+def _resolved_existing_path(value) -> Path | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            return None
+        return candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _plugin_installed(text: str, repo_root: Path) -> bool:
     try:
         value = _strict_json(text)
     except (TypeError, ValueError, json.JSONDecodeError, UnicodeError):
@@ -316,11 +337,34 @@ def _plugin_installed(text: str) -> bool:
         return False
     matches = [item for item in installed if isinstance(item, dict) and
                item.get("pluginId") == "vibepulse@torget"]
-    return len(matches) == 1 and all((
-        matches[0].get("name") == "vibepulse",
-        matches[0].get("marketplaceName") == "torget",
-        matches[0].get("installed") is True,
-        matches[0].get("enabled") is True,
+    if len(matches) != 1:
+        return False
+    item = matches[0]
+    source = item.get("source")
+    marketplace_source = item.get("marketplaceSource")
+    if (item.get("name") != "vibepulse" or
+            item.get("marketplaceName") != "torget" or
+            item.get("installed") is not True or
+            item.get("enabled") is not True or
+            not isinstance(source, dict) or
+            set(source) != {"source", "path"} or
+            source.get("source") != "local" or
+            not isinstance(marketplace_source, dict) or
+            set(marketplace_source) != {"sourceType", "source"} or
+            marketplace_source.get("sourceType") != "local"):
+        return False
+    try:
+        expected_root = Path(repo_root).resolve(strict=True)
+        expected_plugin = (expected_root / ".agents" / "plugins" / "plugins" /
+                           "vibepulse").resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return all((
+        expected_root.is_dir(),
+        expected_plugin.is_dir(),
+        _resolved_existing_path(marketplace_source.get("source")) ==
+        expected_root,
+        _resolved_existing_path(source.get("path")) == expected_plugin,
     ))
 
 
@@ -372,7 +416,7 @@ def _doctor(
             [codex_text, "plugin", "list", "--json"], run)
         plugin_ok = (plugin_result is not None and
                      plugin_result.returncode == 0 and
-                     _plugin_installed(plugin_result.stdout))
+                     _plugin_installed(plugin_result.stdout, repo_root))
         if plugin_ok:
             print("PASS Codex plugin", file=stdout)
         else:
@@ -408,10 +452,7 @@ def _doctor(
             if (not isinstance(raw, bytes) or
                     len(raw) > MAX_DIAGNOSTIC_BYTES):
                 raise ValueError("oversized diagnostics")
-            payload = json.loads(
-                raw.decode("utf-8", errors="strict"),
-                parse_constant=_reject_json_constant,
-                object_pairs_hook=_unique_json_object)
+            payload = _strict_json(raw.decode("utf-8", errors="strict"))
             if not isinstance(payload, dict):
                 raise ValueError("diagnostics must be an object")
             interactions = payload.get("interactions")
@@ -429,7 +470,7 @@ def _doctor(
                     interactions.get("transport") != "lan"):
                 raise ValueError("diagnostics mismatch")
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError,
-                TimeoutError):
+                RecursionError, TimeoutError):
             print("FIX Tokenserver: local diagnostics unavailable or stale",
                   file=stdout)
             fixes = True

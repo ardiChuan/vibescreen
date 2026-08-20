@@ -243,7 +243,14 @@ def owned_mcp(*, repo=ROOT, python=Path(sys.executable), enabled=True,
 
 
 def plugin_listing(*, plugin_id="vibepulse@torget", name="vibepulse",
-                   marketplace="torget", installed=True, enabled=True):
+                   marketplace="torget", installed=True, enabled=True,
+                   repo=ROOT, plugin_source="local", plugin_path=None,
+                   marketplace_source_type="local", marketplace_root=None):
+    root = Path(repo).resolve()
+    if plugin_path is None:
+        plugin_path = root / ".agents/plugins/plugins/vibepulse"
+    if marketplace_root is None:
+        marketplace_root = root
     return {
         "installed": [{
             "pluginId": plugin_id,
@@ -251,6 +258,14 @@ def plugin_listing(*, plugin_id="vibepulse@torget", name="vibepulse",
             "marketplaceName": marketplace,
             "installed": installed,
             "enabled": enabled,
+            "source": {
+                "source": plugin_source,
+                "path": str(plugin_path),
+            },
+            "marketplaceSource": {
+                "sourceType": marketplace_source_type,
+                "source": str(marketplace_root),
+            },
         }],
         "available": [],
     }
@@ -1523,31 +1538,89 @@ class SetupPlanTests(unittest.TestCase):
             self.assertIn("FIX Python executable", output.getvalue())
             self.assertIn("FIX Codex executable", output.getvalue())
 
+    def test_strict_json_never_leaks_deep_parser_recursion(self):
+        setup = load_setup()
+        deep = "[" * 5000 + "]" * 5000
+        try:
+            parsed = setup._strict_json(deep)
+        except RecursionError as exc:
+            self.fail(f"deep bounded JSON leaked RecursionError: {exc}")
+        except ValueError:
+            pass
+        else:
+            self.assertIsInstance(parsed, list)
+
     def test_doctor_rejects_every_plugin_false_green_transcript(self):
         setup = load_setup()
-        bad_plugins = [
-            "vibepulse@torget installed enabled trusted\n",
-            json.dumps([]),
-            json.dumps({"installed": "vibepulse@torget", "available": []}),
-            json.dumps(plugin_listing(plugin_id="vibepulse-extra@torget")),
-            json.dumps(plugin_listing(installed=False)),
-            json.dumps(plugin_listing(enabled=False)),
-            json.dumps(plugin_listing(marketplace="torget-lookalike")),
-            json.dumps({
-                "installed": [42, plugin_listing()["installed"][0]],
-                "available": [],
-            }),
-            json.dumps({
-                "installed": plugin_listing()["installed"],
-                "available": "not-a-list",
-            }),
-            '{"installed":[],"installed":[]}',
-            '{"installed":NaN,"available":[]}',
-            "[" * 5000 + "]" * 5000,
-            "{",
-            json.dumps(plugin_listing()) + " " * (16 * 1024),
-        ]
         with tempfile.TemporaryDirectory() as tmp:
+            foreign = Path(tmp) / "foreign"
+            foreign_plugin = foreign / "plugin"
+            foreign_plugin.mkdir(parents=True)
+            foreign_link = Path(tmp) / "foreign-link"
+            foreign_link.symlink_to(foreign, target_is_directory=True)
+            foreign_plugin_link = Path(tmp) / "foreign-plugin-link"
+            foreign_plugin_link.symlink_to(
+                foreign_plugin, target_is_directory=True)
+
+            missing_source = plugin_listing()
+            missing_source["installed"][0].pop("source")
+            missing_marketplace_source = plugin_listing()
+            missing_marketplace_source["installed"][0].pop(
+                "marketplaceSource")
+            malformed_source = plugin_listing()
+            malformed_source["installed"][0]["source"] = "local"
+            malformed_marketplace_source = plugin_listing()
+            malformed_marketplace_source["installed"][0][
+                "marketplaceSource"] = []
+            extra_source = plugin_listing()
+            extra_source["installed"][0]["source"]["unexpected"] = True
+            extra_marketplace_source = plugin_listing()
+            extra_marketplace_source["installed"][0][
+                "marketplaceSource"]["unexpected"] = True
+            bad_plugins = [
+                "vibepulse@torget installed enabled trusted\n",
+                json.dumps([]),
+                json.dumps({
+                    "installed": "vibepulse@torget", "available": []}),
+                json.dumps(plugin_listing(
+                    plugin_id="vibepulse-extra@torget")),
+                json.dumps(plugin_listing(installed=False)),
+                json.dumps(plugin_listing(enabled=False)),
+                json.dumps(plugin_listing(marketplace="torget-lookalike")),
+                json.dumps(missing_source),
+                json.dumps(missing_marketplace_source),
+                json.dumps(malformed_source),
+                json.dumps(malformed_marketplace_source),
+                json.dumps(extra_source),
+                json.dumps(extra_marketplace_source),
+                json.dumps(plugin_listing(plugin_source="git")),
+                json.dumps(plugin_listing(
+                    plugin_path=foreign_plugin)),
+                json.dumps(plugin_listing(
+                    plugin_path=ROOT.parent / (ROOT.name + "-lookalike"))),
+                json.dumps(plugin_listing(
+                    plugin_path=foreign_plugin_link)),
+                json.dumps(plugin_listing(
+                    marketplace_source_type="git")),
+                json.dumps(plugin_listing(marketplace_root=foreign)),
+                json.dumps(plugin_listing(
+                    marketplace_root=ROOT.parent /
+                    (ROOT.name + "-lookalike"))),
+                json.dumps(plugin_listing(marketplace_root=foreign_link)),
+                json.dumps({
+                    "installed": [42, plugin_listing()["installed"][0]],
+                    "available": [],
+                }),
+                json.dumps({
+                    "installed": plugin_listing()["installed"],
+                    "available": "not-a-list",
+                }),
+                '{"installed":[],"installed":[]}',
+                '{"installed":NaN,"available":[]}',
+                "[" * 5000 + "]" * 5000,
+                "{",
+                json.dumps(plugin_listing()) + " " * (16 * 1024),
+            ]
             path = Path(tmp) / "config.json"
             setup.save_config(path, setup.VibePulseConfig(
                 codex_interactions=True))
@@ -1579,6 +1652,7 @@ class SetupPlanTests(unittest.TestCase):
             [owned_mcp(repo=Path("/wrong/root"))],
             [owned_mcp(transport_extra={"env_vars": ["SECRET"]})],
             [owned_mcp(transport_extra={"unexpected": True})],
+            "[" * 5000 + "]" * 5000,
             "{",
         ]
         with tempfile.TemporaryDirectory() as tmp:
