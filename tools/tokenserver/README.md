@@ -1,4 +1,4 @@
-# tokenserver — VibePulse Mac-tjänst
+# tokenserver — VibePulse computer service
 
 > **English quickstart:** `python3 tokenserver.py`. Pure Python 3 stdlib,
 > nothing to install. It reads your local Claude Code/Codex logs and serves
@@ -95,10 +95,10 @@ sekund. Ren Python 3-stdlib — inget att installera. Tre källor:
    aktiva, injicerade OAuth-token eller Claude Codes nyckelringsfallback
    (på Windows i stället `%USERPROFILE%\.claude\.credentials.json`, samma
    post — se [Windows](#windows) nedan) och gör en minimal API-förfrågan
-   (`max_tokens: 0` — prefill utan output, i praktiken gratis) var 120:e
+   (`max_tokens: 0` — prefill utan output, i praktiken gratis) var 240:e
    sekund; rate-limit-headrarna i svaret bär usage-panelens tre fönster:
    5-timmars, veckan och veckan för tyngsta modellen (Fable/Opus).
-   Tokenen lämnar aldrig Macen — skärmen får bara procenttal.
+   Tokenen lämnar aldrig datorn — skärmen får bara procenttal.
 3. **Codex tak** — tjänsten frågar Codex lokala, skrivskyddade app-server via
    `account/rateLimits/read`, alltså samma aktuella snapshot som Codex-panelen
    visar. Om app-servern saknas används en passiv fallback: begränsad läsning
@@ -108,8 +108,8 @@ sekund. Ren Python 3-stdlib — inget att installera. Tre källor:
 
 Generella veckotak hålls strikt åtskilda från namngivna modellkvoter. För
 Codex måste `limit_name` saknas, vara null eller vara en tom sträng och
-`window_minutes` vara ett tal större än 600 (det normala veckofönstret är
-10080). Spark och andra
+`window_minutes` vara exakt 10080 minuter. Ett 30-dagarsfönster (43200)
+publiceras inte under den nuvarande WEEKLY-kontraktet. Spark och andra
 namngivna kvoter kan därför aldrig ersätta WEEK. För Claude är exakt `7d` eller
 `week` den generella veckan; Fable, Opus, Sonnet och explicit `model` är
 modellveckan. Ett okänt namn som `7d_haiku` blir endast ett sanerat namn i
@@ -273,7 +273,7 @@ Data kommer från två oberoende kanaler i `tools/tokenserver/max_tracker.py`
   aktivitet och volymnivå, aldrig procent.
 - **Löpande observation**: samma ställen som redan publicerar en färsk,
   icke-cachad, icke-`stale`-procent till `/api/tokens` (Claude-proben var
-  120:e sekund, Codex läsning via app-servern eller rollout-fallbacken, och
+  240:e sekund, Codex läsning via app-servern eller rollout-fallbacken, och
   den befintliga dagsvolym-uppräkningen) matar också dagens topp här —
   aldrig ett `*Stale: true`-värde ur kvotcachen. Sessionsfönstret (5 h,
   300 min) och det generella veckofönstret (10 080 min) hålls isär enligt
@@ -327,11 +327,20 @@ loggen bor under `%LOCALAPPDATA%\VibePulse\` i stället för macOS
 även förut — `Path.home()` löser ut — men lade ett `Library`-träd i
 användarprofilen som ingenting annat på maskinen känner igen.
 
-Kvar på Windows: **autostart**. launchd-plisten härintill har ingen
-motsvarighet; tjänsten måste startas för hand eller läggas i Task
-Scheduler. `smoke.py` känner till tillståndskatalogen men dess råd pratar
-fortfarande om `launchctl`. Se
-[#3](https://github.com/niclasvestlund-YT/vibepulse/issues/3).
+Autostart ingår via Task Scheduler. Kör från repots rot i PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1
+```
+
+Skriptet registrerar tjänsten för den inloggade användaren, startar den
+direkt och startar om den vid fel. Det bakar inte in Claude/Codex- eller
+detaljval i kommandoraden; samma sparade tokenserver-konfiguration används
+som vid manuell start. Avinstallera själva autostarten med:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1 -Uninstall
+```
 
 Svar (kontraktet appen parsar, `components/app_tokens/tokens_parse.c`;
 null = ärlig frånvaro, skärmen visar streck):
@@ -445,7 +454,7 @@ python3 tools/tokenserver/smoke.py
   åtskild från namngivna modellkvoter som Spark. Rollout-loggar används bara
   som fallback; ett passerat `resets_at` eller en fallbackskanning utan
   generell observation räknas som källfel och följer stale-kontraktet ovan.
-  Claude-proben kostar en tom förfrågan var 120:e sekund — försumbart mot
+  Claude-proben kostar en tom förfrågan var 240:e sekund — försumbart mot
   fönstren den mäter.
 - Är Macen av visar skärmen streck efter två minuter (stale), inte gamla
   siffror som låtsas vara färska. Det är rätt beteende, inte ett fel.

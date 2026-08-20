@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Röktest för VibePulse-kedjan på Macen: en körning, ett facit.
+"""Röktest för VibePulse-kedjan på datorn: en körning, ett facit.
 
 Automatiserar kamrutinens steg 1–4 (docs/observability.md): serverns
 identitet och rev, Claude-probens status, alla tre API-svaren, loggfilen
@@ -23,10 +23,12 @@ import urllib.request
 from pathlib import Path
 
 if __package__:
-    from .tokenserver import (DEFAULT_LOG_PATH, _LOG_CAP_BYTES, _state_dir,
+    from .tokenserver import (DEFAULT_LOG_PATH, LIMITS_EVERY_S,
+                              _LOG_CAP_BYTES, _state_dir,
                               _read_source_fingerprint)
 else:  # direktkörning: python3 tools/tokenserver/smoke.py
-    from tokenserver import (DEFAULT_LOG_PATH, _LOG_CAP_BYTES, _state_dir,
+    from tokenserver import (DEFAULT_LOG_PATH, LIMITS_EVERY_S,
+                             _LOG_CAP_BYTES, _state_dir,
                              _read_source_fingerprint)
 
 DEFAULT_BASE_URL = "http://localhost:8737"
@@ -156,9 +158,14 @@ def check_server(base_url, checkout_rev=None, checkout_src=None):
     try:
         status, root = _get_json(f"{base_url}/")
     except Exception as e:
+        service_hint = (
+            "kontrollera Task Scheduler eller starta python tokenserver.py "
+            "för hand" if os.name == "nt" else
+            "kör den? launchctl list | grep torget, eller starta "
+            "python3 tokenserver.py för hand"
+        )
         return [(FAIL, f"servern svarar inte på {base_url}/ ({type(e).__name__})"
-                       " — kör den? launchctl list | grep torget, eller starta"
-                       " python3 tokenserver.py för hand")]
+                       f" — {service_hint}")]
     if status != 200:
         return [(FAIL, f"HTTP {status} på {base_url}/ — fel tjänst, proxy "
                        f"eller trasig server")]
@@ -191,7 +198,8 @@ def check_server(base_url, checkout_rev=None, checkout_src=None):
     if probe == PROBE_OK:
         results.append((OK, f"claude-proben: {probe}"))
     elif probe == "not_run":
-        results.append((VARN, "claude-proben har inte kört än (120 s-cykel) "
+        results.append((VARN, f"claude-proben har inte kört än "
+                              f"({LIMITS_EVERY_S} s-cykel) "
                               "— kör om röktestet om en stund"))
     else:
         results.append((VARN, f"claude-proben: {probe} — se tabellen i "
@@ -268,8 +276,9 @@ def check_log_file(path):
     """Kamsteg 3: finns loggfilen, växer den lagom, står det otäckt i den?"""
     path = Path(path)
     if not path.exists():
+        service = "Task Scheduler" if os.name == "nt" else "launchd"
         return [(VARN, f"ingen loggfil på {path} — normalt vid "
-                       f"terminalkörning; under launchd betyder det att "
+                       f"terminalkörning; under {service} betyder det att "
                        f"tjänsten aldrig startat")]
     def tail_text(p, cap=2 * 1024 * 1024):
         # Läs bara svansen på en stor fil — röktestet ska vara snabbt.
@@ -301,9 +310,10 @@ def check_log_file(path):
     starts = (text.count("serverar http://")
               + old_text.count("serverar http://"))
     if starts >= RESPAWN_SUSPICION_COUNT:
+        service = "autostarten" if os.name == "nt" else "launchd"
         results.append((VARN, f"{starts} startrader i loggen{suffix} — "
-                              f"respawn-loop? (launchd startar om var 30 s "
-                              f"vid tidig död)"))
+                              f"respawn-loop? ({service} startar om "
+                              f"tjänsten vid tidig död)"))
     return results
 
 

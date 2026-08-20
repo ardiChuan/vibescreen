@@ -123,4 +123,15 @@ for guide, name in ((agent_setup, "agent setup"),
         f"{name} must state the computer-on requirement plainly"
     )
 
+# Windows autostart ships in-tree. The public guides must not keep telling
+# people to hand-build a Task Scheduler entry after that installer exists.
+assert "install-windows-task.ps1" in readme, (
+    "README must link the shipped Windows Task Scheduler installer"
+)
+assert "install-windows-task.ps1" in tokenserver_readme, (
+    "tokenserver README must document the Windows autostart installer"
+)
+assert "What is missing is **autostart**" not in readme
+assert "Kvar på Windows: **autostart**" not in tokenserver_readme
+
 print("OK: the numbers relay carries only numbers; activity uses a separate encrypted boundary")
