@@ -360,6 +360,8 @@ static size_t dma_log(const char *stage) {
   return largest;
 }
 
+static void window_close(void);
+
 static void window_open(void) {
   /* GRIND 1, före allt: ryms accesspunkten utan att närma sig flushens
    * DMA-tak? Ett vägrat fönster är en loggrad och ett nytt försök om en
@@ -367,9 +369,10 @@ static void window_open(void) {
   size_t largest = dma_log("före öppning");
   if (!tg_wifi_setup_dma_ok_to_open(largest, s_hooks->flush_dma_bytes)) {
     ESP_LOGW(TAG, "setupfönstret VÄGRAR öppna: DMA-blocket %u byte < "
-             "%d x flushens %u — hellre stängt än fryst glas",
+             "%d x flushens %u + %u reserv — hellre stängt än fryst glas",
              (unsigned)largest, TG_WIFI_SETUP_DMA_OPEN_FACTOR,
-             (unsigned)s_hooks->flush_dma_bytes);
+             (unsigned)s_hooks->flush_dma_bytes,
+             (unsigned)TG_WIFI_SETUP_DMA_OPEN_RESERVE_BYTES);
     return;
   }
 
@@ -428,7 +431,20 @@ static void window_open(void) {
   if (xTaskCreate(dns_task, "tg-wifi-dns", 3072, NULL, 4, NULL) != pdPASS)
     ESP_LOGW(TAG, "DNS-lögnaren startade inte — portalen nås via " AP_ADDRESS);
   server_start();
-  dma_log("fönstret uppe");
+
+  /* GRIND 3, efter den verkliga portalallokeringen. Startreserven ovan ska
+   * bära DNS- och httpd-taskarna, men mät utfallet i stället för att lita
+   * på uppskattningen. Publicera aldrig ett setupfönster som redan har ätit
+   * upp displayens etablerade x2-marginal. */
+  largest = dma_log("efter portalstart");
+  if (!tg_wifi_setup_dma_ok_to_continue(largest, s_hooks->flush_dma_bytes)) {
+    ESP_LOGE(TAG, "setupfönstret AVBRYTER: DMA-blocket %u byte < "
+             "%d x flushens %u efter portalstart — river innan glaset fryser",
+             (unsigned)largest, TG_WIFI_SETUP_DMA_ABORT_FACTOR,
+             (unsigned)s_hooks->flush_dma_bytes);
+    window_close();
+    return;
+  }
 
   atomic_store(&s_open, true);
   /* Lösenordet står på glaset, inte i loggen: den som läser serieloggen

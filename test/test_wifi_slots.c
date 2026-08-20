@@ -183,13 +183,14 @@ static void test_setup_window_closes(void) {
 
 static void test_dma_gates_protect_the_flush(void) {
   const size_t flush = 12 * 480 * 2; /* 11 520 — panelflushens block */
-  const size_t open_floor = TG_WIFI_SETUP_DMA_OPEN_FACTOR * flush;
+  const size_t open_floor = TG_WIFI_SETUP_DMA_OPEN_FACTOR * flush +
+                            TG_WIFI_SETUP_DMA_OPEN_RESERVE_BYTES;
 
   check("plenty of DMA opens", tg_wifi_setup_dma_ok_to_open(200000, flush));
   check("exactly the open floor opens",
         tg_wifi_setup_dma_ok_to_open(open_floor, flush));
   check("below the open floor refuses",
-        !tg_wifi_setup_dma_ok_to_open(open_floor - flush, flush));
+        !tg_wifi_setup_dma_ok_to_open(open_floor - 1, flush));
 
   /* Kalibreringen mot verkligheten: v0.5.0:s friska baslinje på
    * torget-home-01 var 40960 byte (serielogg 2026-08-18). En grind som
@@ -198,6 +199,12 @@ static void test_dma_gates_protect_the_flush(void) {
    * faktorn över uppmätt verklighet. */
   check("the measured healthy baseline passes the open gate",
         tg_wifi_setup_dma_ok_to_open(40960, flush));
+
+  /* v0.7.0 med 256 KiB LVGL-pool, Wi-Fi-signal och reläklient har en lägre
+   * men stabil frisk baslinje: 31744 byte på riktig torget-home-01
+   * (2026-08-21). Grinden får inte återigen göra telefonsetup omöjlig. */
+  check("the current healthy panel baseline passes the open gate",
+        tg_wifi_setup_dma_ok_to_open(31744, flush));
 
   /* Fortsättningsgrinden efter APSTA-bytet: under x2 rivs fönstret hellre
    * än att httpd + DNS staplas ovanpå ett block som redan är i farozonen. */
@@ -212,6 +219,8 @@ static void test_dma_gates_protect_the_flush(void) {
         !tg_wifi_setup_dma_ok_to_open(200000, 0));
   check("an unset flush size refuses to continue",
         !tg_wifi_setup_dma_ok_to_continue(200000, 0));
+  check("an impossible flush cannot wrap the open floor",
+        !tg_wifi_setup_dma_ok_to_open(SIZE_MAX, SIZE_MAX / 2 + 1));
 }
 
 int main(void) {

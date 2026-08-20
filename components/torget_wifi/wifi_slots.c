@@ -123,7 +123,13 @@ bool tg_wifi_setup_dma_ok_to_open(size_t largest_dma, size_t flush_bytes) {
   /* flush_bytes == 0 vore en felkonfiguration som gjorde grinden till en
    * papperstiger — behandla den som "vet inte" och vägra. */
   if (flush_bytes == 0) return false;
-  return largest_dma / TG_WIFI_SETUP_DMA_OPEN_FACTOR >= flush_bytes;
+  if (flush_bytes >
+      (SIZE_MAX - TG_WIFI_SETUP_DMA_OPEN_RESERVE_BYTES) /
+          TG_WIFI_SETUP_DMA_OPEN_FACTOR)
+    return false;
+  const size_t floor = TG_WIFI_SETUP_DMA_OPEN_FACTOR * flush_bytes +
+                       TG_WIFI_SETUP_DMA_OPEN_RESERVE_BYTES;
+  return largest_dma >= floor;
 }
 
 bool tg_wifi_setup_dma_ok_to_continue(size_t largest_dma, size_t flush_bytes) {

@@ -103,11 +103,21 @@ assert "TG_WIFI_SSID" in main_c and "TG_WIFI2_SSID" in main_c
 # closed than freeze the glass.
 open_gate = setup_c.find("tg_wifi_setup_dma_ok_to_open")
 apsta = setup_c.find("esp_wifi_set_mode(WIFI_MODE_APSTA)")
-cont_gate = setup_c.find("tg_wifi_setup_dma_ok_to_continue")
+cont_gates = [
+    match.start()
+    for match in re.finditer(r"tg_wifi_setup_dma_ok_to_continue", setup_c)
+]
 httpd_start_at = setup_c.find("server_start();")
-assert 0 < open_gate < apsta < cont_gate < httpd_start_at, (
-    "window_open must gate on DMA before the APSTA switch and again before "
-    "the HTTP server"
+publish_open_at = setup_c.find("atomic_store(&s_open, true)")
+assert len(cont_gates) == 2, (
+    "window_open must check DMA after APSTA and after the portal tasks start"
+)
+assert (
+    0 < open_gate < apsta < cont_gates[0] < httpd_start_at
+    < cont_gates[1] < publish_open_at
+), (
+    "window_open must gate before APSTA, before HTTP/DNS, and once more "
+    "after their real allocation before publishing the setup window"
 )
 assert "flush_dma_bytes" in main_c, (
     "main.c must hand the flush's DMA floor to the setup hooks"
