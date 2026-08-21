@@ -35,11 +35,13 @@ physical correctness.
 
 ### 1. Shared header chrome inside the drift container — chosen
 
-Create one platform-owned header-status host as a child of `tg.shift`, not
-`lv_layer_top()`. Every normal surface reserves the same top-right header slot.
-The host moves with the page during burn-in drift while the network state stays
-centralized. Takeovers can explicitly show or hide the host using the existing
-mode API.
+Create one platform-owned header-status host as a child of `tg.shift`, not as
+a permanent `lv_layer_top()` overlay. Every normal surface reserves the same
+top-right header slot. The host moves with the page during burn-in drift while
+the network state stays centralized. While a true full-screen OTA or Wi-Fi
+setup takeover owns `lv_layer_top()`, reparent that same host into the takeover
+layer; return it to `tg.shift` as soon as the takeover hides. Never create a
+second status object.
 
 This is the smallest architecture that fixes both ownership and drift without
 duplicating Wi-Fi state throughout every app.
@@ -89,12 +91,14 @@ byte-for-byte regeneration are test contracts.
 state changes. No page owns or calculates signal strength.
 
 The status host belongs to the shared translated shell and is created after
-the app roots so it remains visible in its reserved slot. It must not use
-`lv_layer_top()`. The visibility contract remains explicit:
+the app roots so it remains visible in its reserved slot. It is temporarily
+reparented to `lv_layer_top()` only while a full-screen takeover is visible,
+then restored to `tg.shift`. The visibility contract remains explicit:
 
 - boot and full-screen private/maintenance states may hide it;
 - ordinary apps, launcher, OTA-ready, and Wi-Fi setup use the shared slot;
-- page switching and provider switching do not recreate the object;
+- page switching, provider switching, and takeover reparenting do not recreate
+  the object;
 - pixel drift moves the page and status host together.
 
 ## Verification and acceptance
@@ -102,7 +106,8 @@ the app roots so it remains visible in its reserved slot. It must not use
 Before production code changes, regressions must fail on the current tree and
 independently prove:
 
-1. the Wi-Fi host is not parented to `lv_layer_top()` and shares `tg.shift`;
+1. the normal Wi-Fi host shares `tg.shift`, while takeover attach/detach moves
+   that same object to `lv_layer_top()` and back without duplication;
 2. every drift step preserves the exact relative offset between the header
    divider/context and the status mark;
 3. the four named assets are distinct native `20 x 18` rasters with transparent
