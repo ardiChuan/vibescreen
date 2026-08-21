@@ -270,7 +270,11 @@ assert "onsubmit=" in setup_c and ".disabled=true" in setup_c, (
 # The README and release reuse exact simulator frames. Pin both checked-in
 # files to the panel's native size without adding an image-library dependency
 # to this cross-language wiring test.
-for image_name in ("vibepulse-wifi-searching.png", "vibepulse-wifi-setup.png"):
+for image_name in (
+    "vibepulse-wifi-searching.png",
+    "vibepulse-wifi-setup.png",
+    "vibepulse-wifi-signal.png",
+):
     image_path = root / "docs/img" / image_name
     assert image_path.is_file(), f"missing WiFi onboarding image: {image_name}"
     image_bytes = image_path.read_bytes()
@@ -285,6 +289,21 @@ for image_name in ("vibepulse-wifi-searching.png", "vibepulse-wifi-setup.png"):
     )
     assert f"img/{image_name}" in wifi_doc, (
         f"docs/wifi.md does not show WiFi onboarding image: {image_name}"
+    )
+
+for guide, name in ((readme, "README"), (wifi_doc, "WiFi guide")):
+    lower = " ".join(guide.lower().split())
+    for claim in (
+        "scan the qr",
+        "not secure",
+        "192.168.4.1",
+        "2.4 ghz",
+        "only after the panel connects",
+        "does not mean internet",
+    ):
+        assert claim in lower, f"{name} must explain {claim!r}"
+    assert "old saved networks remain available" in lower, (
+        f"{name} must explain failed joins preserve fallback networks"
     )
 
 print("OK: WiFi setup window, Mac script and consent model agree")

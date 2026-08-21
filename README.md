@@ -396,26 +396,47 @@ The panel remembers up to six places. Arrive somewhere new and it needs the
 network once; every visit after that it joins by itself.
 
 <p align="center">
-  <img src="docs/img/vibepulse-wifi-searching.png" width="47%" alt="VibePulse explains that the saved phone hotspot is not visible and reminds the user that the panel needs 2.4 GHz Wi-Fi">
+  <img src="docs/img/vibepulse-wifi-searching.png" width="31%" alt="VibePulse explains that the saved phone hotspot is not visible and reminds the user that the panel needs 2.4 GHz Wi-Fi">
   &nbsp;
-  <img src="docs/img/vibepulse-wifi-setup.png" width="47%" alt="VibePulse Wi-Fi setup screen showing the temporary network, setup password, phone URL, Mac helper command, and countdown">
+  <img src="docs/img/vibepulse-wifi-setup.png" width="31%" alt="VibePulse Wi-Fi setup screen with a large phone-scannable QR code, temporary network, setup password, local address, and countdown">
+  &nbsp;
+  <img src="docs/img/vibepulse-wifi-signal.png" width="31%" alt="The shared launcher with a neutral three-bar Wi-Fi signal icon at the top right">
 </p>
-<p align="center"><em>The real shared-LVGL 480×480 frames: first the panel explains what failed, then it opens a ten-minute phone/Mac setup window.</em></p>
+<p align="center"><em>Real 480×480 frames from the shared LVGL firmware renderer: recovery, phone-first QR setup, and the global signal indicator.</em></p>
+
+The normal setup path needs only the panel and a phone:
+
+1. **Scan the QR** on the panel. It joins your phone to the temporary
+   `VibePulse-setup` network; it does not contain your destination Wi-Fi
+   password.
+2. The local setup page should open. If it does not, open
+   `http://192.168.4.1/` yourself. A browser label such as **Not Secure** is
+   expected here: this is a short-lived, device-local page with no internet
+   route, not a public website.
+3. Pick a **2.4 GHz** network, enter its password, and tap **Join** once.
+   The ESP32-S3 cannot see 5 GHz-only networks. On an iPhone hotspot, enable
+   *Maximize Compatibility*.
+4. Keep the phone nearby while the glass says JOINING. The new credentials
+   are remembered **only after the panel connects** successfully. If the
+   password is wrong or the network disappears, old saved networks remain
+   available and the panel tells you what to retry.
+
+On a Mac there is also an optional one-command shortcut:
 
 ```
-tools/wifi-here.sh                 # on the Mac. That is the whole thing.
+tools/wifi-here.sh
 ```
 
-The script reads the network your Mac is already on, takes that password
-out of your keychain (macOS asks you — that prompt is the consent), hands
-it to the panel over its own access point, and gives your WiFi back. About
-twenty seconds offline, nothing typed.
+It reads the network your Mac is already on, takes that password out of your
+keychain (macOS asks you — that prompt is the consent), hands it to the panel
+over its temporary access point, and gives the Mac's Wi-Fi back. The phone
+flow remains the universal path and needs no computer or command line.
 
-No Mac at hand? The panel raises **VibePulse-setup** and puts the password
-on the glass. Join it from your phone, the captive portal opens by itself,
-and you pick from what the *panel's* radio can see — which is the list that
-matters, since the ESP32-S3 cannot hear 5 GHz no matter how many bars your
-phone shows.
+The small neutral Wi-Fi symbol is global: zero bars plus a slash means the
+panel is disconnected; one to three bars describe only its connection to the
+local access point. It **does not mean internet** access, tokenserver reachability,
+or relay health. During setup the complete symbol means setup mode, not a
+successful destination join.
 
 The setup window opens on its own after 90 seconds without a network, or
 immediately on a 3-second KEY3 hold. Before that, at 60 seconds, the glass
