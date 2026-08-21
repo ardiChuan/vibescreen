@@ -367,3 +367,18 @@ direct LAN wins for five seconds, authenticated relay rows expire, and an old
 relay-owned activity view clears once instead of pretending to be live.
 **Watch for:** adding another screen to a shared “connected” indicator without
 testing the exact transport and stale boundary that feed actually uses.
+
+## 2026-08-21 · Change detection is not a cloud write budget
+
+**What happened:** the numbers Worker began returning error 1101 and every
+cross-network feed stayed stale even though its code and KV binding were
+healthy. **Root cause:** the publisher sent on every payload change; the
+quota body includes a current-time field and minute countdowns, so it wrote
+about every 30 seconds until Cloudflare KV's account-wide 1,000-write daily
+free allowance was exhausted. The old arithmetic counted only five-minute
+heartbeats and ignored real changes. **The rule:** a metered sink needs an
+absolute rate ceiling, not only change detection. **Guards:** quotas are
+capped at one write per five minutes and Max Tracker/GitHub at one per thirty
+minutes; a regression simulates two continuously changing publishers for a
+full day and requires at most 768 writes. **Watch for:** adding an endpoint or
+shortening a ceiling without recomputing the account-wide two-publisher bound.

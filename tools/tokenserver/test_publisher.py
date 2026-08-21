@@ -10,10 +10,12 @@ import unittest
 
 try:
     from .publisher import (Publisher, HEARTBEAT_EVERY_S,
-                            payload_fingerprint, should_send, USER_AGENT)
+                            MIN_SEND_INTERVAL_S, payload_fingerprint,
+                            should_send, USER_AGENT)
 except ImportError:
     from publisher import (Publisher, HEARTBEAT_EVERY_S,
-                           payload_fingerprint, should_send, USER_AGENT)
+                           MIN_SEND_INTERVAL_S, payload_fingerprint,
+                           should_send, USER_AGENT)
 
 
 class FingerprintTests(unittest.TestCase):
@@ -76,17 +78,20 @@ class PublisherTests(unittest.TestCase):
         p.publish_once()
         self.assertEqual(len(sent), 1, "an unchanged payload was resent")
 
-    def test_change_and_heartbeat_both_send(self):
+    def test_change_waits_for_the_endpoint_ceiling_then_sends(self):
         value = {"pct": 73}
         p, sent, clock = self._publisher({"/api/tokens": lambda: dict(value)})
         p.publish_once()
         value["pct"] = 74
         clock["now"] += 30
         p.publish_once()
-        self.assertEqual(len(sent), 2, "a changed payload must send")
-        clock["now"] += HEARTBEAT_EVERY_S
+        self.assertEqual(len(sent), 1, "a change must respect the write cap")
+        clock["now"] += MIN_SEND_INTERVAL_S["/api/tokens"] - 30
         p.publish_once()
-        self.assertEqual(len(sent), 3, "the heartbeat must send")
+        self.assertEqual(len(sent), 2, "the bounded change must send")
+        clock["now"] += MIN_SEND_INTERVAL_S["/api/tokens"]
+        p.publish_once()
+        self.assertEqual(len(sent), 3, "the heartbeat must still send")
 
     def test_a_failed_send_retries_next_tick(self):
         p, sent, clock = self._publisher({"/api/tokens": lambda: {"a": 1}},
@@ -111,6 +116,26 @@ class PublisherTests(unittest.TestCase):
         # constant to imitate anything, this fails.
         self.assertTrue(USER_AGENT.startswith("vibepulse-publisher/"),
                         USER_AGENT)
+
+    def test_two_publishers_fit_the_free_daily_write_budget(self):
+        """Even continuously changing payloads remain below 1,000/day."""
+        total_sends = 0
+        for _publisher_number in range(2):
+            generation = {"value": 0}
+            p, _sent, clock = self._publisher({
+                "/api/tokens": lambda g=generation: {"value": g["value"]},
+                "/api/max-tracker": lambda g=generation: {
+                    "value": g["value"],
+                },
+                "/api/github": lambda g=generation: {"value": g["value"]},
+            })
+            for _tick in range(int(24 * 60 * 60 / 30)):
+                generation["value"] += 1
+                total_sends += p.publish_once()
+                clock["now"] += 30
+
+        self.assertLessEqual(total_sends, 768)
+        self.assertLess(total_sends, 1000)
 
 
 if __name__ == "__main__":
