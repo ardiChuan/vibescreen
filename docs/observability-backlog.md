@@ -424,7 +424,24 @@ underlying fallthrough is not.
 dated suffix dropped) and keep the map for exceptions only — then a new
 model is styled on arrival instead of on the next hand edit.
 
-### OBS-28 · Pin logging config on purpose
+### OBS-31 · A codex wire test is RST-flaky on Windows CI
+`test · S · open`
+`test_every_json_post_route_rejects_text_plain_before_parsing`
+(`test_codex_interactions.py`, subtest `/api/codex/permission`) failed
+once on the `windows-latest` tokenserver job with `None != 415` — the
+client read **no HTTP status at all** — then passed on the same commit
+in the re-run (run 32452343376, attempts 1→2; the run before, with
+identical tokenserver code, was green too). The shape is the classic
+WinSock race: a server that rejects early and closes without draining
+the request body can trigger a connection reset before the client reads
+the response — Linux and macOS deliver the buffered response anyway,
+Windows drops it. One occurrence in the suite's first two Windows runs
+of the full host-gate era; worth a signature here before it becomes a
+"CI is unreliable" impression.
+**Fix:** make the rejection path drain (or the test client tolerate one
+retry of) the unread body on early 4xx, and reproduce under load on a
+Windows box before trusting either — a wire test asserting a security
+boundary must not be loosened blindly.
 `firmware · S · open`
 `sdkconfig.defaults` deliberately pins flash, PSRAM, LVGL, and mbedTLS
 with reasoned comments — but nothing about logging: default level,
