@@ -1233,7 +1233,7 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                     self.assertEqual(self._count(image, box, self.NY_CODEX), 0)
                     self.assertEqual(self._count(image, box, self.NY_CLAUDE), 0)
                     for x in range(408, 418):
-                        for y in range(21, 58):
+                        for y in range(38, 66):
                             self.assertEqual(image.getpixel((x, y)), (0, 0, 0))
                     counts.append((
                         self._count(image, box, self.NY_WHITE),
@@ -1279,6 +1279,40 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         self.assertGreaterEqual(
             first + 38, 43,
             "the fan must radiate from the lower dot, not hug the box top",
+        )
+
+    def test_global_wifi_icon_preserves_amoled_safe_negative_space(self):
+        """The physical AMOLED blooms bright rounded strokes into adjacent
+        one-pixel gaps.  A familiar Wi-Fi mark therefore needs independently
+        separated lobes, not merely a plausible total pixel count."""
+        image = self.image("torget-wifi-global-claude-3.bmp")
+        remaining = {
+            (x, y)
+            for y in range(38, 66)
+            for x in range(418, 446)
+            if max(image.getpixel((x, y))) >= 80
+        }
+        component_sizes = []
+        while remaining:
+            stack = [remaining.pop()]
+            size = 0
+            while stack:
+                x, y = stack.pop()
+                size += 1
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        if dx == 0 and dy == 0:
+                            continue
+                        neighbour = (x + dx, y + dy)
+                        if neighbour in remaining:
+                            remaining.remove(neighbour)
+                            stack.append(neighbour)
+            component_sizes.append(size)
+
+        self.assertGreaterEqual(
+            sum(size >= 8 for size in component_sizes),
+            3,
+            "AMOLED-safe Wi-Fi lobes must remain separated by real black space",
         )
 
     def test_wifi_status_is_hidden_on_boot_and_foreground_on_overlays(self):

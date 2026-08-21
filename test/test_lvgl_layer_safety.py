@@ -71,7 +71,11 @@ assert "wifi_group" not in agent_monitor
 assert "wifi_bars" not in agent_monitor
 assert "lv_obj_set_pos(tg.wifi_group, 418, 38)" in platform_ui
 assert "lv_obj_set_size(tg.wifi_group, 28, 28)" in platform_ui
-assert platform_ui.count("wifi_arc_create(") == 4  # helper + three calls
+assert "extern const lv_font_t torget_wifi_24;" in platform_ui
+assert platform_ui.count("LV_SYMBOL_WIFI") == 2
+assert "wifi_active_clip" in platform_ui
+assert "lv_arc_create" not in platform_ui
+assert "lv_obj_set_style_transform" not in platform_ui
 assert "lv_line_create(tg.wifi_group)" in platform_ui
 assert "lv_layer_top()" in platform_ui
 assert "TG_WIFI_STATUS_NORMAL" in platform_header
