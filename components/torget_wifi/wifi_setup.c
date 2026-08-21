@@ -688,10 +688,21 @@ static void guard_task(void *arg) {
       torget_wifi_ui_set(TG_WIFI_UI_HIDDEN, NULL, NULL, NULL, 0);
     } else if (now_open && applied_seq != 0) {
       tg_wifi_join_status status = atomic_load(&s_join_status);
-      torget_wifi_ui_set(status == TG_WIFI_JOIN_CONNECTED
-                             ? TG_WIFI_UI_JOINED
-                             : TG_WIFI_UI_JOINING,
-                         active_trial.ssid, NULL, NULL, 0);
+      tg_wifi_ui_state ui_state = TG_WIFI_UI_JOINING;
+      const char *detail = NULL;
+      if (status == TG_WIFI_JOIN_CONNECTED) {
+        ui_state = TG_WIFI_UI_JOINED;
+      } else if (status == TG_WIFI_JOIN_RETRY_PASSWORD) {
+        ui_state = TG_WIFI_UI_FAILED;
+        detail = "WRONG PASSWORD - TRY AGAIN ON PHONE";
+      } else if (status == TG_WIFI_JOIN_RETRY_NOT_FOUND) {
+        ui_state = TG_WIFI_UI_FAILED;
+        detail = "NOT FOUND - 2.4 GHZ ONLY";
+      } else if (status == TG_WIFI_JOIN_RETRY_CONNECTION) {
+        ui_state = TG_WIFI_UI_FAILED;
+        detail = "COULD NOT CONNECT - TRY AGAIN";
+      }
+      torget_wifi_ui_set(ui_state, active_trial.ssid, NULL, detail, 0);
     } else if (now_open) {
       int left = (int)((TG_WIFI_SETUP_WINDOW_US - (now - opened_us)) / 1000000);
       torget_wifi_ui_set(TG_WIFI_UI_OPEN, AP_SSID, s_ap_pass, NULL, left);

@@ -207,9 +207,13 @@ EXPECTED = {
 
     # Wi-Fi onboarding uses the same target LVGL overlay in the simulator.
     "torget-wifi-searching.bmp",
+    "torget-wifi-starting.bmp",
     "torget-wifi-setup-open.bmp",
+    "torget-wifi-setup-qr.bmp",
+    "torget-wifi-setup-manual.bmp",
     "torget-wifi-joining.bmp",
     "torget-wifi-joined.bmp",
+    "torget-wifi-failed-password.bmp",
 
     "torget-boot-cold.bmp",
     "torget-boot-wifi.bmp",
@@ -453,13 +457,16 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         later_row = [image.getpixel((x, 366)) for x in range(120, 360)]
         self.assertIn(muted, later_row)
 
-    def test_wifi_onboarding_states_are_legible_and_visually_distinct(self):
+    def test_wifi_onboarding_states(self):
         searching = self.image("torget-wifi-searching.bmp")
-        opened = self.image("torget-wifi-setup-open.bmp")
+        starting = self.image("torget-wifi-starting.bmp")
+        opened = self.image("torget-wifi-setup-qr.bmp")
+        manual = self.image("torget-wifi-setup-manual.bmp")
         joining = self.image("torget-wifi-joining.bmp")
         joined = self.image("torget-wifi-joined.bmp")
+        failed = self.image("torget-wifi-failed-password.bmp")
 
-        for image in (searching, opened, joining, joined):
+        for image in (searching, starting, opened, manual, joining, joined, failed):
             with self.subTest(image=image):
                 self.assertEqual(image.getpixel((5, 5)), (0, 0, 0))
                 header = image.crop((34, 48, 446, 116))
@@ -469,15 +476,22 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                     300,
                 )
 
-        # The setup frame must visibly carry the AP, password, phone URL,
-        # one-command Mac path, and bounded-window footer in their own bands.
+        # The QR frame has one white 196px canvas with black finder/data ink.
+        qr = opened.crop((142, 108, 338, 304))
+        pixels = list(qr.get_flattened_data())
+        self.assertGreater(sum(pixel == (255, 255, 255) for pixel in pixels), 12000)
+        self.assertGreater(sum(pixel == (0, 0, 0) for pixel in pixels), 2500)
+        for x, y in ((153, 119), (311, 119), (153, 277)):
+            finder = opened.crop((x, y, x + 24, y + 24))
+            self.assertIn((0, 0, 0), finder.get_flattened_data())
+
+        # QR, SSID, password, fallback URL and footer occupy separate bands.
         for box in (
-            (34, 132, 446, 164),
-            (34, 166, 446, 204),
-            (34, 210, 446, 266),
-            (34, 274, 446, 302),
-            (34, 302, 446, 332),
-            (34, 390, 446, 430),
+            (142, 108, 338, 304),
+            (34, 312, 446, 344),
+            (34, 346, 446, 394),
+            (34, 400, 446, 432),
+            (34, 438, 446, 476),
         ):
             with self.subTest(box=box):
                 self.assertTrue(any(
@@ -485,9 +499,30 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                     for pixel in opened.crop(box).get_flattened_data()
                 ))
 
-        self.assertNotEqual(searching.tobytes(), opened.tobytes())
+        # Manual fallback has no large white QR canvas but retains instructions.
+        manual_qr = manual.crop((142, 108, 338, 304))
+        self.assertLess(
+            sum(pixel == (255, 255, 255)
+                for pixel in manual_qr.get_flattened_data()),
+            3000,
+        )
+
+        self.assertNotEqual(searching.tobytes(), starting.tobytes())
+        self.assertNotEqual(starting.tobytes(), opened.tobytes())
+        self.assertNotEqual(opened.tobytes(), manual.tobytes())
         self.assertNotEqual(opened.tobytes(), joining.tobytes())
         self.assertNotEqual(joining.tobytes(), joined.tobytes())
+        self.assertNotEqual(joined.tobytes(), failed.tobytes())
+        self.assertEqual(
+            joining.crop((70, 390, 410, 432)).tobytes(),
+            failed.crop((70, 390, 410, 432)).tobytes(),
+            "joining is inside the setup window, so KEY3 must say CLOSES",
+        )
+        self.assertEqual(
+            joined.crop((70, 390, 410, 432)).tobytes(),
+            failed.crop((70, 390, 410, 432)).tobytes(),
+            "joined linger is still inside the setup window",
+        )
 
     def test_provider_bars_are_segmented_with_locked_colors_and_marker(self):
         cases = (

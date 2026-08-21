@@ -1106,19 +1106,27 @@ static int run_vibepulse_static_qa(void) {
   dump_overlay_frame("ota-ring-notice");
   torget_ota_ui_set(TG_OTA_UI_HIDDEN, 0, 0);
 
-  /* Wi-Fi onboarding uses the exact target overlay. These four states make
+  /* Wi-Fi onboarding uses the exact target overlay. These states make
    * the phone/Mac setup path visible and keep its copy/layout in the same
    * deterministic 480x480 regression set as OTA and Needs You. */
   torget_wifi_ui_set(TG_WIFI_UI_SEARCHING, "Niclas iPhone", NULL,
                      "NOT SEEN - 2.4 GHZ ONLY", 24);
   dump_overlay_frame("wifi-searching");
+  torget_wifi_ui_set(TG_WIFI_UI_STARTING, NULL, NULL, NULL, 0);
+  dump_overlay_frame("wifi-starting");
   torget_wifi_ui_set(TG_WIFI_UI_OPEN, "VibePulse-setup", "A1B2C3D4E5F6",
                      NULL, 583);
   dump_overlay_frame("wifi-setup-open");
+  dump_overlay_frame("wifi-setup-qr");
+  torget_wifi_ui_set(TG_WIFI_UI_OPEN, "Cafe Guest", "", NULL, 583);
+  dump_overlay_frame("wifi-setup-manual");
   torget_wifi_ui_set(TG_WIFI_UI_JOINING, "Niclas iPhone", NULL, NULL, 0);
   dump_overlay_frame("wifi-joining");
   torget_wifi_ui_set(TG_WIFI_UI_JOINED, "Niclas iPhone", NULL, NULL, 0);
   dump_overlay_frame("wifi-joined");
+  torget_wifi_ui_set(TG_WIFI_UI_FAILED, "Niclas iPhone", NULL,
+                     "WRONG PASSWORD - TRY AGAIN ON PHONE", 0);
+  dump_overlay_frame("wifi-failed-password");
   torget_wifi_ui_set(TG_WIFI_UI_HIDDEN, NULL, NULL, NULL, 0);
 
   /* Value multiple. Every state the parser can hand the page gets its own
