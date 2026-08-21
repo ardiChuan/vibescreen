@@ -2249,6 +2249,8 @@ class HandlerPrivacyTests(unittest.TestCase):
             getattr(tokenserver.Handler, "legacy_claude_panel_v1", False),
             getattr(tokenserver.Handler, "interaction_relay_status", "off"),
             getattr(tokenserver.Handler, "interaction_relay_reason", None),
+            getattr(tokenserver.Handler, "agent_status_relay_status", "off"),
+            getattr(tokenserver.Handler, "agent_status_relay_reason", None),
         )
         self.addCleanup(setattr, tokenserver.Handler,
                         "claude_interactions", saved[0])
@@ -2262,12 +2264,18 @@ class HandlerPrivacyTests(unittest.TestCase):
                         "interaction_relay_status", saved[4])
         self.addCleanup(setattr, tokenserver.Handler,
                         "interaction_relay_reason", saved[5])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "agent_status_relay_status", saved[6])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "agent_status_relay_reason", saved[7])
         tokenserver.Handler.claude_interactions = False
         tokenserver.Handler.codex_interactions = True
         tokenserver.Handler.interaction_detail = True
         tokenserver.Handler.legacy_claude_panel_v1 = True
         tokenserver.Handler.interaction_relay_status = "off"
         tokenserver.Handler.interaction_relay_reason = None
+        tokenserver.Handler.agent_status_relay_status = "off"
+        tokenserver.Handler.agent_status_relay_reason = None
 
         handler.do_GET()
 
@@ -2278,6 +2286,7 @@ class HandlerPrivacyTests(unittest.TestCase):
             "detail": True,
             "legacyClaudePanelV1": True,
             "relay": {"status": "off"},
+            "agentStatusRelay": {"status": "off"},
             "transport": "lan",
         })
         serialized = json.dumps(payload["interactions"])
@@ -3011,6 +3020,7 @@ class ArgumentParsingTests(unittest.TestCase):
         self.assertIsNone(defaults.interaction_detail)
         self.assertIsNone(defaults.legacy_claude_panel_v1)
         self.assertIsNone(defaults.interaction_relay)
+        self.assertIsNone(defaults.agent_status_relay)
 
         claude = parser.parse_args(["--claude-interactions"])
         codex = parser.parse_args(["--codex-interactions"])
@@ -3020,6 +3030,8 @@ class ArgumentParsingTests(unittest.TestCase):
         relay = parser.parse_args([
             "--interaction-relay", "https://relay.example"])
         relay_off = parser.parse_args(["--no-interaction-relay"])
+        status_relay = parser.parse_args(["--agent-status-relay"])
+        status_relay_off = parser.parse_args(["--no-agent-status-relay"])
         self.assertTrue(claude.claude_interactions)
         self.assertFalse(claude.codex_interactions)
         self.assertTrue(codex.codex_interactions)
@@ -3030,6 +3042,8 @@ class ArgumentParsingTests(unittest.TestCase):
         self.assertFalse(modern_panel.legacy_claude_panel_v1)
         self.assertEqual(relay.interaction_relay, "https://relay.example")
         self.assertIs(relay_off.interaction_relay, False)
+        self.assertTrue(status_relay.agent_status_relay)
+        self.assertFalse(status_relay_off.agent_status_relay)
 
     def test_saved_true_switches_can_be_disabled_and_persisted(self):
         parser = tokenserver._build_arg_parser()
@@ -3039,6 +3053,7 @@ class ArgumentParsingTests(unittest.TestCase):
             interaction_detail=True,
             legacy_claude_panel_v1=True,
             interaction_relay=True,
+            agent_status_relay=True,
             interaction_relay_url="https://relay.example",
             interaction_mailbox="vp_A1b2C3d4E5f6G7h8",
         )
@@ -3054,6 +3069,7 @@ class ArgumentParsingTests(unittest.TestCase):
                 interaction_detail=True,
                 legacy_claude_panel_v1=True,
                 interaction_relay=True,
+                agent_status_relay=True,
                 interaction_relay_url="https://relay.example",
                 interaction_mailbox="vp_A1b2C3d4E5f6G7h8",
             ))
@@ -3067,6 +3083,7 @@ class ArgumentParsingTests(unittest.TestCase):
                     "--no-interaction-detail",
                     "--no-legacy-claude-panel-v1",
                     "--no-interaction-relay",
+                    "--no-agent-status-relay",
                 ]), path=path)
             self.assertEqual(all_off, VibePulseConfig(
                 interaction_relay_url="https://relay.example",
@@ -3157,7 +3174,8 @@ class ArgumentParsingTests(unittest.TestCase):
                 "--no-claude-interactions", "--no-codex-interactions",
                 "--no-interaction-detail", "--legacy-claude-panel-v1",
                 "--no-legacy-claude-panel-v1", "--interaction-relay",
-                "--no-interaction-relay"):
+                "--no-interaction-relay", "--agent-status-relay",
+                "--no-agent-status-relay"):
             self.assertIn(flag, help_text)
         self.assertIn("saved", help_text.lower())
         self.assertIn("disable", help_text.lower())
@@ -3347,16 +3365,25 @@ class InteractionRelayConfigTests(unittest.TestCase):
         self.addCleanup(home_patch.stop)
         self.saved = (
             tokenserver.Handler.interaction_store,
+            tokenserver.Handler.agent_status,
             getattr(tokenserver.Handler, "interaction_relay_status", "off"),
             getattr(tokenserver.Handler, "interaction_relay_reason", None),
+            getattr(tokenserver.Handler, "agent_status_relay_status", "off"),
+            getattr(tokenserver.Handler, "agent_status_relay_reason", None),
         )
         tokenserver.Handler.interaction_store = mock.Mock()
+        tokenserver.Handler.agent_status = mock.Mock()
+        tokenserver.Handler.agent_status.snapshot.return_value = {
+            "v": 2, "seq": 1, "agents": {}}
         self.addCleanup(self._restore)
 
     def _restore(self):
         (tokenserver.Handler.interaction_store,
+         tokenserver.Handler.agent_status,
          tokenserver.Handler.interaction_relay_status,
-         tokenserver.Handler.interaction_relay_reason) = self.saved
+         tokenserver.Handler.interaction_relay_reason,
+         tokenserver.Handler.agent_status_relay_status,
+         tokenserver.Handler.agent_status_relay_reason) = self.saved
 
     def config(self, **changes):
         values = {
@@ -3389,6 +3416,8 @@ class InteractionRelayConfigTests(unittest.TestCase):
         self.assertIs(tokenserver.Handler.interaction_store, store)
         self.assertEqual(tokenserver.Handler.interaction_relay_status, "off")
         self.assertIsNone(tokenserver.Handler.interaction_relay_reason)
+        self.assertEqual(tokenserver.Handler.agent_status_relay_status, "off")
+        self.assertIsNone(tokenserver.Handler.agent_status_relay_reason)
 
     def test_ready_relay_starts_with_only_required_public_and_secret_values(self):
         adapter = self.configure()
@@ -3400,8 +3429,52 @@ class InteractionRelayConfigTests(unittest.TestCase):
         self.assertEqual(adapter.kwargs["device_key_hex"], self.SECRET)
         self.assertIs(adapter.kwargs["store"],
                       tokenserver.Handler.interaction_store)
+        self.assertTrue(adapter.kwargs["publish_interactions"])
+        self.assertFalse(adapter.kwargs["publish_agent_status"])
         self.assertEqual(tokenserver.Handler.interaction_relay_status, "ready")
         self.assertIsNone(tokenserver.Handler.interaction_relay_reason)
+
+    def test_status_only_starts_without_providers_detail_or_store(self):
+        tokenserver.Handler.interaction_store = None
+        config = VibePulseConfig(
+            agent_status_relay=True,
+            interaction_relay_url="https://relay.example",
+            interaction_mailbox=self.MAILBOX,
+        )
+
+        adapter = self.configure(config)
+
+        self.assertTrue(adapter.started)
+        self.assertIsNone(adapter.kwargs["store"])
+        self.assertFalse(adapter.kwargs["publish_interactions"])
+        self.assertTrue(adapter.kwargs["publish_agent_status"])
+        self.assertEqual(adapter.kwargs["status_source"](), {
+            "v": 2, "seq": 1, "agents": {}})
+        self.assertEqual(tokenserver.Handler.interaction_relay_status, "off")
+        self.assertEqual(tokenserver.Handler.agent_status_relay_status, "ready")
+        self.assertIsNone(tokenserver.Handler.agent_status_relay_reason)
+
+    def test_both_relays_share_transport_but_keep_independent_switches(self):
+        adapter = self.configure(self.config(agent_status_relay=True))
+
+        self.assertTrue(adapter.kwargs["publish_interactions"])
+        self.assertTrue(adapter.kwargs["publish_agent_status"])
+        self.assertEqual(tokenserver.Handler.interaction_relay_status, "ready")
+        self.assertEqual(tokenserver.Handler.agent_status_relay_status, "ready")
+
+    def test_missing_status_source_disables_only_status(self):
+        tokenserver.Handler.agent_status = None
+        adapter = self.configure(self.config(agent_status_relay=True))
+
+        self.assertTrue(adapter.started)
+        self.assertTrue(adapter.kwargs["publish_interactions"])
+        self.assertFalse(adapter.kwargs["publish_agent_status"])
+        self.assertEqual(tokenserver.Handler.interaction_relay_status, "ready")
+        self.assertEqual(
+            tokenserver.Handler.agent_status_relay_status, "disabled")
+        self.assertEqual(
+            tokenserver.Handler.agent_status_relay_reason,
+            "status-source-missing")
 
     def test_each_missing_requirement_disables_only_the_relay(self):
         cases = (

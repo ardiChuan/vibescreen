@@ -365,6 +365,7 @@ def healthy_diagnostics():
             "detail": False,
             "legacyClaudePanelV1": False,
             "relay": {"status": "off"},
+            "agentStatusRelay": {"status": "off"},
             "transport": "lan",
         },
     }).encode()
@@ -1340,7 +1341,8 @@ class SetupPlanTests(unittest.TestCase):
         self.assertIn("relay", choices)
         relay_choices = choices["relay"]._subparsers._group_actions[0].choices
         self.assertEqual(set(relay_choices), {
-            "install", "status", "doctor", "disable", "uninstall"})
+            "install", "status", "doctor", "disable", "uninstall",
+            "enable-status", "disable-status"})
 
     def test_install_plan_is_exact_and_paths_with_spaces_stay_one_argv(self):
         setup = load_setup()
@@ -1502,7 +1504,7 @@ class SetupPlanTests(unittest.TestCase):
             self.assertEqual(output.getvalue().splitlines(), [
                 "Claude: ON", "Codex: OFF", "Detail: ON",
                 "Legacy Claude panel v1: OFF",
-                "Interaction relay: OFF"])
+                "Interaction relay: OFF", "Agent status relay: OFF"])
             self.assertNotIn("key", output.getvalue().lower())
 
 
@@ -1597,6 +1599,120 @@ class RelaySetupTests(unittest.TestCase):
             self.assertTrue(backup.exists())
             self.assertNotIn(self.MAC_TOKEN, output.getvalue())
             self.assertNotIn(self.PANEL_TOKEN, output.getvalue())
+
+    def test_status_relay_requires_consent_and_proves_mac_ownership(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory(prefix="relay-status-consent-") as tmp:
+            config, token, secrets_h, service, _wrangler = self.make_paths(tmp)
+            mailbox = "vp_" + self.MAILBOX_SUFFIX
+            saved = setup.VibePulseConfig(
+                claude_interactions=True,
+                interaction_detail=True,
+                interaction_relay=False,
+                agent_status_relay=False,
+                interaction_relay_url=self.URL,
+                interaction_mailbox=mailbox)
+            setup.save_config(config, saved)
+            token.parent.mkdir(parents=True)
+            token.write_text(self.MAC_TOKEN + "\n", encoding="ascii")
+            token.chmod(0o600)
+            secrets_h.write_text(
+                secrets_h.read_text(encoding="utf-8") +
+                setup._relay_secrets_block(
+                    self.URL, mailbox, self.PANEL_TOKEN), encoding="utf-8")
+
+            calls = []
+
+            def open_url(request, **kwargs):
+                calls.append((request, kwargs))
+                return BytesResponse(b"", status=204, content_types=())
+
+            output = io.StringIO()
+            self.assertEqual(setup.main(
+                ["relay", "enable-status"], config_path=config,
+                relay_token_path=token, secrets_path=secrets_h,
+                interaction_relay_dir=service, urlopen=open_url,
+                stdout=output, stdin_isatty=False), 1)
+            self.assertEqual(setup.load_config(config), saved)
+            self.assertEqual(calls, [])
+            self.assertIn("consent", output.getvalue().lower())
+
+            output = io.StringIO()
+            self.assertEqual(setup.main(
+                ["relay", "enable-status", "--yes-e2e-cloud"],
+                config_path=config, relay_token_path=token,
+                secrets_path=secrets_h, interaction_relay_dir=service,
+                urlopen=open_url, stdout=output, stdin_isatty=False), 0)
+            enabled = setup.load_config(config)
+            self.assertTrue(enabled.agent_status_relay)
+            self.assertFalse(enabled.interaction_relay)
+            self.assertTrue(enabled.claude_interactions)
+            self.assertTrue(enabled.interaction_detail)
+            self.assertEqual(enabled.interaction_relay_url, self.URL)
+            self.assertEqual(enabled.interaction_mailbox, mailbox)
+            self.assertEqual(len(calls), 1)
+            request, kwargs = calls[0]
+            self.assertEqual(
+                request.full_url,
+                f"{self.URL}/v1/mailboxes/{mailbox}/verdicts")
+            self.assertEqual(request.get_method(), "GET")
+            self.assertEqual(
+                request.get_header("Authorization"),
+                "Bearer " + self.MAC_TOKEN)
+            self.assertEqual(kwargs["timeout"], setup.NETWORK_TIMEOUT_SECONDS)
+            self.assertNotIn(self.MAC_TOKEN, output.getvalue())
+            self.assertNotIn(self.PANEL_TOKEN, output.getvalue())
+
+    def test_status_relay_probe_failure_and_disable_are_fail_closed(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory(prefix="relay-status-disable-") as tmp:
+            config, token, secrets_h, service, _wrangler = self.make_paths(tmp)
+            mailbox = "vp_" + self.MAILBOX_SUFFIX
+            saved = setup.VibePulseConfig(
+                claude_interactions=True, codex_interactions=True,
+                interaction_detail=True, interaction_relay=True,
+                agent_status_relay=False,
+                interaction_relay_url=self.URL,
+                interaction_mailbox=mailbox)
+            setup.save_config(config, saved)
+            token.parent.mkdir(parents=True)
+            token.write_text(self.MAC_TOKEN + "\n", encoding="ascii")
+            token.chmod(0o600)
+            secrets_h.write_text(
+                secrets_h.read_text(encoding="utf-8") +
+                setup._relay_secrets_block(
+                    self.URL, mailbox, self.PANEL_TOKEN), encoding="utf-8")
+
+            output = io.StringIO()
+            self.assertEqual(setup.main(
+                ["relay", "enable-status", "--yes-e2e-cloud"],
+                config_path=config, relay_token_path=token,
+                secrets_path=secrets_h, interaction_relay_dir=service,
+                urlopen=lambda *_args, **_kwargs: BytesResponse(
+                    b"", status=401, content_types=()),
+                stdout=output, stdin_isatty=False), 1)
+            self.assertEqual(setup.load_config(config), saved)
+            self.assertIn("ownership", output.getvalue().lower())
+
+            enabled = setup.VibePulseConfig(
+                **{**saved.__dict__, "agent_status_relay": True})
+            setup.save_config(config, enabled)
+            self.assertEqual(setup.main(
+                ["relay", "disable-status"], config_path=config,
+                relay_token_path=token, secrets_path=secrets_h,
+                interaction_relay_dir=service,
+                stdout=io.StringIO()), 0)
+            disabled = setup.load_config(config)
+            self.assertFalse(disabled.agent_status_relay)
+            self.assertTrue(disabled.interaction_relay)
+            self.assertTrue(disabled.claude_interactions)
+            self.assertTrue(disabled.codex_interactions)
+            self.assertTrue(disabled.interaction_detail)
+            self.assertEqual(disabled.interaction_relay_url, self.URL)
+            self.assertEqual(disabled.interaction_mailbox, mailbox)
+            self.assertTrue(token.exists())
+            self.assertIn(self.PANEL_TOKEN,
+                          secrets_h.read_text(encoding="utf-8"))
 
     def test_relay_install_requires_explicit_consent_provider_detail_and_key(self):
         setup = load_setup()
@@ -1844,6 +1960,7 @@ class RelaySetupTests(unittest.TestCase):
                                      "detail": False,
                                      "legacyClaudePanelV1": False,
                                      "relay": {"status": "off"},
+                                     "agentStatusRelay": {"status": "off"},
                                      "transport": "lan"},
                     "secret": secret,
                 }).encode()
@@ -1905,7 +2022,9 @@ class RelaySetupTests(unittest.TestCase):
                 "interactions": {
                     "claude": True, "codex": False, "detail": False,
                     "legacyClaudePanelV1": True,
-                    "relay": {"status": "off"}, "transport": "lan",
+                    "relay": {"status": "off"},
+                    "agentStatusRelay": {"status": "off"},
+                    "transport": "lan",
                 },
             }).encode())
             output = io.StringIO()

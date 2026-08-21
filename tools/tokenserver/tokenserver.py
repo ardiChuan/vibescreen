@@ -2098,6 +2098,8 @@ class Handler(BaseHTTPRequestHandler):
     legacy_claude_panel_v1 = False
     interaction_relay_status = "off"
     interaction_relay_reason = None
+    agent_status_relay_status = "off"
+    agent_status_relay_reason = None
     json_body_timeout_s = JSON_BODY_TIMEOUT_S
 
     def _send(self, code, payload):
@@ -2575,9 +2577,16 @@ class Handler(BaseHTTPRequestHandler):
                            if self.interaction_relay_reason is not None
                            else {}),
                     }),
+                    "agentStatusRelay": ({
+                        "status": self.agent_status_relay_status,
+                        **({"reason": self.agent_status_relay_reason}
+                           if self.agent_status_relay_reason is not None
+                           else {}),
+                    }),
                     "transport": (
                         "lan+encrypted-relay"
-                        if self.interaction_relay_status == "ready"
+                        if (self.interaction_relay_status == "ready" or
+                            self.agent_status_relay_status == "ready")
                         else "lan"),
                 }}
 
@@ -2687,6 +2696,12 @@ def _build_arg_parser():
         help="disable the saved encrypted interaction relay without "
              "removing its URL, mailbox, providers, or other features")
     ap.add_argument(
+        "--agent-status-relay", action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable or disable the independently saved end-to-end encrypted "
+             "Claude/Codex live-status relay. Default off; Cloudflare sees "
+             "only fixed-size ciphertext and timing")
+    ap.add_argument(
         "--interaction-timeout", type=float, default=120.0,
         help="seconds to hold a hook open before handing the decision back "
              "to the terminal (default 120). Keep it below the timeout in "
@@ -2732,6 +2747,8 @@ def _resolve_interaction_config(args, path=None):
                 saved.interaction_relay,
                 (True if isinstance(args.interaction_relay, str)
                  else args.interaction_relay)),
+            agent_status_relay=chosen(
+                saved.agent_status_relay, args.agent_status_relay),
             interaction_relay_url=(
                 args.interaction_relay
                 if isinstance(args.interaction_relay, str)
@@ -2742,7 +2759,8 @@ def _resolve_interaction_config(args, path=None):
                     args.codex_interactions is not None or
                     args.interaction_detail is not None or
                     args.legacy_claude_panel_v1 is not None or
-                    args.interaction_relay is not None)
+                    args.interaction_relay is not None or
+                    args.agent_status_relay is not None)
         if explicit:
             # An explicit valid choice may repair a bad saved file. Keeping
             # this save under the same lock as the read prevents lost merges.
@@ -2836,32 +2854,57 @@ def _read_interaction_mac_token(path=None, environ=None):
 
 def _configure_interaction_relay(config, secret, *, environ=None,
                                  relay_factory=None, audit=None):
-    """Start the optional adapter or fail closed without harming LAN mode."""
+    """Start either encrypted relay without coupling their opt-in rules."""
     Handler.interaction_relay_status = "off"
     Handler.interaction_relay_reason = None
-    if not config.interaction_relay:
+    Handler.agent_status_relay_status = "off"
+    Handler.agent_status_relay_reason = None
+    want_interactions = config.interaction_relay
+    want_status = config.agent_status_relay
+    if not (want_interactions or want_status):
         return None
 
-    def disabled(reason):
+    def disable_interactions(reason):
         Handler.interaction_relay_status = "disabled"
         Handler.interaction_relay_reason = reason
+    def disable_status(reason):
+        Handler.agent_status_relay_status = "disabled"
+        Handler.agent_status_relay_reason = reason
+
+    publish_interactions = want_interactions
+    publish_status = want_status
+    if publish_interactions and (
+            not (config.claude_interactions or config.codex_interactions) or
+            Handler.interaction_store is None):
+        disable_interactions("provider-required")
+        publish_interactions = False
+    if publish_interactions and not config.interaction_detail:
+        disable_interactions("detail-required")
+        publish_interactions = False
+    status_source = getattr(Handler.agent_status, "snapshot", None)
+    if publish_status and not callable(status_source):
+        disable_status("status-source-missing")
+        publish_status = False
+    if not (publish_interactions or publish_status):
         return None
 
-    if not (config.claude_interactions or config.codex_interactions) or \
-            Handler.interaction_store is None:
-        return disabled("provider-required")
-    if not config.interaction_detail:
-        return disabled("detail-required")
+    def disable_shared(reason):
+        if publish_interactions:
+            disable_interactions(reason)
+        if publish_status:
+            disable_status(reason)
+        return None
+
     if not isinstance(secret, str) or \
             re.fullmatch(r"[0-9A-Fa-f]{64}", secret) is None:
-        return disabled("device-key-missing")
+        return disable_shared("device-key-missing")
     if config.interaction_relay_url is None:
-        return disabled("url-missing")
+        return disable_shared("url-missing")
     if config.interaction_mailbox is None:
-        return disabled("mailbox-missing")
+        return disable_shared("mailbox-missing")
     mac_token = _read_interaction_mac_token(environ=environ)
     if mac_token is None:
-        return disabled("mac-token-missing")
+        return disable_shared("mac-token-missing")
 
     adapter = None
     try:
@@ -2872,7 +2915,11 @@ def _configure_interaction_relay(config, secret, *, environ=None,
                 from interaction_relay import InteractionRelay
             relay_factory = InteractionRelay
         adapter = relay_factory(
-            store=Handler.interaction_store,
+            store=(Handler.interaction_store
+                   if publish_interactions else None),
+            publish_interactions=publish_interactions,
+            publish_agent_status=publish_status,
+            status_source=(status_source if publish_status else None),
             base_url=config.interaction_relay_url,
             mailbox=config.interaction_mailbox,
             mac_token=mac_token,
@@ -2881,16 +2928,20 @@ def _configure_interaction_relay(config, secret, *, environ=None,
         )
         adapter.start()
     except ImportError:
-        return disabled("crypto-unavailable")
+        return disable_shared("crypto-unavailable")
     except Exception:
         if adapter is not None:
             try:
                 adapter.stop()
             except Exception:
                 pass
-        return disabled("configuration-invalid")
-    Handler.interaction_relay_status = "ready"
-    Handler.interaction_relay_reason = None
+        return disable_shared("configuration-invalid")
+    if publish_interactions:
+        Handler.interaction_relay_status = "ready"
+        Handler.interaction_relay_reason = None
+    if publish_status:
+        Handler.agent_status_relay_status = "ready"
+        Handler.agent_status_relay_reason = None
     return adapter
 
 
@@ -3056,6 +3107,8 @@ def main():
         audit=lambda action, row: log.info(
             "interaktion %s: %s", action,
             json.dumps(row, sort_keys=True)))
+    if secret is None and interaction_config.agent_status_relay:
+        secret = interactions.read_device_key()
     if interaction_config.legacy_claude_panel_v1:
         log.warning("OSÄKER KOMPATIBILITET PÅ: gamla Claude-panelens "
                     "v1-svar saknar provider/digest-bindning. Stäng av "
@@ -3092,6 +3145,12 @@ def main():
         log.warning("krypterat Needs You-relä avstängt: %s; LAN och "
                     "terminalfallback fortsätter",
                     Handler.interaction_relay_reason)
+    if Handler.agent_status_relay_status == "ready":
+        log.info("krypterat agentstatus-relä redo (E2E; fast storlek, "
+                 "kort livslängd, ingen klartext hos molnet)")
+    elif Handler.agent_status_relay_status == "disabled":
+        log.warning("krypterat agentstatus-relä avstängt: %s; direkt LAN "
+                    "fortsätter", Handler.agent_status_relay_reason)
 
     relay_publisher = None
     if args.publish:
