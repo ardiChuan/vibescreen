@@ -5,6 +5,10 @@ Object for encrypted Claude/Codex “Needs You” delivery. It is not the older
 numbers relay. The service never receives a decryption key and its source has
 no question, command, project, hook, or session schema.
 
+The same Worker can also hold the independent, default-off Live agent status
+relay: one fixed encrypted latest-value snapshot of the minimized
+Claude/Codex rows. Project basenames and activity stay inside E2E ciphertext.
+
 Start with the full privacy/setup guide:
 [`docs/interaction-relay.md`](../../docs/interaction-relay.md).
 
@@ -38,6 +42,7 @@ python3 tools/vibepulse_setup.py install
 python3 tools/vibepulse_setup.py relay install \
   --url https://vibepulse-interaction-relay.YOUR-SUBDOMAIN.workers.dev \
   --yes-e2e-cloud
+python3 tools/vibepulse_setup.py relay enable-status --yes-e2e-cloud
 python3 tools/vibepulse_setup.py relay status
 python3 tools/vibepulse_setup.py relay doctor
 ```
@@ -63,6 +68,8 @@ is no CORS allowlist. Authentication failures deliberately look like 404.
 | `POST /v1/mailboxes/{box}/requests/{id}/verdict` | panel token |
 | `GET /v1/mailboxes/{box}/verdicts` | Mac token |
 | `DELETE /v1/mailboxes/{box}/requests/{id}` | Mac token |
+| `PUT /v1/mailboxes/{box}/status` | Mac token |
+| `GET /v1/mailboxes/{box}/status` | panel token |
 
 Bodies are canonical `{v,nonce,ciphertext}` JSON envelopes. Request
 ciphertext is exactly 2,064 bytes (2,048 padded bytes plus GCM tag); verdict
@@ -71,12 +78,19 @@ live rows and removes each no later than 120 seconds after first receipt.
 Create and verdict retries must be byte-identical; conflicting bodies return
 409.
 
+Status uses a fixed **2,816-byte** authenticated plaintext frame plus its GCM
+tag and one latest-value row. The host replaces it about every two seconds;
+the encrypted content expires after 15 seconds and the Worker removes the row
+after no more than **20 seconds**. The Worker can see timing, connection IPs,
+mailbox ID and fixed size, but it has no content key.
+
 ## Operations
 
 ```sh
 python3 tools/vibepulse_setup.py relay status
 python3 tools/vibepulse_setup.py relay doctor
 python3 tools/vibepulse_setup.py relay disable
+python3 tools/vibepulse_setup.py relay disable-status
 python3 tools/vibepulse_setup.py relay uninstall --keep-worker
 python3 tools/vibepulse_setup.py relay uninstall --delete-worker
 ```

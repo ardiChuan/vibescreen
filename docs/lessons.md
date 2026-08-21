@@ -351,3 +351,19 @@ ring-only updates, and unchanged ticks. The target's ten-second heap heartbeat
 logs and resets content-free `full/ring/unchanged` counters. **Watch for:** any
 timer field added to a `memcmp` render key can silently turn a cheap animation
 into a full-tree repaint.
+
+## 2026-08-21 · Internet access is not end-to-end reachability
+
+**What happened:** quota and GitHub data were fresh through the numbers relay,
+but Claude/Codex activity stayed frozen. The panel and Mac both had working
+internet and were even on the same subnet, yet Wi-Fi client isolation dropped
+their direct traffic. **Root cause:** “the Wi-Fi icon is connected” and “one
+feed is fresh” were treated as evidence that every feed could reach its source;
+agent status still had only the direct `.local` LAN path. **The rule:** model
+freshness per data path, not per radio or app. A cloud fallback must keep its
+own explicit privacy switch, expiry, source precedence, and honest stale clear.
+**Guards:** live agent status is a separate default-off E2E-encrypted feature;
+direct LAN wins for five seconds, authenticated relay rows expire, and an old
+relay-owned activity view clears once instead of pretending to be live.
+**Watch for:** adding another screen to a shared “connected” indicator without
+testing the exact transport and stale boundary that feed actually uses.

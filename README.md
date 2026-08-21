@@ -15,7 +15,9 @@ pure-stdlib Python service on your Mac or Windows PC. Local mode needs no
 VibePulse account and keeps agent activity on your LAN. The optional
 numbers-only relay can carry quota data across isolated WiFi; a separate,
 default-off encrypted interaction relay can carry supported Needs You
-decisions without requiring the panel and computer to share a LAN.
+decisions without requiring the panel and computer to share a LAN. A third,
+independent **Live agent status relay** can keep the Claude/Codex activity rows
+current across ordinary internet WiFi. Every cloud feature is off by default.
 
 ## The problem
 
@@ -158,6 +160,7 @@ starts off:
 | **Codex interactions** | Lets supported Codex questions and permissions reach the panel | Off |
 | **Numbers relay** | Publishes only quota, reset, Max Tracker, and optional public GitHub numbers | Off |
 | **Interaction relay** | End-to-end encrypted question/verdict mailbox for unrelated WiFi | Off |
+| **Live agent status relay** | End-to-end encrypted Claude/Codex activity rows for unrelated WiFi | Off |
 | **GitHub** | Shows one public repository's page and/or star notification | Off |
 
 Installing the Codex plugin does not enable Codex interactions. Setup asks
@@ -166,7 +169,7 @@ may reach the panel. The old `--interactions` is a legacy alias for Claude only;
 use the explicit setup command for new installations. The numbers relay and
 interaction relay are different privacy choices and neither is enabled by the
 plugin. Installing the Codex plugin does not enable the encrypted interaction
-relay.
+relay or the live agent status relay.
 
 ### Optional GitHub project pulse
 
@@ -468,13 +471,18 @@ numbers in a tiny mailbox on the internet — a ~150-line Cloudflare Worker
 on your own account — and the panel falls back to it whenever the LAN
 does not answer. Quota, burn rate, Max Tracker and the GitHub pulse
 follow you anywhere with WiFi. Agent activity stays local unless you separately
-opt in to the encrypted interaction relay; then only a bounded panel view and
-verdict cross its user-owned mailbox as fixed-size end-to-end ciphertext.
-Cloudflare never receives question, command, project, or verdict content in
-plaintext. Several machines can feed the numbers mailbox
+opt in to one or both encrypted activity features. The **Interaction relay**
+carries only bounded Needs You views and verdicts. The independent **Live
+agent status relay** carries the minimized Claude/Codex rows the panel already
+renders. Both use fixed-size, end-to-end encrypted ciphertext; Cloudflare
+never receives question, command, project basename, activity, or verdict
+content in plaintext. Cloudflare can still see connection IPs, timing and a
+random mailbox identifier. The computer must be awake and tokenserver must be
+running, but it may use a different ordinary internet connection from the
+panel. Several machines can feed the numbers mailbox
 (a Mac that sleeps, an always-on PC) and the freshest source wins per
-number. Numbers setup: [docs/relay.md](docs/relay.md). Encrypted decisions:
-[docs/interaction-relay.md](docs/interaction-relay.md).
+number. Numbers setup: [docs/relay.md](docs/relay.md). Encrypted decisions and
+live status: [docs/interaction-relay.md](docs/interaction-relay.md).
 
 ## No hardware? Run the simulator
 

@@ -50,6 +50,7 @@ Eleven tags:
 | `agent-net` | `components/app_tokens/agent_net.c` | /api/agent-status poll (1 Hz, log rate-limited to 30 s) |
 | `github-net` | `components/app_tokens/github_net.c` | the optional /api/github poll |
 | `needs-you-net` | `components/app_tokens/needs_you_net.c` | signed verdict/panic POSTs (LAN only, never the relay) |
+| `interaction-relay` | `components/app_tokens/interaction_relay_net.c` | optional encrypted request/verdict and live-status transport; logs readiness/failure only, never decrypted fields |
 | `boot-health` | `components/torget_ota/boot_health.c` | the 15 s boot-health gate: proofs landed, rollback verdicts |
 | `ota-service` | `components/torget_ota/ota_service.c` | maintenance window open/close, upload progress, image gates |
 | `wifi-setup` | `components/torget_wifi/wifi_setup.c` | setup window open/close, scan counts, received credentials (SSID only — passwords are never logged) |
@@ -151,6 +152,15 @@ Returns live server state, added after real debugging nights:
   are frozen at their last good value while *looking* fresh; the smoke
   test turns this into a FAIL, and the log has the cause
   (`usage-omräkningen kraschade`).
+- `interactions.relay` / `interactions.agentStatusRelay` — independent saved readiness for
+  encrypted approvals and encrypted live rows. `off` is the safe default;
+  `disabled` includes a content-free reason, never agent/project text.
+
+The firmware relay diagnostic snapshot is also content-free. Its
+`status_polls_ok`, `status_applied`, and `status_cleared` counters distinguish
+healthy empty polling, accepted live rows, and the one-shot stale clear when a
+debugger or future local diagnostic surface reads it. They are reset on app
+start and are not persistent telemetry.
 
 Not exposed yet, so invisible from outside: the probe's failure streak
 and slowed interval, and any Codex-side probe status (OBS-18). This

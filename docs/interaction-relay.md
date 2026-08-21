@@ -1,4 +1,4 @@
-# Encrypted Needs You relay — approvals on any Wi-Fi
+# Encrypted Needs You and live status relay — any Wi-Fi
 
 This optional path lets a VibePulse panel show and answer supported Claude
 Code or Codex decisions when the panel and computer are on unrelated networks.
@@ -10,6 +10,11 @@ However, both ends make only outbound HTTPS connections, so they may use any
 ordinary internet Wi-Fi. There is no router reconfiguration, no inbound port,
 no public Mac, no VPN, and no same LAN requirement.
 
+The independent **Live agent status relay** does the same for the minimized
+Claude/Codex activity rows. The computer must be awake and tokenserver must be
+running, but the computer and panel may use unrelated internet connections.
+Both activity features are end-to-end encrypted and off by default.
+
 ```text
 Claude/Codex ↔ tokenserver → encrypt → user's Worker → decrypt → panel
 Claude/Codex ← tokenserver ← verify  ← user's Worker ← encrypt ← tap
@@ -20,7 +25,7 @@ shared mailbox service.
 
 ## Pick features independently
 
-Five choices stay independent and default to **Off**:
+Six choices stay independent and default to **Off**:
 
 | Choice | Effect |
 |---|---|
@@ -28,11 +33,12 @@ Five choices stay independent and default to **Off**:
 | Codex interactions | The optional Codex plugin may ask the local tokenserver. |
 | Numbers relay | Quota, reset, Max Tracker, and optional public GitHub numbers use the older numbers-only Worker. |
 | Interaction relay | Bounded encrypted views and encrypted verdicts use this Worker. |
+| Live agent status relay | Minimized encrypted Claude/Codex rows use the latest-value status slot. |
 | GitHub | One public repository's screen/notification may be enabled. |
 
 Installing the Codex plugin does not enable Codex interactions and does not
-enable the encrypted interaction relay. Enabling a provider does not enable
-detail, either relay, or GitHub. The interaction relay additionally requires
+enable either encrypted activity relay. Enabling a provider does not enable
+detail, either relay, live status, or GitHub. The interaction relay additionally requires
 at least one provider and bounded detail because there would otherwise be no
 decision view to deliver.
 
@@ -75,11 +81,23 @@ Run these commands from the repository root. Nothing below flashes hardware.
 
    Without `--yes-e2e-cloud`, an interactive terminal asks for the same
    explicit consent. Non-interactive setup fails closed.
-5. Enable **VibePulse optional network features → Encrypted Needs You relay**
+5. To let the activity rows follow the computer between Wi-Fi networks, opt in
+   separately after the mailbox ownership check succeeds:
+
+   ```sh
+   python3 tools/vibepulse_setup.py relay enable-status --yes-e2e-cloud
+   ```
+
+   This changes only the saved live-status switch. It does not enable Claude,
+   Codex, approvals, GitHub, or the numbers relay.
+6. Enable **VibePulse optional network features → Encrypted Needs You relay**
    in `idf.py menuconfig`, then build. The option is
-   `CONFIG_TK_VIBEPULSE_INTERACTION_RELAY=y`. Flash or OTA only after the user
-   separately approves that hardware-changing step.
-6. Restart the tokenserver and verify both sides:
+   `CONFIG_TK_VIBEPULSE_INTERACTION_RELAY=y`. Enable the independent
+   **Encrypted live Claude/Codex status relay** option as
+   `CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY=y`. Select either or both; both
+   remain off in a fresh clone. Flash or OTA only after the user separately
+   approves that hardware-changing step.
+7. Restart the tokenserver and verify both sides:
 
    ```sh
    python3 tools/vibepulse_setup.py relay status
@@ -109,6 +127,14 @@ session transcripts, full option lists, file contents, environment variables,
 and unrestricted commands are never mailbox fields. If detail is disabled,
 the relay cannot be enabled.
 
+The live-status path starts from the same strict `/api/agent-status` v2
+snapshot, removes the entire top-level `pending` item, and publishes only
+`v`, `seq`, and the bounded Claude/Codex provider rows. Those rows may contain
+activity, model/effort, and sanitized project basenames. They are never sent
+as plaintext: canonical compact UTF-8 bytes are hashed, padded inside one
+authenticated **2,816-byte** status frame, and encrypted locally first. The
+panel rejects any status frame that contains a pending decision.
+
 Every request is padded inside authentication to a fixed **2,048-byte request**
 plaintext before its GCM tag. Every tap becomes one fixed **1,024-byte verdict**
 plaintext before its tag. The outer Worker object contains only protocol
@@ -120,6 +146,12 @@ Encryption does not hide network metadata. Cloudflare can see an IP address
 at each connection, timing and frequency, the mailbox identifier, request ID,
 message direction, HTTP status, and the fixed padded size for that direction.
 The repository's Worker logs only route kind, status, and duration.
+
+For live status the Worker sees the same kind of metadata plus one fixed-size
+latest-value status ciphertext. It cannot see project basenames or activity.
+The Mac replaces that slot about every two seconds; the encrypted inner copy
+expires after **15 seconds**, and the Worker deletes the outer slot after no
+more than **20 seconds**.
 
 Cloudflare never receives those fields in plaintext: question text, command
 text, project name, or verdict. It also never receives the device key or the
@@ -139,6 +171,10 @@ delete ciphertext (availability), but cannot turn it into a valid approval.
   deletion. Old or duplicate ciphertext cannot approve a new hook.
 - Failure is safe: no valid answer means Claude/Codex falls back to the
   computer. Silence is never approval.
+- Direct LAN status always wins. The panel accepts encrypted live status only
+  after LAN status has been unavailable for **five seconds**. If neither path
+  then supplies a valid update, relay-owned activity rows clear after 20
+  seconds rather than looking live forever; any Needs You item is preserved.
 
 This does reverse the old blanket “activity never uses cloud” statement, but
 only behind an explicit opt-in and only after end-to-end encryption. The older
@@ -169,9 +205,17 @@ Temporarily stop cloud traffic while keeping credentials:
 python3 tools/vibepulse_setup.py relay disable
 ```
 
+Stop only the Live agent status relay while leaving encrypted approvals and
+all credentials untouched:
+
+```sh
+python3 tools/vibepulse_setup.py relay disable-status
+```
+
 Restart the tokenserver after changing saved routing. To make the panel binary
-LAN-only too, disable `TK_VIBEPULSE_INTERACTION_RELAY` in menuconfig and build
-a new firmware image.
+LAN-only too, disable both `TK_VIBEPULSE_INTERACTION_RELAY` and
+`TK_VIBEPULSE_AGENT_STATUS_RELAY` in menuconfig and build a new firmware
+image.
 
 Remove local relay settings but leave the user-owned Worker for inspection:
 
@@ -214,6 +258,8 @@ HTTPS with a publicly trusted certificate and implement the exact bounded API:
 | `POST /v1/mailboxes/{box}/requests/{id}/verdict` | Panel token | One verdict or exact retry. |
 | `GET /v1/mailboxes/{box}/verdicts` | Mac token | One waiting verdict or 204. |
 | `DELETE /v1/mailboxes/{box}/requests/{id}` | Mac token | Atomically remove request and verdict. |
+| `PUT /v1/mailboxes/{box}/status` | Mac token | Replace the fixed encrypted latest-value status slot. |
+| `GET /v1/mailboxes/{box}/status` | Panel token | Current unexpired status envelope or 204. |
 
 The replacement must preserve role-separated 256-bit bearer tokens,
 `Cache-Control: no-store`, strict canonical envelope sizes, eight-row capacity,
@@ -229,6 +275,7 @@ It does not need any encryption key: crypto remains end to end.
 | Doctor says panel block/key is missing | Restore the generated block and shared 64-hex key in gitignored `secrets.h`, then rebuild. |
 | Worker deploy fails | Run `npm ci`, `npx wrangler login`, check the HTTPS origin/account, then retry. Local routing remains disabled on failure. |
 | Panel shows Wi-Fi but no decision | Check captive portal/DNS/domain filtering, relay doctor, tokenserver, and serial redacted counters. |
+| Decisions work but activity is stale | Check `relay status`/`relay doctor`, confirm live status is ON on the computer and in firmware, and remember the computer must be awake. |
 | Wrong key after rotation | No plaintext fallback occurs. Pair both sides with the same new key and rebuild. |
 
 Protocol internals and threat analysis are recorded in
