@@ -1,6 +1,7 @@
 export const MAX_ENVELOPE_BYTES = 4096;
 export const REQUEST_CIPHERTEXT_BYTES = 2048 + 16;
 export const VERDICT_CIPHERTEXT_BYTES = 1024 + 16;
+export const STATUS_CIPHERTEXT_BYTES = 2816 + 16;
 
 const BASE64URL_RE = /^[A-Za-z0-9_-]*$/;
 const JSON_CONTENT_TYPE_RE =

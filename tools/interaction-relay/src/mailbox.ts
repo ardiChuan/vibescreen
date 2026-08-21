@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 const REQUEST_TTL_MS = 120_000;
+const STATUS_TTL_MS = 20_000;
 const MAX_LIVE_REQUESTS = 8;
 
 export type PutRequestResult = "created" | "existing" | "conflict" | "full";
@@ -17,6 +18,18 @@ export interface StoredVerdict {
   requestId: string;
   envelope: string;
   verdictAtMs: number;
+}
+
+export interface StoredStatus {
+  envelope: string;
+  expiresAtMs: number;
+  storedAtMs: number;
+}
+
+interface StatusRow extends Record<string, SqlStorageValue> {
+  envelope: string;
+  expires_at_ms: number;
+  stored_at_ms: number;
 }
 
 interface RequestRow extends Record<string, SqlStorageValue> {
@@ -49,7 +62,56 @@ export class InteractionMailbox extends DurableObject<Env> {
         CREATE INDEX IF NOT EXISTS requests_expiry_created
         ON requests (expires_at_ms, created_at_ms)
       `);
+      ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS agent_status (
+          slot INTEGER PRIMARY KEY CHECK (slot = 1),
+          envelope TEXT NOT NULL,
+          envelope_hash TEXT NOT NULL,
+          stored_at_ms INTEGER NOT NULL,
+          expires_at_ms INTEGER NOT NULL
+        )
+      `);
     });
+  }
+
+  async putStatus(
+    envelope: string,
+    hash: string,
+    nowMs: number,
+  ): Promise<void> {
+    assertNowMs(nowMs);
+    this.ctx.storage.transactionSync(() => {
+      this.deleteExpired(nowMs);
+      this.ctx.storage.sql.exec(`
+        INSERT INTO agent_status (
+          slot, envelope, envelope_hash, stored_at_ms, expires_at_ms
+        ) VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(slot) DO UPDATE SET
+          envelope = excluded.envelope,
+          envelope_hash = excluded.envelope_hash,
+          stored_at_ms = excluded.stored_at_ms,
+          expires_at_ms = excluded.expires_at_ms
+      `, envelope, hash, nowMs, nowMs + STATUS_TTL_MS);
+    });
+    await this.scheduleNextAlarm();
+  }
+
+  async getStatus(nowMs: number): Promise<StoredStatus | null> {
+    assertNowMs(nowMs);
+    const result = this.ctx.storage.transactionSync<StoredStatus | null>(() => {
+      this.deleteExpired(nowMs);
+      const row = this.ctx.storage.sql.exec<StatusRow>(`
+        SELECT envelope, stored_at_ms, expires_at_ms
+        FROM agent_status WHERE slot = 1
+      `).toArray()[0];
+      return row === undefined ? null : {
+        envelope: row.envelope,
+        expiresAtMs: row.expires_at_ms,
+        storedAtMs: row.stored_at_ms,
+      };
+    });
+    await this.scheduleNextAlarm();
+    return result;
   }
 
   async putRequest(
@@ -198,17 +260,30 @@ export class InteractionMailbox extends DurableObject<Env> {
       "DELETE FROM requests WHERE expires_at_ms <= ?",
       nowMs,
     );
+    this.ctx.storage.sql.exec(
+      "DELETE FROM agent_status WHERE expires_at_ms <= ?",
+      nowMs,
+    );
   }
 
   private async scheduleNextAlarm(): Promise<void> {
-    const row = this.ctx.storage.sql.exec<{ expires_at_ms: number | null }>(
+    const requestRow = this.ctx.storage.sql.exec<{
+      expires_at_ms: number | null;
+    }>(
       "SELECT MIN(expires_at_ms) AS expires_at_ms FROM requests",
     ).one();
-    if (row.expires_at_ms === null) {
+    const statusRow = this.ctx.storage.sql.exec<{
+      expires_at_ms: number | null;
+    }>(
+      "SELECT MIN(expires_at_ms) AS expires_at_ms FROM agent_status",
+    ).one();
+    const expiries = [requestRow.expires_at_ms, statusRow.expires_at_ms]
+      .filter((value): value is number => value !== null);
+    if (expiries.length === 0) {
       await this.ctx.storage.deleteAlarm();
       return;
     }
-    await this.ctx.storage.setAlarm(row.expires_at_ms);
+    await this.ctx.storage.setAlarm(Math.min(...expiries));
   }
 }
 

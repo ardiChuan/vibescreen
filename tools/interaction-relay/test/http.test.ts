@@ -7,6 +7,7 @@ const MAC_TOKEN = "ERERERERERERERERERERERERERERERERERERERERERE";
 const PANEL_TOKEN = "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI";
 const REQUEST_CIPHERTEXT_BYTES = 2048 + 16;
 const VERDICT_CIPHERTEXT_BYTES = 1024 + 16;
+const STATUS_CIPHERTEXT_BYTES = 2816 + 16;
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -54,6 +55,10 @@ function verdictPath(id = requestId()): string {
   return `${requestPath(id)}/verdict`;
 }
 
+function statusPath(): string {
+  return `/v1/mailboxes/${MAILBOX}/status`;
+}
+
 async function fetchPath(path: string, init?: RequestInit): Promise<Response> {
   return SELF.fetch(`https://relay.invalid${path}`, init);
 }
@@ -81,6 +86,83 @@ function jsonRequest(
 }
 
 describe("encrypted interaction relay HTTP API", () => {
+  it("publishes and replaces one opaque status envelope", async () => {
+    const first = envelope(STATUS_CIPHERTEXT_BYTES, 0x41);
+    const second = envelope(STATUS_CIPHERTEXT_BYTES, 0x42);
+
+    let response = await fetchPath(
+      statusPath(), jsonRequest("PUT", first, MAC_TOKEN));
+    expect(response.status).toBe(201);
+    expectHardened(response);
+
+    response = await fetchPath(statusPath(), { headers: auth(PANEL_TOKEN) });
+    expect(response.status).toBe(200);
+    expectHardened(response);
+    expect(response.headers.get("Content-Type")).toBe("application/json");
+    expect(await response.json()).toEqual({
+      envelope: JSON.parse(first),
+      expiresAtMs: expect.any(Number),
+      storedAtMs: expect.any(Number),
+    });
+
+    response = await fetchPath(
+      statusPath(), jsonRequest("PUT", second, MAC_TOKEN));
+    expect(response.status).toBe(201);
+    response = await fetchPath(statusPath(), { headers: auth(PANEL_TOKEN) });
+    expect((await response.json() as { envelope: unknown }).envelope)
+      .toEqual(JSON.parse(second));
+  });
+
+  it("keeps status roles, methods, media type, and frame size strict", async () => {
+    const valid = envelope(STATUS_CIPHERTEXT_BYTES);
+    const unauthorized: Array<[RequestInit, string]> = [
+      [jsonRequest("PUT", valid, PANEL_TOKEN), "panel put"],
+      [{ headers: auth(MAC_TOKEN) }, "Mac get"],
+      [jsonRequest("PUT", valid, "wrong"), "wrong token"],
+    ];
+    for (const [init, name] of unauthorized) {
+      const response = await fetchPath(statusPath(), init);
+      expect(response.status, name).toBe(404);
+      expectHardened(response);
+    }
+
+    for (const [method, token] of [["POST", MAC_TOKEN], ["DELETE", PANEL_TOKEN]]) {
+      const response = await fetchPath(statusPath(), {
+        method,
+        headers: auth(token),
+      });
+      expect(response.status, method).toBe(405);
+      expectHardened(response);
+    }
+
+    let response = await fetchPath(statusPath(), {
+      method: "PUT",
+      body: valid,
+      headers: auth(MAC_TOKEN),
+    });
+    expect(response.status).toBe(415);
+    for (const size of [
+      REQUEST_CIPHERTEXT_BYTES,
+      STATUS_CIPHERTEXT_BYTES - 1,
+      STATUS_CIPHERTEXT_BYTES + 1,
+    ]) {
+      response = await fetchPath(
+        statusPath(),
+        jsonRequest("PUT", envelope(size), MAC_TOKEN),
+      );
+      expect(response.status, String(size)).toBe(400);
+      expectHardened(response);
+    }
+  });
+
+  it("returns an empty hardened response before status exists", async () => {
+    const response = await fetchPath(
+      statusPath(), { headers: auth(PANEL_TOKEN) });
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe("");
+    expectHardened(response);
+  });
+
   it("supports the complete opaque request and verdict lifecycle", async () => {
     const id = requestId();
     const requestEnvelope = envelope(REQUEST_CIPHERTEXT_BYTES);

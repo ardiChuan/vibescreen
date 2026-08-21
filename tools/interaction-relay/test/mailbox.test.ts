@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 const TTL_MS = 120_000;
+const STATUS_TTL_MS = 20_000;
 let mailboxSequence = 0;
 
 function mailbox() {
@@ -15,6 +16,58 @@ function mailbox() {
 }
 
 describe("InteractionMailbox", () => {
+  it("keeps only the latest encrypted status value for twenty seconds", async () => {
+    const stub = mailbox();
+    const now = Date.now();
+
+    await stub.putStatus("status-a", "hash-a", now);
+    await expect(stub.getStatus(now + 1)).resolves.toEqual({
+      envelope: "status-a",
+      expiresAtMs: now + STATUS_TTL_MS,
+      storedAtMs: now,
+    });
+
+    await stub.putStatus("status-b", "hash-b", now + 2);
+    await expect(stub.getStatus(now + 3)).resolves.toEqual({
+      envelope: "status-b",
+      expiresAtMs: now + 2 + STATUS_TTL_MS,
+      storedAtMs: now + 2,
+    });
+    await expect(stub.getStatus(now + 2 + STATUS_TTL_MS))
+      .resolves.toBeNull();
+  });
+
+  it("schedules the earliest request or status expiry and cleans both", async () => {
+    const stub = mailbox();
+    const now = Date.now();
+    await stub.putRequest("request-a", "request", "request-hash", now);
+    await stub.putStatus("status", "status-hash", now + 1);
+
+    const firstAlarm = await runInDurableObject(
+      stub,
+      async (_instance, state) => state.storage.getAlarm(),
+    );
+    expect(firstAlarm).toBe(now + 1 + STATUS_TTL_MS);
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE agent_status SET expires_at_ms = ? WHERE slot = 1",
+        Date.now() - 1,
+      );
+      await state.storage.setAlarm(Date.now() + 60_000);
+    });
+    await expect(runDurableObjectAlarm(stub)).resolves.toBe(true);
+    await expect(stub.getStatus(Date.now())).resolves.toBeNull();
+    await expect(stub.nextRequest(now + 2)).resolves.toMatchObject({
+      requestId: "request-a",
+    });
+    const nextAlarm = await runInDurableObject(
+      stub,
+      async (_instance, state) => state.storage.getAlarm(),
+    );
+    expect(nextAlarm).toBe(now + TTL_MS);
+  });
+
   it("creates once and accepts only an exact idempotent retry", async () => {
     const stub = mailbox();
     const now = Date.now();
