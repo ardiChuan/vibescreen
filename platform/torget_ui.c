@@ -50,11 +50,11 @@ static lv_obj_t *bare(lv_obj_t *parent) {
 
 /* ------------------------------------------------------- delad Wi-Fi-status */
 
-static lv_obj_t *wifi_arc_create(int size, int offset) {
+static lv_obj_t *wifi_arc_create(int size, int x_offset, int y_offset) {
   lv_obj_t *arc = lv_arc_create(tg.wifi_group);
   lv_obj_remove_style_all(arc);
   lv_obj_set_size(arc, size, size);
-  lv_obj_set_pos(arc, offset, offset);
+  lv_obj_set_pos(arc, x_offset, y_offset);
   lv_arc_set_rotation(arc, 225);
   lv_arc_set_bg_angles(arc, 0, 90);
   lv_obj_set_style_arc_width(arc, 3, LV_PART_MAIN);
@@ -105,12 +105,15 @@ static void wifi_status_create(void) {
   tg.wifi_group = bare(lv_layer_top());
   lv_obj_set_pos(tg.wifi_group, 418, 38);
   lv_obj_set_size(tg.wifi_group, 28, 28);
-  tg.wifi_arc[0] = wifi_arc_create(28, 0);
-  tg.wifi_arc[1] = wifi_arc_create(20, 4);
-  tg.wifi_arc[2] = wifi_arc_create(12, 8);
+  /* Every arc radiates from local (14,22), directly above the dot.  Keeping
+   * one lower origin makes the 28 px mark read as a single familiar Wi-Fi
+   * fan on the physical AMOLED instead of three arcs floating over a dot. */
+  tg.wifi_arc[0] = wifi_arc_create(28, 0, 8);
+  tg.wifi_arc[1] = wifi_arc_create(20, 4, 12);
+  tg.wifi_arc[2] = wifi_arc_create(12, 8, 16);
 
   tg.wifi_dot = bare(tg.wifi_group);
-  lv_obj_set_pos(tg.wifi_dot, 12, 22);
+  lv_obj_set_pos(tg.wifi_dot, 12, 20);
   lv_obj_set_size(tg.wifi_dot, 4, 4);
   lv_obj_set_style_radius(tg.wifi_dot, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_opa(tg.wifi_dot, LV_OPA_COVER, 0);

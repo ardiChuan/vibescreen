@@ -3184,9 +3184,10 @@ def main():
             "/api/github": _github_payload,
         })
         relay_publisher.start()
-        log.info("publicerar siffror till reläet som \"%s\" (ändringar + "
-                 "hjärtslag var 5:e minut; agentstatus och Needs You "
-                 "publiceras ALDRIG)", machine)
+        log.info("publicerar siffror till reläet som \"%s\" (högst var "
+                 "5:e minut för kvoter och var 30:e minut för GitHub/Max "
+                 "Tracker; agentstatus och Needs You publiceras ALDRIG)",
+                 machine)
 
     backfill_stop = threading.Event()
     backfill_thread = threading.Thread(

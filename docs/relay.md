@@ -102,9 +102,12 @@ Then:
   but the quota probe still presents itself as claude-cli. Changing that
   risks the probe against an undocumented endpoint and needs a live test —
   a deliberate, separate decision, not an oversight.
-- **Write economy is load-bearing.** Send-on-change + 5-minute heartbeat
-  keeps two publishers comfortably inside KV's 1 000 free writes/day.
-  A "simpler" always-send loop would exhaust it by mid-afternoon.
+- **Write economy is load-bearing.** Local change detection is backed by an
+  absolute cloud ceiling: quotas at most every 5 minutes, Max Tracker and
+  GitHub at most every 30 minutes. Even if every payload changes continuously,
+  two publishers make at most 768 writes/day against KV's 1,000-write free
+  allowance. Change detection alone once exhausted the allowance because
+  current-time and reset-countdown fields legitimately change every minute.
 - **The mailbox is disposable.** It holds only the latest few JSON bodies.
   Delete the Worker and the panel falls back to LAN-only behaviour;
   rotate the secret by redeploying and updating two places.

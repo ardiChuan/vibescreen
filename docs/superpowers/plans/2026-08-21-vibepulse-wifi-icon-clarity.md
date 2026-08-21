@@ -101,3 +101,43 @@ git add platform/torget_ui.c design/vibepulse/studio-design.json \
   test/test_vibepulse_visual_landmarks.py test/test_wifi_onboarding_design.py
 git commit -m "fix: clarify weak WiFi signal icon"
 ```
+
+### Task 3: Close the physical fan-geometry gap
+
+The contrast change passed simulator pixel counts, but the first physical
+AMOLED review showed a second defect: all three arcs shared the centre of the
+box while the dot sat eleven empty rows below them.  The result looked like a
+small blob plus a stray dot rather than one familiar Wi-Fi symbol.
+
+**Files:**
+- Modify: `test/test_vibepulse_visual_landmarks.py`
+- Modify: `platform/torget_ui.c`
+
+- [ ] **Step 1: Pin the physical regression before renderer changes**
+
+Require the full-strength icon's arc-to-dot silhouette to have no vertical ink
+gap longer than two pixels, and require its first ink row to leave at least five
+pixels of top breathing room inside the existing `(418,38)..(446,66)` box.
+
+- [ ] **Step 2: Run the focused test and verify RED**
+
+```sh
+PATH="$PWD/.venv/bin:$PATH" ./.venv/bin/python \
+  test/test_vibepulse_visual_landmarks.py \
+  -k global_wifi_icon_is_one_connected_fan -v
+```
+
+Expected: the old geometry fails with an eleven-row gap.
+
+- [ ] **Step 3: Give all arcs one lower fan origin**
+
+Keep the 28 px global lane, colors, states, slash, and 3 px strokes.  Change
+only the three arc y offsets so their centres share the same lower origin next
+to the dot.  The dot remains inside the same group and above the header rule.
+
+- [ ] **Step 4: Rebuild, verify, and inspect at 1:1**
+
+Run the focused test, the complete raster matrix, layer safety, design checks,
+and live preview.  Inspect all four signal strengths on Claude, Codex, GitHub,
+launcher, value, Needs You, OTA, and any installed companion surface before a
+new physical flash is proposed.

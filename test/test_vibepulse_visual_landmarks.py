@@ -1253,6 +1253,34 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         for signature in signatures[1:]:
             self.assertGreater(signature[0], 0)
 
+    def test_global_wifi_icon_is_one_connected_fan_not_a_floating_dot(self):
+        """Physical AMOLED review found the old concentric arcs at y=38..49
+        and the dot at y=61..62.  Pixel-count tests called that a Wi-Fi icon,
+        but the eleven empty rows made it read as two unrelated marks on the
+        panel.  A familiar Wi-Fi fan must keep every horizontal ink band close
+        enough to the next one to form a single silhouette."""
+        image = self.image("torget-wifi-global-claude-3.bmp")
+        ink_rows = []
+        for y in range(38, 66):
+            ink_rows.append(any(
+                image.getpixel((x, y)) in (self.NY_WHITE, self.NY_MUTED)
+                for x in range(418, 446)
+            ))
+
+        first = ink_rows.index(True)
+        last = len(ink_rows) - 1 - ink_rows[::-1].index(True)
+        longest_gap = self._longest_run([
+            not row for row in ink_rows[first:last + 1]
+        ])
+        self.assertLessEqual(
+            longest_gap, 2,
+            "the Wi-Fi dot must visually belong to the three signal arcs",
+        )
+        self.assertGreaterEqual(
+            first + 38, 43,
+            "the fan must radiate from the lower dot, not hug the box top",
+        )
+
     def test_wifi_status_is_hidden_on_boot_and_foreground_on_overlays(self):
         box = (418, 38, 446, 66)
         for name in ("boot-cold", "boot-wifi", "boot-time"):

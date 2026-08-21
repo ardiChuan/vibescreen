@@ -21,10 +21,11 @@ freshest-per-source; this module only needs to be honest about who it is.
 
 Write economy is a design constraint, not an optimization: the free tier
 of the intended mailbox (Cloudflare KV) allows 1 000 writes/day, and a
-30-second cadence would burn 2 880.  So a payload is sent only when its
-content actually changed, plus a heartbeat so the mailbox's staleness is
-bounded even when nothing changes.  Both rules live in pure functions the
-tests can hold still.
+30-second cadence would burn 2 880 for just one endpoint.  Content hashes
+alone are insufficient because honest presentation fields such as ``at`` and
+reset countdowns change continuously.  Every endpoint therefore has a hard
+minimum send interval as well as change detection.  The ceilings keep two
+continuously changing publishers below the account-wide free allowance.
 """
 
 from __future__ import annotations
@@ -39,11 +40,21 @@ import urllib.request
 
 log = logging.getLogger("tokenserver")
 
-# Publish cadence: check for changes at the same rhythm the panel polls,
-# heartbeat every five minutes.  ~300 heartbeat writes/day for three
-# endpoints plus real changes -- comfortably inside 1 000.
+# Check locally at the same rhythm the panel polls.  Cloud sends have the
+# per-endpoint ceilings below; the base heartbeat remains five minutes.
 CHECK_EVERY_S = 30.0
 HEARTBEAT_EVERY_S = 300.0
+
+# KV's free allowance is account-wide: 1,000 writes/day.  At these absolute
+# ceilings one publisher can make at most 384 writes/day (288 quota updates,
+# 48 Max Tracker updates and 48 GitHub updates); two make at most 768.
+# The local 30-second check remains responsive without being allowed to turn
+# volatile presentation timestamps into cloud writes.
+MIN_SEND_INTERVAL_S = {
+    "/api/tokens": 300.0,
+    "/api/max-tracker": 1800.0,
+    "/api/github": 1800.0,
+}
 
 # An honest User-Agent.  The relay is our own mailbox; there is nobody to
 # imitate and no reason to.
@@ -61,7 +72,8 @@ def payload_fingerprint(payload) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
-def should_send(last_fingerprint, last_sent_at, fingerprint, now) -> bool:
+def should_send(last_fingerprint, last_sent_at, fingerprint, now,
+                min_interval_s=0.0) -> bool:
     """The write-economy rule: send on change, or on heartbeat, never else.
 
     ``last_fingerprint is None`` means never sent (fresh start): send.
@@ -70,9 +82,12 @@ def should_send(last_fingerprint, last_sent_at, fingerprint, now) -> bool:
     """
     if last_fingerprint is None:
         return True
+    elapsed = now - last_sent_at
+    if elapsed < min_interval_s:
+        return False
     if fingerprint != last_fingerprint:
         return True
-    return (now - last_sent_at) >= HEARTBEAT_EVERY_S
+    return elapsed >= max(HEARTBEAT_EVERY_S, min_interval_s)
 
 
 class Publisher:
@@ -131,7 +146,9 @@ class Publisher:
             fingerprint = payload_fingerprint(payload)
             last_fingerprint, sent_at = self._state.get(path, (None, 0.0))
             now = self.clock()
-            if not should_send(last_fingerprint, sent_at, fingerprint, now):
+            min_interval = MIN_SEND_INTERVAL_S.get(path, HEARTBEAT_EVERY_S)
+            if not should_send(last_fingerprint, sent_at, fingerprint, now,
+                               min_interval):
                 continue
             body = json.dumps(payload, sort_keys=True).encode()
             if self.post(self.relay_url + path, body):

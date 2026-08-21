@@ -62,8 +62,11 @@ any Cloudflare involvement.
 
 ## Free-tier arithmetic
 
-The publisher sends only on change plus a 5-minute heartbeat
-(`tools/tokenserver/publisher.py`), which lands at a few hundred KV writes
-per day against the free tier's 1 000. The panel's reads (2 880/day at a
-30 s cadence) sit far under the 100 000-read allowance. Two publishers
-double the writes; still comfortable.
+The publisher checks locally every 30 seconds, but it has a hard cloud-write
+ceiling: quotas at most every 5 minutes, Max Tracker and GitHub at most every
+30 minutes (tools/tokenserver/publisher.py). That is at most 384 KV writes per
+day for one continuously changing publisher, or 768 for two, below the free
+account's 1,000-write allowance. The ceiling is necessary because presentation
+fields such as the current time and reset countdowns legitimately change on
+almost every local check. The panel's reads (2,880/day at a 30 s cadence) stay
+below the 100,000-read allowance.
