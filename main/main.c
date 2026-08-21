@@ -176,11 +176,15 @@ static int s_cand_n;
 static int s_cand_i;      /* vilket nät vi jagar just nu */
 static int s_cand_misses; /* missar i rad på DET nätet   */
 static SemaphoreHandle_t s_cand_lock;
+static tg_wifi_slot s_trial;
+static bool s_trial_active; /* skyddas av s_cand_lock */
 
 /* Medan setupfönstret äger radion (skanning + accesspunkt) ska
  * event-handlern INTE ropa esp_wifi_connect: en connect mitt i en skanning
  * ger bara ESP_ERR_WIFI_STATE och ett brus av misslyckanden i loggen. */
 static atomic_bool s_sta_paused;
+static atomic_bool s_trial_ignore_disconnect;
+static _Atomic int s_disconnect_reason;
 
 /* Senaste frånkopplingsorsaken i klartext, för den ärliga nätsidan. */
 static char s_reason_text[40];
@@ -226,7 +230,8 @@ static void wifi_reload_candidates(const char *prefer) {
 static void wifi_copy_current_ssid(char *out, size_t cap) {
   if (!cap) return;
   cand_lock();
-  if (s_cand_n > 0) snprintf(out, cap, "%s", s_cand[s_cand_i].ssid);
+  if (s_trial_active) snprintf(out, cap, "%s", s_trial.ssid);
+  else if (s_cand_n > 0) snprintf(out, cap, "%s", s_cand[s_cand_i].ssid);
   else out[0] = '\0';
   cand_unlock();
 }
@@ -245,10 +250,17 @@ static const char *wifi_last_reason(void) {
   return s_reason_text[0] ? s_reason_text : NULL;
 }
 
-static void wifi_apply_current(void) {
+static int last_disconnect_reason(void) {
+  return atomic_load(&s_disconnect_reason);
+}
+
+static esp_err_t wifi_apply_current(void) {
   wifi_config_t cfg = { 0 };
   cand_lock();
-  if (s_cand_n > 0) {
+  if (s_trial_active) {
+    strlcpy((char *)cfg.sta.ssid, s_trial.ssid, sizeof cfg.sta.ssid);
+    strlcpy((char *)cfg.sta.password, s_trial.pass, sizeof cfg.sta.password);
+  } else if (s_cand_n > 0) {
     strlcpy((char *)cfg.sta.ssid, s_cand[s_cand_i].ssid, sizeof cfg.sta.ssid);
     strlcpy((char *)cfg.sta.password, s_cand[s_cand_i].pass,
             sizeof cfg.sta.password);
@@ -259,7 +271,7 @@ static void wifi_apply_current(void) {
    * exakt vad den gamla koden gjorde på resa. */
   cfg.sta.threshold.authmode =
       cfg.sta.password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
+  return esp_wifi_set_config(WIFI_IF_STA, &cfg);
 }
 
 static void wifi_note_reason(int reason) {
@@ -289,7 +301,11 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     xEventGroupClearBits(s_net_events, WIFI_GOT_IP);
     tg_wifi_signal_event(&s_wifi_signal, 0);
     int reason = ((wifi_event_sta_disconnected_t *)data)->reason;
-    wifi_note_reason(reason);
+    bool trial_transition = atomic_exchange(&s_trial_ignore_disconnect, false);
+    if (!trial_transition) {
+      atomic_store(&s_disconnect_reason, reason);
+      wifi_note_reason(reason);
+    }
     char ssid[TG_WIFI_SSID_CAP];
     wifi_copy_current_ssid(ssid, sizeof ssid);
     ESP_LOGW(TAG, "WiFi tappat (\"%s\", orsak %d), återansluter", ssid, reason);
@@ -299,8 +315,11 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
      * kandidat. Ingen prioritet — det som svarar vinner, och tappas det
      * börjar jakten om från samma plats i listan. */
     bool switched = false;
+    bool trial_active = false;
     cand_lock();
-    if (s_cand_n > 1 && tg_wifi_should_switch(++s_cand_misses)) {
+    trial_active = s_trial_active;
+    if (!trial_active && s_cand_n > 1 &&
+        tg_wifi_should_switch(++s_cand_misses)) {
       s_cand_i = (s_cand_i + 1) % s_cand_n;
       s_cand_misses = 0;
       switched = true;
@@ -309,7 +328,10 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (switched) {
       wifi_copy_current_ssid(ssid, sizeof ssid);
       ESP_LOGI(TAG, "provar \"%s\" i stället", ssid);
-      wifi_apply_current();
+      esp_err_t err = wifi_apply_current();
+      if (err != ESP_OK)
+        ESP_LOGW(TAG, "kunde inte byta WiFi-konfiguration: %s",
+                 esp_err_to_name(err));
     }
     vTaskDelay(pdMS_TO_TICKS(2000));
     if (!atomic_load(&s_sta_paused)) esp_wifi_connect();
@@ -322,6 +344,7 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     ESP_LOGI(TAG, "WiFi uppe (\"%s\")", ssid);
     torget_boot_screen_stage(TG_BOOT_WIFI_UP);
     s_reason_text[0] = '\0';
+    atomic_store(&s_disconnect_reason, 0);
     cand_lock();
     s_cand_misses = 0;
     cand_unlock();
@@ -343,10 +366,57 @@ static void hook_sta_pause(bool paused) {
   if (!paused) esp_wifi_connect();
 }
 
-static void hook_creds_changed(const char *ssid) {
+static bool hook_try_credentials(const char *ssid, const char *password) {
+  if (!tg_wifi_ssid_valid(ssid) || !tg_wifi_pass_valid(password)) return false;
+
+  cand_lock();
+  memset(&s_trial, 0, sizeof s_trial);
+  strlcpy(s_trial.ssid, ssid, sizeof s_trial.ssid);
+  strlcpy(s_trial.pass, password, sizeof s_trial.pass);
+  s_trial_active = true;
+  cand_unlock();
+
+  atomic_store(&s_disconnect_reason, 0);
+  atomic_store(&s_sta_paused, true);
+  xEventGroupClearBits(s_net_events, WIFI_GOT_IP);
+  esp_err_t disconnect_err = esp_wifi_disconnect();
+  atomic_store(&s_trial_ignore_disconnect, disconnect_err == ESP_OK);
+  esp_err_t err = wifi_apply_current();
+  atomic_store(&s_sta_paused, false);
+  if (err == ESP_OK) err = esp_wifi_connect();
+  if (err == ESP_OK) return true;
+
+  ESP_LOGW(TAG, "kunde inte starta WiFi-försöket: %s", esp_err_to_name(err));
+  cand_lock();
+  memset(&s_trial, 0, sizeof s_trial);
+  s_trial_active = false;
+  cand_unlock();
+  wifi_reload_candidates(NULL);
+  (void)wifi_apply_current();
+  return false;
+}
+
+static void hook_credentials_accepted(const char *ssid) {
+  cand_lock();
+  memset(&s_trial, 0, sizeof s_trial);
+  s_trial_active = false;
+  cand_unlock();
   wifi_reload_candidates(ssid);
-  wifi_apply_current();
-  esp_wifi_connect();
+}
+
+static void hook_credentials_abandoned(void) {
+  cand_lock();
+  bool had_trial = s_trial_active;
+  memset(&s_trial, 0, sizeof s_trial);
+  s_trial_active = false;
+  cand_unlock();
+  if (!had_trial) return;
+  atomic_store(&s_disconnect_reason, 0);
+  wifi_reload_candidates(NULL);
+  esp_err_t err = wifi_apply_current();
+  if (err != ESP_OK)
+    ESP_LOGW(TAG, "kunde inte återställa sparat WiFi: %s",
+             esp_err_to_name(err));
 }
 
 /* Kallas av nätvakten när en uppkoppling just lyckats — den har stacken
@@ -366,7 +436,10 @@ static const tg_wifi_setup_hooks s_setup_hooks = {
   .have_ip = hook_have_ip,
   .ip_acquired = hook_ip_acquired,
   .sta_pause = hook_sta_pause,
-  .creds_changed = hook_creds_changed,
+  .try_credentials = hook_try_credentials,
+  .credentials_accepted = hook_credentials_accepted,
+  .credentials_abandoned = hook_credentials_abandoned,
+  .last_disconnect_reason = last_disconnect_reason,
   .current_ssid = wifi_current_ssid,
   .last_reason = wifi_last_reason,
 };
@@ -385,7 +458,7 @@ static void wifi_start(void) {
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   wifi_reload_candidates(NULL); /* NVS överst, secrets.h som botten */
-  wifi_apply_current();
+  ESP_ERROR_CHECK(wifi_apply_current());
   ESP_ERROR_CHECK(esp_wifi_start());
 }
 

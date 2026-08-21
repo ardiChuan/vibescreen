@@ -190,6 +190,82 @@ assert "TG_WIFI_SETUP_WINDOW_US   (600LL" in slots_h, (
     "the setup window must stay bounded at ten minutes"
 )
 
+# --- Trial first, remember only after IP ----------------------------------
+join_post = setup_c.split("static esp_err_t join_post(")[1]
+join_post = join_post.split("static esp_err_t catch_all_get", 1)[0]
+assert "tg_wifi_creds_remember" not in join_post, (
+    "POST /join must never write an unproven password to NVS"
+)
+assert "s_join_submission.seq" in join_post, (
+    "every POST must publish a fresh versioned in-memory submission"
+)
+assert "xSemaphoreTake(s_join_lock" in join_post, (
+    "SSID, password and submission sequence must be copied atomically"
+)
+assert "xTaskNotifyGive(s_guard_task)" in join_post, (
+    "a phone submission should wake the guard instead of waiting 500 ms"
+)
+
+guard = setup_c.split("static void guard_task(void *arg)")[1]
+trial_at = guard.find("s_hooks->try_credentials")
+have_ip_at = guard.find("if (!applied_now && have_ip)", trial_at)
+remember_at = guard.find("tg_wifi_creds_remember", trial_at)
+accepted_at = guard.find("s_hooks->credentials_accepted", remember_at)
+assert 0 <= trial_at < have_ip_at < remember_at < accepted_at, (
+    "the guard must trial credentials, observe IP, persist, then accept"
+)
+assert "tg_wifi_join_should_apply" in guard, (
+    "the guard must apply each submission sequence at most once"
+)
+assert "bool applied_now = false" in guard
+assert "if (!applied_now && have_ip)" in guard, (
+    "an IP sample taken before a new trial starts must not validate it"
+)
+assert "s_hooks->last_disconnect_reason" in guard, (
+    "retry status must come from the radio's numeric disconnect reason"
+)
+
+assert "bool (*try_credentials)(const char *ssid, const char *password)" \
+       in (root / "components/torget_wifi/wifi_setup.h").read_text(
+           encoding="utf-8"), (
+    "the setup adapter needs an explicit in-memory trial hook"
+)
+assert "hook_try_credentials" in main_c and "s_trial_active" in main_c, (
+    "main must keep trial credentials out of the remembered candidate list"
+)
+assert "last_disconnect_reason" in main_c, (
+    "the setup guard needs the exact disconnect reason, not display copy"
+)
+try_hook = main_c.split("static bool hook_try_credentials(")[1]
+try_hook = try_hook.split("static void hook_credentials_accepted", 1)[0]
+clear_at = try_hook.find("xEventGroupClearBits(s_net_events, WIFI_GOT_IP)")
+apply_at = try_hook.find("wifi_apply_current()")
+assert 0 <= clear_at < apply_at, (
+    "a trial must clear the old IP proof before applying new credentials"
+)
+assert "disconnect_err == ESP_OK" in try_hook, (
+    "only a disconnect that actually started may suppress its event"
+)
+
+status_get = setup_c.split("static esp_err_t status_get(")[1]
+status_get = status_get.split("static esp_err_t catch_all_get", 1)[0]
+assert '\\"connecting\\"' in status_get
+assert '\\"connected\\"' in status_get
+assert '\\"retry\\"' in status_get
+assert '\\"password\\"' in status_get
+assert '\\"not-found\\"' in status_get
+assert "s_join_submission.ssid" not in status_get
+assert "s_join_submission.pass" not in status_get
+assert '"/status"' in setup_c and "setInterval" in setup_c, (
+    "the joining page must poll an honest, secret-free status endpoint"
+)
+assert "2.4 GHz only" in setup_c and '<label for=\\"pass\\">' in setup_c, (
+    "the phone form must explain the radio limit and label the password"
+)
+assert "onsubmit=" in setup_c and ".disabled=true" in setup_c, (
+    "the phone form must block accidental duplicate submission"
+)
+
 # --- Open-source onboarding must be visible, not only described ----------
 # The README and release reuse exact simulator frames. Pin both checked-in
 # files to the panel's native size without adding an image-library dependency

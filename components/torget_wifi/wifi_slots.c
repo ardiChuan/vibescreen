@@ -128,6 +128,24 @@ bool tg_wifi_setup_can_close(tg_wifi_setup_phase phase) {
          phase == TG_WIFI_PHASE_JOINED || phase == TG_WIFI_PHASE_FAILED;
 }
 
+bool tg_wifi_join_should_apply(uint32_t submitted, uint32_t applied) {
+  return submitted != 0 && submitted != applied;
+}
+
+tg_wifi_join_status tg_wifi_disconnect_status(int reason) {
+  switch (reason) {
+    case 0:
+      return TG_WIFI_JOIN_CONNECTING;
+    case 15:  /* WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT */
+    case 204: /* WIFI_REASON_HANDSHAKE_TIMEOUT */
+      return TG_WIFI_JOIN_RETRY_PASSWORD;
+    case 201: /* WIFI_REASON_NO_AP_FOUND */
+      return TG_WIFI_JOIN_RETRY_NOT_FOUND;
+    default:
+      return TG_WIFI_JOIN_RETRY_CONNECTION;
+  }
+}
+
 bool tg_wifi_setup_dma_ok_to_open(size_t largest_dma, size_t flush_bytes) {
   /* flush_bytes == 0 vore en felkonfiguration som gjorde grinden till en
    * papperstiger — behandla den som "vet inte" och vägra. */

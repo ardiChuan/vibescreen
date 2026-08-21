@@ -209,6 +209,25 @@ static void test_setup_phase_owns_key3_without_accidental_release(void) {
         tg_wifi_setup_can_close(TG_WIFI_PHASE_FAILED));
 }
 
+static void test_join_submissions_retry_and_explain_failures(void) {
+  check("new submission applies once", tg_wifi_join_should_apply(4, 3));
+  check("same submission is deduplicated",
+        !tg_wifi_join_should_apply(4, 4));
+  check("zero is not a submission", !tg_wifi_join_should_apply(0, 4));
+  check("later retry applies", tg_wifi_join_should_apply(5, 4));
+
+  check("reason 15 is a password retry",
+        tg_wifi_disconnect_status(15) == TG_WIFI_JOIN_RETRY_PASSWORD);
+  check("reason 204 is a password retry",
+        tg_wifi_disconnect_status(204) == TG_WIFI_JOIN_RETRY_PASSWORD);
+  check("network missing explains 2.4 GHz",
+        tg_wifi_disconnect_status(201) == TG_WIFI_JOIN_RETRY_NOT_FOUND);
+  check("no disconnect is still connecting",
+        tg_wifi_disconnect_status(0) == TG_WIFI_JOIN_CONNECTING);
+  check("other failures stay retryable",
+        tg_wifi_disconnect_status(8) == TG_WIFI_JOIN_RETRY_CONNECTION);
+}
+
 static void test_dma_gates_protect_the_flush(void) {
   const size_t flush = 12 * 480 * 2; /* 11 520 — panelflushens block */
   const size_t open_floor = TG_WIFI_SETUP_DMA_OPEN_FACTOR * flush +
@@ -263,6 +282,7 @@ int main(void) {
   test_search_screen_lets_the_boot_screen_finish();
   test_setup_window_closes();
   test_setup_phase_owns_key3_without_accidental_release();
+  test_join_submissions_retry_and_explain_failures();
 
   if (failures == 0) {
     printf("OK: all WiFi slot/window policy tests pass\n");

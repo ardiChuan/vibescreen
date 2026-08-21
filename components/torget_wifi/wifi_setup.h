@@ -41,8 +41,16 @@ typedef struct {
   void (*ip_acquired)(void);
   /* Pausa STA-jakten medan radion skannar och håller accesspunkten. */
   void (*sta_pause)(bool paused);
-  /* Nya uppgifter ligger i NVS: bygg om kandidatlistan och prova ssid NU. */
-  void (*creds_changed)(const char *ssid);
+  /* Prova uppgifterna DIREKT UR MINNET. De finns inte i NVS ännu. */
+  bool (*try_credentials)(const char *ssid, const char *password);
+  /* Vakten har fått IP och sparat uppgifterna; gör försöket till ordinarie
+   * kandidat utan att bryta den fungerande anslutningen. */
+  void (*credentials_accepted)(const char *ssid);
+  /* Fönstret stängs utan godkänt försök: glöm RAM-kopian och återställ den
+   * tidigare kandidatlistan. */
+  void (*credentials_abandoned)(void);
+  /* Numerisk ESP-IDF-orsak för portalens retry-svar (0 = försöker ännu). */
+  int (*last_disconnect_reason)(void);
   /* Nätet STA:n jagar just nu, för den ärliga nätsidan (får vara NULL). */
   const char *(*current_ssid)(void);
   /* Senaste frånkopplingsorsaken i klartext, eller NULL. */

@@ -63,6 +63,26 @@ typedef enum {
   TG_WIFI_PHASE_FAILED,
 } tg_wifi_setup_phase;
 
+/* Telefonportalens anslutningsresultat. Bara denna grova status lämnar
+ * panelen via /status; SSID och lösenord gör det aldrig. */
+typedef enum {
+  TG_WIFI_JOIN_IDLE = 0,
+  TG_WIFI_JOIN_CONNECTING,
+  TG_WIFI_JOIN_CONNECTED,
+  TG_WIFI_JOIN_RETRY_PASSWORD,
+  TG_WIFI_JOIN_RETRY_NOT_FOUND,
+  TG_WIFI_JOIN_RETRY_CONNECTION,
+} tg_wifi_join_status;
+
+/* Ett versionsnummer gör att samma formulärpost aldrig appliceras två
+ * gånger av vakten, men en ny post alltid kan prova igen. Noll betyder
+ * "ingen post". */
+bool tg_wifi_join_should_apply(uint32_t submitted, uint32_t applied);
+
+/* Översätt ESP-IDF:s stabila disconnect-koder till begriplig, hemlighetsfri
+ * portalstatus. Noll betyder att radion fortfarande försöker. */
+tg_wifi_join_status tg_wifi_disconnect_status(int reason);
+
 /* Alla synliga faser äger KEY3. STARTING slukar däremot den utlösande
  * knappens släpp i stället för att omedelbart stänga eller växla app. */
 bool tg_wifi_setup_owns_input(tg_wifi_setup_phase phase);
