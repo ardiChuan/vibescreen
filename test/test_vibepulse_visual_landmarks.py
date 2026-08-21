@@ -1237,8 +1237,14 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                             self.assertEqual(image.getpixel((x, y)), (0, 0, 0))
                     counts.append((
                         self._count(image, box, self.NY_WHITE),
-                        self._count(image, box, (92, 104, 123)),
+                        self._count(image, box, self.NY_MUTED),
                     ))
+                    if bars < 3:
+                        self.assertGreater(
+                            counts[-1][1], 10,
+                            "the complete inactive silhouette must remain "
+                            "visible on the physical AMOLED",
+                        )
             self.assertTrue(all(count == counts[0] for count in counts))
             signatures.append(counts[0])
         self.assertEqual(len(set(signatures)), 4)

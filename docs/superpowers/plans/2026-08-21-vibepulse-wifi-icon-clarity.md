@@ -38,8 +38,7 @@ Run:
 
 ```sh
 PATH="$PWD/.venv/bin:$PATH" ./.venv/bin/python \
-  test/test_vibepulse_visual_landmarks.py \
-  VibePulseNeedsYouTests.test_global_wifi_icon_is_neutral_consistent_and_distinct -v
+  test/test_vibepulse_visual_landmarks.py -k global_wifi_icon -v
 ./.venv/bin/python test/test_wifi_onboarding_design.py -v
 ```
 
@@ -72,7 +71,8 @@ Run:
 ```sh
 cmake -S sim -B sim/build
 cmake --build sim/build -j4
-./sim/build/torget-sim --qa-captures /tmp/vibepulse-wifi-contrast
+TORGET_CAPTURE_DIR=/tmp/vibepulse-wifi-contrast \
+  ./sim/build/torget-sim --vibepulse-static-qa
 ```
 
 Expected: build succeeds and all `torget-wifi-global-*-{0,1,2,3}.bmp` files exist.
@@ -85,7 +85,7 @@ Run:
 PATH="$PWD/.venv/bin:$PATH" ./.venv/bin/python test/test_vibepulse_visual_landmarks.py -v
 ./.venv/bin/python test/test_lvgl_layer_safety.py
 ./.venv/bin/python test/test_wifi_onboarding_design.py -v
-./.venv/bin/python design/vibepulse/design.py --check
+./.venv/bin/python tools/vibepulse_studio/design.py --check
 ```
 
 Expected: all pass; the four signal signatures remain distinct and provider colors are absent.
@@ -101,4 +101,3 @@ git add platform/torget_ui.c design/vibepulse/studio-design.json \
   test/test_vibepulse_visual_landmarks.py test/test_wifi_onboarding_design.py
 git commit -m "fix: clarify weak WiFi signal icon"
 ```
-

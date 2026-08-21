@@ -36,7 +36,7 @@ class WifiOnboardingDesignTests(unittest.TestCase):
                 "size": 28,
                 "scope": "global-top-layer",
                 "activeColor": "#FFFFFF",
-                "inactiveColor": "#5C687B",
+                "inactiveColor": "#9298A2",
                 "normalBars": [0, 1, 2, 3],
                 "setupBars": 3,
                 "disconnectedSlash": True,

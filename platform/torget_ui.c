@@ -17,7 +17,7 @@
 extern const lv_font_t plex_text_16;
 
 #define COL_LABEL lv_color_hex(0x8994A5)
-#define COL_WIFI_MUTED lv_color_hex(0x5C687B)
+#define COL_WIFI_MUTED lv_color_hex(0x9298A2)
 
 static struct {
   lv_obj_t *shift;                 /* driftlådan — allt bor i den */
