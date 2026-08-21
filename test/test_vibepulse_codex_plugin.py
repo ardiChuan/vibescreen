@@ -73,6 +73,7 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         self.server.requests.append((self.path, dict(self.headers), body))
+        self.server.request_times.append(time.monotonic())
         behavior = self.server.behavior
         if "sequence" in behavior:
             sequence = behavior["sequence"]
@@ -117,6 +118,7 @@ class LocalServer:
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.httpd.behavior = behavior
         self.httpd.requests = []
+        self.httpd.request_times = []
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
 
     @property
@@ -880,13 +882,16 @@ class McpServerTests(unittest.TestCase):
 
     def test_held_response_timeout_returns_computer_fallback_quickly(self):
         with LocalServer(delay_headers=0.6, body=b'{}') as server:
-            started = time.monotonic()
             _, responses = run_mcp([
                 rpc("tools/call", 1, {"name": "ask", "arguments": QUESTION})
             ], port=server.port,
                env={"_VIBEPULSE_TEST_READ_TIMEOUT": "0.04"})
-            elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 0.4)
+            finished = time.monotonic()
+            self.assertEqual(len(server.httpd.request_times), 1)
+            response_elapsed = finished - server.httpd.request_times[0]
+        # Measure the transport deadline, not unrelated Python process startup.
+        # Without the fixed response deadline this follows delay_headers (0.6 s).
+        self.assertLess(response_elapsed, 0.25)
         self.assertEqual(
             responses[0]["result"]["structuredContent"]["status"], "computer")
 
@@ -2937,7 +2942,10 @@ class RelaySetupTests(unittest.TestCase):
                 "pathlib.Path(sys.argv[1]).write_text(str(p.pid)); "
                 "time.sleep(10)"
             )
-            with mock.patch.object(setup, "COMMAND_TIMEOUT_SECONDS", 0.1):
+            # Leave enough time for a fresh Python interpreter to start and
+            # write the child PID; the assertion below still catches waiting
+            # for the descendant's inherited pipes (10 seconds).
+            with mock.patch.object(setup, "COMMAND_TIMEOUT_SECONDS", 0.5):
                 started = time.monotonic()
                 self.assertIsNone(setup._invoke(
                     [sys.executable, "-c", code, str(pid_path)], setup._AUTO))
@@ -2976,7 +2984,7 @@ class RelaySetupTests(unittest.TestCase):
             detached_pid = None
             try:
                 with mock.patch.object(
-                        setup, "COMMAND_TIMEOUT_SECONDS", 0.2), \
+                        setup, "COMMAND_TIMEOUT_SECONDS", 0.5), \
                         mock.patch.object(
                             setup, "PIPE_JOIN_TIMEOUT_SECONDS", 0.05):
                     started = time.monotonic()
