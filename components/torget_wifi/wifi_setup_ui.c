@@ -208,6 +208,7 @@ void torget_wifi_ui_set(tg_wifi_ui_state state, const char *primary,
     lv_label_set_text(ui.secondary, "");
     lv_canvas_fill_bg(ui.qr, lv_color_white(), LV_OPA_COVER);
     lv_obj_add_flag(ui.overlay, LV_OBJ_FLAG_HIDDEN);
+    torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL);
     torget_ui_unlock();
     return;
   }
@@ -281,5 +282,7 @@ void torget_wifi_ui_set(tg_wifi_ui_state state, const char *primary,
   /* Framför apparna, men OTA-overlayn skapas EFTER det här lagret och
    * hämtar sig själv längst fram i sin egen set() — READY-ringen vinner. */
   lv_obj_move_foreground(ui.overlay);
+  torget_wifi_status_set_mode(TG_WIFI_STATUS_SETUP);
+  torget_wifi_status_foreground();
   torget_ui_unlock();
 }

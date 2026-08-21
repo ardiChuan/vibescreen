@@ -246,6 +246,7 @@ void torget_ota_ui_set(tg_ota_ui_state state, unsigned percent,
 
   if (state == TG_OTA_UI_HIDDEN) {
     lv_obj_add_flag(ui.overlay, LV_OBJ_FLAG_HIDDEN);
+    torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL);
     torget_ui_unlock();
     return;
   }
@@ -318,6 +319,8 @@ void torget_ota_ui_set(tg_ota_ui_state state, unsigned percent,
 
   lv_obj_remove_flag(ui.overlay, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_foreground(ui.overlay);
+  torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL);
+  torget_wifi_status_foreground();
   torget_ui_unlock();
 }
 

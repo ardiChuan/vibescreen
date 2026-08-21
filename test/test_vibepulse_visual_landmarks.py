@@ -260,6 +260,22 @@ EXPECTED = {
     "torget-vibepulse-needs-you-codex-payoff-post-expiry.bmp",
 }
 
+WIFI_GLOBAL_SURFACES = [
+    "launcher",
+    "claude",
+    "codex",
+    "value",
+    "github",
+    "needs-you",
+]
+if (Path.home() / "Solelkollen/components/app_solelkollen").is_dir():
+    WIFI_GLOBAL_SURFACES.append("companion")
+EXPECTED.update(
+    f"torget-wifi-global-{surface}-{bars}.bmp"
+    for surface in WIFI_GLOBAL_SURFACES
+    for bars in range(4)
+)
+
 
 class VibePulseVisualLandmarkTests(unittest.TestCase):
     @classmethod
@@ -586,13 +602,13 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
             claude_stale.crop((22, 72, 458, 118)).tobytes(),
             "no-data must retain the fixed FABLE · WEEK page identity",
         )
-        status = [(x, y) for y in range(18, 56) for x in range(300, 458)
+        status = [(x, y) for y in range(18, 56) for x in range(300, 408)
                   if no_data.getpixel((x, y)) != (0, 0, 0)]
         self.assertEqual(
             (min(x for x, _ in status), max(x for x, _ in status),
              min(y for _, y in status), max(y for _, y in status)),
-            (395, 457, 32, 41),
-            "NO DATA must occupy the one reserved status slot",
+            (345, 407, 32, 41),
+            "NO DATA must end before the reserved Wi-Fi lane",
         )
         hero = [(x, y) for y in range(140, 280) for x in range(22, 458)
                 if no_data.getpixel((x, y)) == (255, 255, 255)]
@@ -680,10 +696,10 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
 
     def test_missing_and_stale_headers_show_only_quota_truth_status(self):
         cases = (
-            ("torget-vibepulse-claude-stale.bmp", 414),
-            ("torget-vibepulse-claude-missing.bmp", 395),
-            ("torget-vibepulse-codex-stale.bmp", 414),
-            ("torget-vibepulse-codex-missing.bmp", 395),
+            ("torget-vibepulse-claude-stale.bmp", 364),
+            ("torget-vibepulse-claude-missing.bmp", 345),
+            ("torget-vibepulse-codex-stale.bmp", 364),
+            ("torget-vibepulse-codex-missing.bmp", 345),
         )
         for name, expected_left in cases:
             with self.subTest(name=name):
@@ -691,13 +707,13 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                 status_pixels = [
                     (x, y)
                     for y in range(18, 56)
-                    for x in range(200, 458)
+                    for x in range(200, 408)
                     if image.getpixel((x, y)) != (0, 0, 0)
                 ]
                 self.assertTrue(status_pixels)
                 self.assertEqual(min(x for x, _ in status_pixels),
                                  expected_left)
-                self.assertEqual(max(x for x, _ in status_pixels), 457)
+                self.assertEqual(max(x for x, _ in status_pixels), 407)
                 self.assertEqual(
                     (min(y for _, y in status_pixels),
                      max(y for _, y in status_pixels)),
@@ -1187,18 +1203,42 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         self.assertGreater(
             self._count(image, (24, 358, 232, 452), self.NY_RED), 0)
 
-    def test_wifi_icon_distinguishes_strong_weak_and_disconnected(self):
-        strong = self._ny("codex-question")
-        weak = self._ny("codex-wifi-weak")
-        off = self._ny("codex-wifi-off")
+    def test_global_wifi_icon_is_neutral_consistent_and_distinct(self):
         box = (418, 38, 446, 66)
-        strong_blue = self._count(strong, box, self.NY_CODEX)
-        weak_blue = self._count(weak, box, self.NY_CODEX)
-        off_blue = self._count(off, box, self.NY_CODEX)
-        self.assertGreater(strong_blue, weak_blue)
-        self.assertGreater(weak_blue, 0)
-        self.assertEqual(off_blue, 0)
-        self.assertGreater(self._count(off, box, self.NY_MUTED), 0)
+        signatures = []
+        for bars in range(4):
+            counts = []
+            for surface in WIFI_GLOBAL_SURFACES:
+                image = self.image(f"torget-wifi-global-{surface}-{bars}.bmp")
+                with self.subTest(surface=surface, bars=bars):
+                    self.assertEqual(self._count(image, box, self.NY_CODEX), 0)
+                    self.assertEqual(self._count(image, box, self.NY_CLAUDE), 0)
+                    for x in range(408, 418):
+                        for y in range(21, 58):
+                            self.assertEqual(image.getpixel((x, y)), (0, 0, 0))
+                    counts.append((
+                        self._count(image, box, self.NY_WHITE),
+                        self._count(image, box, (92, 104, 123)),
+                    ))
+            self.assertTrue(all(count == counts[0] for count in counts))
+            signatures.append(counts[0])
+        self.assertEqual(len(set(signatures)), 4)
+        self.assertGreater(signatures[0][0], 0)  # disconnected slash
+        self.assertGreater(signatures[0][1], 0)  # complete faint silhouette
+        for signature in signatures[1:]:
+            self.assertGreater(signature[0], 0)
+
+    def test_wifi_status_is_hidden_on_boot_and_foreground_on_overlays(self):
+        box = (418, 38, 446, 66)
+        for name in ("boot-cold", "boot-wifi", "boot-time"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    self.image(f"torget-{name}.bmp").crop(box).getbbox(), None
+                )
+        for name in ("ota-ring-open", "wifi-setup-qr"):
+            with self.subTest(name=name):
+                image = self.image(f"torget-{name}.bmp")
+                self.assertGreater(self._count(image, box, self.NY_WHITE), 0)
 
     def test_every_semantic_field_must_physically_fit_before_approval(self):
         fields = ("title", "subtitle", "description", "command", "tool")

@@ -8,7 +8,14 @@
   "wifi": {
     "x": 418,
     "y": 38,
-    "size": 28
+    "size": 28,
+    "scope": "global-top-layer",
+    "activeColor": "#FFFFFF",
+    "inactiveColor": "#5C687B",
+    "normalBars": [0, 1, 2, 3],
+    "setupBars": 3,
+    "disconnectedSlash": true,
+    "hiddenDuringBoot": true
   },
   "open": {
     "wordY": 24,

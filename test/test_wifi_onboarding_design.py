@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DESIGN_PATH = ROOT / "design/vibepulse/wifi-onboarding-design.json"
 SOURCE_PATH = ROOT / "components/torget_wifi/wifi_setup_ui.c"
+PLATFORM_UI_PATH = ROOT / "platform/torget_ui.c"
 
 
 class WifiOnboardingDesignTests(unittest.TestCase):
@@ -27,7 +28,21 @@ class WifiOnboardingDesignTests(unittest.TestCase):
         self.assertEqual(design["canvas"], {"width": 480, "height": 480})
 
         wifi = design["wifi"]
-        self.assertEqual(wifi, {"x": 418, "y": 38, "size": 28})
+        self.assertEqual(
+            wifi,
+            {
+                "x": 418,
+                "y": 38,
+                "size": 28,
+                "scope": "global-top-layer",
+                "activeColor": "#FFFFFF",
+                "inactiveColor": "#5C687B",
+                "normalBars": [0, 1, 2, 3],
+                "setupBars": 3,
+                "disconnectedSlash": True,
+                "hiddenDuringBoot": True,
+            },
+        )
         opened = design["open"]
         self.assertGreaterEqual(opened["qrSize"], 180)
         self.assertGreaterEqual(opened["qrX"], 8)
@@ -67,6 +82,7 @@ class WifiOnboardingDesignTests(unittest.TestCase):
 
     def test_source_matches_saved_tokens(self):
         source = SOURCE_PATH.read_text(encoding="utf-8")
+        platform = PLATFORM_UI_PATH.read_text(encoding="utf-8")
         macros = {
             name: int(value)
             for name, value in re.findall(
@@ -95,6 +111,18 @@ class WifiOnboardingDesignTests(unittest.TestCase):
         self.assertIn("memset(ui.rendered_qr_payload", hidden)
         self.assertIn("memset(ui.rendered_secondary", hidden)
         self.assertIn('lv_label_set_text(ui.secondary, "")', hidden)
+        wifi = self.design["wifi"]
+        self.assertIn("lv_layer_top()", platform)
+        self.assertIn(
+            f"lv_obj_set_pos(tg.wifi_group, {wifi['x']}, {wifi['y']})",
+            platform,
+        )
+        self.assertIn(
+            f"lv_obj_set_size(tg.wifi_group, {wifi['size']}, {wifi['size']})",
+            platform,
+        )
+        self.assertIn("TG_WIFI_STATUS_SETUP", platform)
+        self.assertIn("lv_line_create(tg.wifi_group)", platform)
 
     def test_repository_runner_wires_contract(self):
         runner = (ROOT / "test/run.sh").read_text(encoding="utf-8")

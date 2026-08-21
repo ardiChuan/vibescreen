@@ -152,21 +152,13 @@ static void capture_failed(const char *tag, const char *detail) {
  * pixelverifieringens facit. LVGL:s XRGB8888 är little-endian BGRX i minnet,
  * vilket är exakt BMP:s radformat, så raderna kopieras rått. Negativ höjd =
  * uppifrån och ner. */
-static void dump_obj_frame(lv_obj_t *root, const char *tag) {
-  /* QA-dumpar får inte bero på var SDL:s nästa refresh råkar ligga. Tvinga
-   * layout + redraw före snapshot så ett helt tillstånd fångas atomiskt. */
-  lv_obj_update_layout(root);
-  lv_obj_invalidate(root);
-  lv_draw_buf_t *buf = lv_snapshot_take(root, LV_COLOR_FORMAT_XRGB8888);
-  if (!buf) { capture_failed(tag, "kunde inte skapa LVGL-snapshot"); return; }
-
+static void dump_draw_buf_frame(lv_draw_buf_t *buf, const char *tag) {
   const char *capture_dir = getenv("TORGET_CAPTURE_DIR");
   if (!capture_dir || capture_dir[0] == '\0') capture_dir = "/tmp";
   char path[256];
   int path_len = snprintf(path, sizeof path, "%s/torget-%s.bmp", capture_dir, tag);
   if (path_len < 0 || (size_t)path_len >= sizeof path) {
     capture_failed(tag, "sökvägen är för lång");
-    lv_draw_buf_destroy(buf);
     return;
   }
 
@@ -175,7 +167,6 @@ static void dump_obj_frame(lv_obj_t *root, const char *tag) {
     char detail[512];
     snprintf(detail, sizeof detail, "kunde inte öppna %s: %s", path, strerror(errno));
     capture_failed(tag, detail);
-    lv_draw_buf_destroy(buf);
     return;
   }
 
@@ -187,7 +178,6 @@ static void dump_obj_frame(lv_obj_t *root, const char *tag) {
     snprintf(detail, sizeof detail, "kunde inte fdopen %s: %s", path,
              strerror(saved_errno));
     capture_failed(tag, detail);
-    lv_draw_buf_destroy(buf);
     return;
   }
 
@@ -212,11 +202,52 @@ static void dump_obj_frame(lv_obj_t *root, const char *tag) {
 
   if (failed) capture_failed(tag, "kunde inte skriva eller stänga BMP-filen");
   else printf("snapshot: %s\n", path);
+}
+
+static void dump_obj_frame(lv_obj_t *root, const char *tag) {
+  /* QA-dumpar får inte bero på var SDL:s nästa refresh råkar ligga. Tvinga
+   * layout + redraw före snapshot så ett helt tillstånd fångas atomiskt. */
+  lv_obj_update_layout(root);
+  lv_obj_invalidate(root);
+  lv_draw_buf_t *buf = lv_snapshot_take(root, LV_COLOR_FORMAT_XRGB8888);
+  if (!buf) { capture_failed(tag, "kunde inte skapa LVGL-snapshot"); return; }
+  dump_draw_buf_frame(buf, tag);
   lv_draw_buf_destroy(buf);
 }
 
+/* Normal app captures include lv_layer_top(): that is where the real panel's
+ * one shared Wi-Fi mark lives.  Snapshotting only lv_screen_active() silently
+ * omitted it even though the physical display composites both layers. */
 static void dump_frame(const char *tag) {
-  dump_obj_frame(lv_screen_active(), tag);
+  lv_obj_t *screen = lv_screen_active();
+  lv_obj_t *top = lv_layer_top();
+  lv_obj_update_layout(screen);
+  lv_obj_update_layout(top);
+  lv_obj_invalidate(screen);
+  lv_obj_invalidate(top);
+  lv_draw_buf_t *base = lv_snapshot_take(screen, LV_COLOR_FORMAT_XRGB8888);
+  lv_draw_buf_t *over = lv_snapshot_take(top, LV_COLOR_FORMAT_ARGB8888);
+  if (!base || !over || base->header.w != over->header.w ||
+      base->header.h != over->header.h) {
+    if (base) lv_draw_buf_destroy(base);
+    if (over) lv_draw_buf_destroy(over);
+    capture_failed(tag, "kunde inte komponera skärm + topplager");
+    return;
+  }
+  for (uint32_t y = 0; y < base->header.h; y++) {
+    uint8_t *dst = base->data + (size_t)y * base->header.stride;
+    const uint8_t *src = over->data + (size_t)y * over->header.stride;
+    for (uint32_t x = 0; x < base->header.w; x++, dst += 4, src += 4) {
+      uint32_t alpha = src[3];
+      if (alpha == 0) continue;
+      for (int channel = 0; channel < 3; channel++)
+        dst[channel] = (uint8_t)((src[channel] * alpha +
+                                 dst[channel] * (255U - alpha) + 127U) / 255U);
+    }
+  }
+  dump_draw_buf_frame(base, tag);
+  lv_draw_buf_destroy(over);
+  lv_draw_buf_destroy(base);
 }
 
 /* OTA-ringen bor på lv_layer_top() — utanför skärmträdet som dump_frame
@@ -607,6 +638,8 @@ static void capture_codex_question_variant(const char *tag,
       snapshot.pending.can_approve = false;
     }
     sim_wifi_signal_bars = wifi_bars;
+    torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL);
+    torget_wifi_status_foreground();
     tokens_apply_agent_status(&snapshot);
     tk_agent_monitor_needs_you_tap();
     dump_frame(tag);
@@ -663,6 +696,8 @@ static void capture_codex_fit_variant(const char *tag, fit_field field,
                  "%s", value);
     }
     sim_wifi_signal_bars = 3;
+    torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL);
+    torget_wifi_status_foreground();
     tokens_apply_agent_status(&snapshot);
     tk_agent_monitor_needs_you_tap();
     dump_frame(tag);
@@ -725,6 +760,8 @@ static void capture_needs_you_v2(void) {
   feed_tokens();
   tokens_show_view(VIEW_CLAUDE_FABLE);
   sim_wifi_signal_bars = 3;
+  torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL);
+  torget_wifi_status_foreground();
 
   apply_agent_file("agent-status-needs-you-question.json");
   dump_frame("vibepulse-needs-you-attract");
@@ -824,8 +861,50 @@ static void capture_needs_you_v2(void) {
   dump_frame("vibepulse-needs-you-payoff");
 }
 
+static void capture_wifi_surface(const char *surface) {
+  for (uint8_t bars = 0; bars <= 3; bars++) {
+    char tag[64];
+    sim_wifi_signal_bars = bars;
+    torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL);
+    torget_wifi_status_foreground();
+    snprintf(tag, sizeof tag, "wifi-global-%s-%u", surface, (unsigned)bars);
+    dump_frame(tag);
+  }
+}
+
+/* Every ordinary surface uses the same top-layer object.  The matrix proves
+ * all four physical association states on provider pages, non-provider pages,
+ * the launcher, the takeover, and the optional companion when present. */
+static void capture_global_wifi_matrix(void) {
+  torget_launcher_open();
+  capture_wifi_surface("launcher");
+
+  torget_app_show(SIM_APP_VIBEPULSE);
+  feed_tokens();
+  tokens_show_view(VIEW_CLAUDE_FABLE);
+  capture_wifi_surface("claude");
+  tokens_show_view(VIEW_CODEX_WEEKLY);
+  capture_wifi_surface("codex");
+  tokens_show_view(VIEW_VALUE);
+  capture_wifi_surface("value");
+  apply_github_file("github.json", false);
+  tokens_show_view(VIEW_GITHUB);
+  capture_wifi_surface("github");
+
+  apply_agent_file("agent-status-needs-you-codex-question.json");
+  tk_agent_monitor_needs_you_tap();
+  capture_wifi_surface("needs-you");
+
+#ifdef TORGET_HAVE_SOLELKOLLEN
+  torget_app_show(1);
+  capture_wifi_surface("companion");
+#endif
+}
+
 static int run_vibepulse_static_qa(void) {
   capture_failures = 0;
+  torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL);
+  torget_wifi_status_foreground();
   torget_app_show(SIM_APP_VIBEPULSE);
 
   feed_tokens();
@@ -1077,6 +1156,7 @@ static int run_vibepulse_static_qa(void) {
 
   /* Bootskärmen: tre stadier innan den river sig själv. Skapas HÄR (inte
    * vid simstart) så övriga QA-dumpar slipper lagret ovanpå sig. */
+  torget_wifi_status_set_mode(TG_WIFI_STATUS_HIDDEN);
   torget_boot_screen_create();
   dump_overlay_frame("boot-cold");
   torget_boot_screen_stage(TG_BOOT_WIFI_UP);
@@ -1214,6 +1294,8 @@ static int run_vibepulse_static_qa(void) {
   value_solo.value.multiple = 1.40;
   tokens_apply(&value_solo);
   dump_frame("vibepulse-value-solo");
+
+  capture_global_wifi_matrix();
 
   /* The Needs You takeover last: its payoff beat owns the glass, so nothing
    * captured after it would see the page underneath. */

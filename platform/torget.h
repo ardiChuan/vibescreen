@@ -40,6 +40,19 @@ void torget_net_wait(void);
 /* 0 disconnected, 1 weak, 2 medium, 3 strong. Never implies relay health. */
 uint8_t torget_wifi_signal_bars(void);
 
+/* One neutral Wi-Fi status mark shared by every app and full-screen overlay.
+ * NORMAL follows the real 0..3 association strength, SETUP shows the complete
+ * symbol while the phone flow owns the glass, and HIDDEN is reserved for the
+ * one-time boot screen.  These UI calls require the caller to hold the LVGL
+ * lock, matching the rest of the platform UI API. */
+typedef enum {
+  TG_WIFI_STATUS_NORMAL = 0,
+  TG_WIFI_STATUS_SETUP,
+  TG_WIFI_STATUS_HIDDEN,
+} tg_wifi_status_mode;
+void torget_wifi_status_set_mode(tg_wifi_status_mode mode);
+void torget_wifi_status_foreground(void);
+
 /* OTA-annonsen fran kvotpollen: appen ager natet (P25) och lamnar bara
  * vidare strangen; plattformen jamfor mot korande version och driver
  * UPDATE READY-notisen. NULL = ingen annons i senaste svaret. */
