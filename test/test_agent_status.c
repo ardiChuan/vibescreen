@@ -130,6 +130,19 @@ static void rejected_unchanged(const char *what, const char *json,
 
 int main(void) {
   tk_agent_snapshot snapshot = {0};
+  check("relaystatus utan pending parsar genom samma strikta kontrakt",
+        tk_agent_status_parse_relay(
+            PAYLOAD(WORKING_JOB), strlen(PAYLOAD(WORKING_JOB)), &snapshot) &&
+            snapshot.claude.job_count == 1);
+  static const char forbidden_relay_pending[] =
+      "{\"v\":2,\"seq\":7,\"agents\":{" ONE_CLAUDE(WORKING_JOB) ","
+      EMPTY_CODEX "},\"pending\":{}}";
+  check("relaystatus avvisar varje pending-fält",
+        tk_agent_status_parse(forbidden_relay_pending,
+                              strlen(forbidden_relay_pending), &snapshot) &&
+        !tk_agent_status_parse_relay(forbidden_relay_pending,
+                                     strlen(forbidden_relay_pending),
+                                     &snapshot));
   size_t fixture_len = 0;
   char *fixture = read_file(
       FIXTURES_DIR "/agent-status-claude-working.json", &fixture_len);

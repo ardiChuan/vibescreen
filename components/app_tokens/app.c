@@ -6,7 +6,9 @@
 #include "lvgl.h"
 
 #include "needs_you_net.h"
-#if defined(ESP_PLATFORM) && CONFIG_TK_VIBEPULSE_INTERACTION_RELAY
+#include "agent_status_source_policy.h"
+#if defined(ESP_PLATFORM) && (CONFIG_TK_VIBEPULSE_INTERACTION_RELAY || \
+                              CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY)
 #include "interaction_relay_net.h"
 #endif
 #include "torget.h"
@@ -29,6 +31,7 @@ static struct {
   int64_t last_success_us;
   bool has_data;
   bool stale;
+  tk_agent_source_policy agent_source;
 } app;
 
 void tokens_apply(const tk_tokens *tokens) {
@@ -45,7 +48,31 @@ void tokens_apply(const tk_tokens *tokens) {
 }
 
 void tokens_apply_agent_status(const tk_agent_snapshot *snapshot) {
-  usage_screen_apply_agent(snapshot, torget_now_us());
+  if (!snapshot) return;
+  int64_t now_us = torget_now_us();
+  uint64_t now_ms = now_us > 0 ? (uint64_t)now_us / 1000u : 0;
+  tk_agent_source_note_lan(&app.agent_source, now_ms);
+  usage_screen_apply_agent(snapshot, now_us);
+}
+
+bool tokens_apply_agent_status_relay(const tk_agent_snapshot *snapshot,
+                                     int64_t now_us) {
+  if (!snapshot) return false;
+  uint64_t now_ms = now_us > 0 ? (uint64_t)now_us / 1000u : 0;
+  if (!tk_agent_source_allow_relay(&app.agent_source, now_ms)) return false;
+  tk_agent_source_note_relay(&app.agent_source, now_ms);
+  usage_screen_apply_agent_status_relay(snapshot, now_us);
+  return true;
+}
+
+bool tokens_clear_agent_status_relay(int64_t now_us) {
+  uint64_t now_ms = now_us > 0 ? (uint64_t)now_us / 1000u : 0;
+  if (!tk_agent_source_should_clear_relay(&app.agent_source, now_ms)) {
+    return false;
+  }
+  tk_agent_snapshot empty = {0};
+  usage_screen_apply_agent_status_relay(&empty, now_us);
+  return true;
 }
 
 void tokens_apply_max_tracker(const tk_max_tracker *t) {
@@ -104,6 +131,7 @@ void tokens_net_start(void);
 
 static void create(lv_obj_t *root) {
   memset(&app, 0, sizeof app);
+  tk_agent_source_policy_init(&app.agent_source);
   usage_screen_create(root);
   lv_timer_create(tick_cb, TICK_EVERY_MS, NULL);
 
@@ -113,7 +141,8 @@ static void create(lv_obj_t *root) {
   tokens_agent_net_start();
   tokens_github_net_start();
   tokens_needs_you_net_start();
-#if CONFIG_TK_VIBEPULSE_INTERACTION_RELAY
+#if CONFIG_TK_VIBEPULSE_INTERACTION_RELAY || \
+    CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY
   tokens_interaction_relay_net_start();
 #endif
 #endif

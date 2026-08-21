@@ -26,6 +26,7 @@
 
 #include "agent_monitor.h"
 #include "agent_status_parse.h"
+#include "app_tokens.h"
 #include "interaction_relay_crypto.h"
 #include "interaction_relay_policy.h"
 #include "needs_you_policy.h"
@@ -72,6 +73,13 @@ typedef struct {
   char request_id[TK_IR_REQUEST_ID_CAP];
 } relay_next_item;
 
+typedef struct {
+  const uint8_t *envelope;
+  size_t envelope_len;
+  uint64_t expires_at_ms;
+  uint64_t stored_at_ms;
+} relay_status_item;
+
 static StaticQueue_t s_queue_control;
 static uint8_t s_queue_storage[
     TK_IR_VERDICT_QUEUE_CAP * sizeof(relay_verdict_item)];
@@ -86,12 +94,19 @@ static tk_ir_retry verdict_retry;
 static tk_ir_backoff verdict_backoff;
 static tk_ir_keys_t relay_keys;
 static tk_ir_verdict_binding_t retry_binding;
+static tk_ir_status_t decoded_status;
+static tk_agent_snapshot decoded_snapshot;
+static uint64_t last_status_publication_id;
 static _Atomic uint32_t s_polls_ok;
 static _Atomic uint32_t s_requests_applied;
 static _Atomic uint32_t s_verdicts_acked;
+static _Atomic uint32_t s_status_polls_ok;
+static _Atomic uint32_t s_status_applied;
+static _Atomic uint32_t s_status_cleared;
 static _Atomic uint32_t s_failures;
 static _Atomic int s_last_http_status;
 static _Atomic bool s_running;
+static _Atomic bool s_started;
 
 static uint64_t monotonic_ms(void) {
   int64_t value = esp_timer_get_time();
@@ -127,6 +142,20 @@ static bool make_url(char *out, size_t cap, const char *suffix_format,
                  (int)origin_len, TK_VIBEPULSE_INTERACTION_RELAY_URL,
                  TK_VIBEPULSE_INTERACTION_MAILBOX, request_id);
   (void)suffix_format;
+  return written > 0 && (size_t)written < cap;
+}
+
+static bool make_status_url(char *out, size_t cap) {
+  size_t origin_len = strlen(TK_VIBEPULSE_INTERACTION_RELAY_URL);
+  if (origin_len > INT_MAX) return false;
+  if (origin_len != 0 &&
+      TK_VIBEPULSE_INTERACTION_RELAY_URL[origin_len - 1] == '/') {
+    --origin_len;
+  }
+  int written = snprintf(out, cap, "%.*s/v1/mailboxes/%s/status",
+                         (int)origin_len,
+                         TK_VIBEPULSE_INTERACTION_RELAY_URL,
+                         TK_VIBEPULSE_INTERACTION_MAILBOX);
   return written > 0 && (size_t)written < cap;
 }
 
@@ -286,6 +315,42 @@ static bool parse_next_wrapper(const char *body, size_t len,
   }
   memcpy(out->request_id, id, TK_IR_REQUEST_ID_CHARS);
   out->request_id[TK_IR_REQUEST_ID_CHARS] = '\0';
+  return true;
+}
+
+static bool parse_status_wrapper(const char *body, size_t len,
+                                 relay_status_item *out) {
+  static const char prefix[] = "{\"envelope\":";
+  static const char middle[] = "},\"expiresAtMs\":";
+  static const char stored_prefix[] = ",\"storedAtMs\":";
+  if (body == NULL || out == NULL || len == 0 ||
+      strncmp(body, prefix, sizeof prefix - 1) != 0) {
+    return false;
+  }
+  memset(out, 0, sizeof *out);
+  const char *envelope_start = body + sizeof prefix - 1;
+  if (*envelope_start != '{') return false;
+  const char *middle_at = strstr(envelope_start, middle);
+  if (middle_at == NULL) return false;
+  out->envelope = (const uint8_t *)envelope_start;
+  out->envelope_len = (size_t)(middle_at - envelope_start + 1);
+  if (out->envelope_len == 0 ||
+      out->envelope_len > TK_IR_MAX_ENVELOPE_BYTES) {
+    return false;
+  }
+  const char *expires_start = middle_at + sizeof middle - 1;
+  const char *stored_at = strstr(expires_start, stored_prefix);
+  const char *end = body + len;
+  if (stored_at == NULL || stored_at >= end || end[-1] != '}' ||
+      !decimal_u64(expires_start, stored_at, &out->expires_at_ms) ||
+      !decimal_u64(stored_at + sizeof stored_prefix - 1, end - 1,
+                   &out->stored_at_ms) ||
+      out->expires_at_ms == 0 || out->stored_at_ms == 0 ||
+      out->stored_at_ms >= out->expires_at_ms ||
+      out->expires_at_ms > 0x1fffffffffffffULL ||
+      out->stored_at_ms > 0x1fffffffffffffULL) {
+    return false;
+  }
   return true;
 }
 
@@ -483,6 +548,78 @@ static bool poll_request(relay_http_client *poll_client) {
   return true;
 }
 
+static bool decode_status_snapshot(const relay_status_item *item,
+                                   uint64_t *publication_id) {
+  if (item == NULL || publication_id == NULL) return false;
+  memset(&decoded_status, 0, sizeof decoded_status);
+  memset(&decoded_snapshot, 0, sizeof decoded_snapshot);
+  if (tk_ir_decode_status(
+          &relay_keys, TK_VIBEPULSE_INTERACTION_MAILBOX,
+          item->envelope, item->envelope_len, &decoded_status,
+          crypto_work, sizeof crypto_work) != TK_IR_OK) {
+    return false;
+  }
+  time_t wall_seconds = time(NULL);
+  if (wall_seconds <= 0) goto reject;
+  uint64_t now_wall_ms = (uint64_t)wall_seconds * 1000u;
+  uint64_t inner_expiry_ms = (uint64_t)decoded_status.expires_at * 1000u;
+  if (item->expires_at_ms <= now_wall_ms ||
+      inner_expiry_ms <= now_wall_ms ||
+      decoded_status.publication_id <= last_status_publication_id ||
+      !tk_agent_status_parse_relay(
+          (const char *)decoded_status.status, decoded_status.status_len,
+          &decoded_snapshot)) {
+    goto reject;
+  }
+  *publication_id = decoded_status.publication_id;
+  memset(&decoded_status, 0, sizeof decoded_status);
+  return true;
+
+reject:
+  memset(&decoded_status, 0, sizeof decoded_status);
+  memset(&decoded_snapshot, 0, sizeof decoded_snapshot);
+  return false;
+}
+
+static bool poll_status(relay_http_client *client) {
+  char url[TK_IR_URL_CAP];
+  if (!make_status_url(url, sizeof url)) return false;
+  relay_http_response result;
+  bool transport = relay_http(client, HTTP_METHOD_GET, url, NULL, 0,
+                              &result);
+  memset(url, 0, sizeof url);
+  if (!transport) return false;
+  if (result.status == 204 && result.len == 0 && !result.json) {
+    atomic_fetch_add(&s_status_polls_ok, 1u);
+    return true;
+  }
+  if (result.status != 200 || !result.json || result.len == 0) return false;
+  relay_status_item item;
+  uint64_t publication_id = 0;
+  if (!parse_status_wrapper(response, result.len, &item) ||
+      !decode_status_snapshot(&item, &publication_id)) {
+    return false;
+  }
+  int64_t now_us = esp_timer_get_time();
+  torget_ui_lock();
+  bool applied = tokens_apply_agent_status_relay(&decoded_snapshot, now_us);
+  torget_ui_unlock();
+  memset(&decoded_snapshot, 0, sizeof decoded_snapshot);
+  if (applied) {
+    last_status_publication_id = publication_id;
+    atomic_fetch_add(&s_status_applied, 1u);
+  }
+  atomic_fetch_add(&s_status_polls_ok, 1u);
+  return true;
+}
+
+static void clear_stale_status(void) {
+  torget_ui_lock();
+  bool cleared = tokens_clear_agent_status_relay(esp_timer_get_time());
+  torget_ui_unlock();
+  if (cleared) atomic_fetch_add(&s_status_cleared, 1u);
+}
+
 static bool create_client(relay_http_client *out) {
   if (out == NULL) return false;
   memset(out, 0, sizeof *out);
@@ -504,62 +641,110 @@ static bool create_client(relay_http_client *out) {
 
 static void relay_task(void *argument) {
   (void)argument;
-  tk_ir_backoff backoff;
-  tk_ir_backoff_init(&backoff);
+  tk_ir_backoff request_backoff;
+  tk_ir_backoff status_backoff;
+  tk_ir_backoff_init(&request_backoff);
+  tk_ir_backoff_init(&status_backoff);
   torget_net_wait();
   relay_http_client poll_client;
-  relay_http_client send_client;
   bool poll_created = create_client(&poll_client);
-  bool send_created = create_client(&send_client);
+  relay_http_client send_client = {0};
+  bool send_created = true;
+#if CONFIG_TK_VIBEPULSE_INTERACTION_RELAY
+  send_created = create_client(&send_client);
+#endif
   if (!poll_created || !send_created ||
       tk_ir_derive_keys(TK_VIBEPULSE_DEVICE_KEY,
                         TK_VIBEPULSE_INTERACTION_MAILBOX,
                         &relay_keys) != TK_IR_OK) {
     if (poll_created) esp_http_client_cleanup(poll_client.handle);
-    if (send_created) esp_http_client_cleanup(send_client.handle);
+    if (send_client.handle != NULL) {
+      esp_http_client_cleanup(send_client.handle);
+    }
     atomic_fetch_add(&s_failures, 1u);
     atomic_store(&s_running, false);
     vTaskDelete(NULL);
     return;
   }
 
-  uint64_t next_poll_ms = monotonic_ms();
+  uint64_t next_request_poll_ms = monotonic_ms();
+  uint64_t next_status_poll_ms = monotonic_ms();
+  uint64_t next_status_clear_ms = monotonic_ms();
   atomic_store(&s_running, true);
-  ESP_LOGI(TAG, "krypterad interaktionskanal startad");
+  ESP_LOGI(TAG, "krypterad reläkanal startad");
   for (;;) {
+#if CONFIG_TK_VIBEPULSE_INTERACTION_RELAY
     service_verdict(&send_client);
+#endif
     uint64_t now_ms = monotonic_ms();
-    if (now_ms >= next_poll_ms && tk_ir_backoff_ready(&backoff, now_ms)) {
+#if CONFIG_TK_VIBEPULSE_INTERACTION_RELAY
+    if (now_ms >= next_request_poll_ms &&
+        tk_ir_backoff_ready(&request_backoff, now_ms)) {
       if (poll_request(&poll_client)) {
-        tk_ir_backoff_wifi_recovered(&backoff);
-        next_poll_ms = now_ms + TK_IR_POLL_INTERVAL_MS + jitter_ms(500u);
+        tk_ir_backoff_wifi_recovered(&request_backoff);
+        next_request_poll_ms =
+            now_ms + TK_IR_POLL_INTERVAL_MS + jitter_ms(500u);
       } else {
         atomic_fetch_add(&s_failures, 1u);
-        next_poll_ms = now_ms + tk_ir_backoff_fail(
-            &backoff, now_ms, jitter_ms(TK_IR_BACKOFF_MIN_MS));
+        next_request_poll_ms = now_ms + tk_ir_backoff_fail(
+            &request_backoff, now_ms, jitter_ms(TK_IR_BACKOFF_MIN_MS));
       }
     }
+    /* A request GET can consume the full HTTP timeout. Recheck the verdict
+     * queue before starting the optional status GET so adding live status
+     * never doubles the pre-existing worst-case verdict delay. */
+    service_verdict(&send_client);
+#endif
+#if CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY
+    if (now_ms >= next_status_poll_ms &&
+        tk_ir_backoff_ready(&status_backoff, now_ms)) {
+      if (poll_status(&poll_client)) {
+        tk_ir_backoff_wifi_recovered(&status_backoff);
+        next_status_poll_ms =
+            now_ms + TK_IR_POLL_INTERVAL_MS + jitter_ms(500u);
+      } else {
+        atomic_fetch_add(&s_failures, 1u);
+        next_status_poll_ms = now_ms + tk_ir_backoff_fail(
+            &status_backoff, now_ms, jitter_ms(TK_IR_BACKOFF_MIN_MS));
+      }
+    }
+    if (now_ms >= next_status_clear_ms) {
+      clear_stale_status();
+      next_status_clear_ms = now_ms + 1000u;
+    }
+#endif
     vTaskDelay(pdMS_TO_TICKS(TK_IR_LOOP_MS));
   }
 }
 
 void tokens_interaction_relay_net_start(void) {
-  if (s_queue != NULL) return;
+  if (atomic_exchange(&s_started, true)) return;
   tk_ir_retry_init(&verdict_retry);
   tk_ir_backoff_init(&verdict_backoff);
   atomic_store(&s_polls_ok, 0u);
   atomic_store(&s_requests_applied, 0u);
   atomic_store(&s_verdicts_acked, 0u);
+  atomic_store(&s_status_polls_ok, 0u);
+  atomic_store(&s_status_applied, 0u);
+  atomic_store(&s_status_cleared, 0u);
   atomic_store(&s_failures, 0u);
   atomic_store(&s_last_http_status, 0);
   atomic_store(&s_running, false);
+#if CONFIG_TK_VIBEPULSE_INTERACTION_RELAY
   s_queue = xQueueCreateStatic(TK_IR_VERDICT_QUEUE_CAP,
                                sizeof(relay_verdict_item), s_queue_storage,
                                &s_queue_control);
-  if (s_queue == NULL ||
-      xTaskCreate(relay_task, "interaction-relay", 8192, NULL, 4, NULL) !=
-          pdPASS) {
+  if (s_queue == NULL) {
     atomic_fetch_add(&s_failures, 1u);
+    atomic_store(&s_started, false);
+    ESP_LOGE(TAG, "krypterad verdict-kö kunde inte starta");
+    return;
+  }
+#endif
+  if (xTaskCreate(relay_task, "interaction-relay", 10 * 1024, NULL, 4,
+                  NULL) != pdPASS) {
+    atomic_fetch_add(&s_failures, 1u);
+    atomic_store(&s_started, false);
     ESP_LOGE(TAG, "krypterad interaktionskanal kunde inte starta");
   }
 }
@@ -569,6 +754,9 @@ tk_interaction_relay_net_status tokens_interaction_relay_net_status(void) {
       .polls_ok = atomic_load(&s_polls_ok),
       .requests_applied = atomic_load(&s_requests_applied),
       .verdicts_acked = atomic_load(&s_verdicts_acked),
+      .status_polls_ok = atomic_load(&s_status_polls_ok),
+      .status_applied = atomic_load(&s_status_applied),
+      .status_cleared = atomic_load(&s_status_cleared),
       .failures = atomic_load(&s_failures),
       .last_http_status = atomic_load(&s_last_http_status),
       .running = atomic_load(&s_running),

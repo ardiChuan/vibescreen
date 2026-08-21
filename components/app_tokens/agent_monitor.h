@@ -11,6 +11,10 @@
 
 void tk_agent_monitor_create(lv_obj_t *app_root);
 void tk_agent_monitor_apply(const tk_agent_snapshot *snapshot, int64_t now_us);
+/* Replace only seq/Claude/Codex from authenticated status relay data. The
+ * independently selected LAN/relay pending interaction remains untouched. */
+void tk_agent_monitor_apply_status_relay(
+    const tk_agent_snapshot *snapshot, int64_t now_us);
 /* Apply only the encrypted relay slot. Agent rows and the independent LAN
  * pending slot remain untouched. Passing NULL/an absent item clears the relay
  * slot. The caller holds torget_ui_lock; this function performs no I/O. */

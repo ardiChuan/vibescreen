@@ -180,6 +180,12 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 /tmp/torget-agent-net-policy-test
 
 cc -std=c11 -Wall -Wextra -Werror -O1 \
+  ../components/app_tokens/agent_status_source_policy.c \
+  test_agent_status_source_policy.c \
+  -o /tmp/torget-agent-status-source-policy-test
+/tmp/torget-agent-status-source-policy-test
+
+cc -std=c11 -Wall -Wextra -Werror -O1 \
   ../components/torget_ota/ota_policy.c \
   test_ota_policy.c \
   -lm \

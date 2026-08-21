@@ -1,6 +1,9 @@
 #ifndef APP_TOKENS_H
 #define APP_TOKENS_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "torget_app.h"
 
 #include "tokens.h"
@@ -36,6 +39,12 @@ void tokens_apply(const tk_tokens *t);
 
 /* Ett lyckat /api/agent-status-svar, redan parsat och under UI-låset. */
 void tokens_apply_agent_status(const tk_agent_snapshot *snapshot);
+
+/* Authenticated, E2E relay rows. These return whether relay source policy
+ * allowed an apply/one-shot clear. Callers hold torget_ui_lock(). */
+bool tokens_apply_agent_status_relay(const tk_agent_snapshot *snapshot,
+                                     int64_t now_us);
+bool tokens_clear_agent_status_relay(int64_t now_us);
 
 /* Ett lyckat /api/max-tracker-svar, redan parsat och under UI-låset. */
 void tokens_apply_max_tracker(const tk_max_tracker *t);

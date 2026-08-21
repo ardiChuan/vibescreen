@@ -10,6 +10,12 @@
 bool tk_agent_status_parse(const char *json, size_t len,
                            tk_agent_snapshot *out);
 
+/* The encrypted status slot deliberately carries provider rows only. It uses
+ * the same strict v2 parser but rejects a top-level pending member even when
+ * that member would have soft-failed in the backwards-compatible LAN path. */
+bool tk_agent_status_parse_relay(const char *json, size_t len,
+                                 tk_agent_snapshot *out);
+
 /* Parse only the authenticated stable public view carried by the encrypted
  * interaction relay. This deliberately does not impersonate or apply a full
  * agent-status response. The caller supplies the already bounded remaining

@@ -1154,23 +1154,17 @@ static void select_pending(uint64_t now_ms) {
   }
 }
 
-void tk_agent_monitor_apply(const tk_agent_snapshot *snapshot,
-                            int64_t now_us) {
-  if (!snapshot) return;
-  mon.snapshot = *snapshot;
+static void apply_provider_render(int64_t now_us) {
   uint64_t now_ms = monitor_now_ms(now_us);
-  (void)tk_ir_policy_update_lan(&mon.interaction_policy, &snapshot->pending,
-                                now_ms);
-  select_pending(now_ms);
   mon.applied_at_us = now_us;
   mon.rendered_at_us = now_us;
   mon.has_snapshot = true;
   tk_completion_queue_apply(&mon.queue, &mon.snapshot, now_ms);
-  render_needs_you(); /* first: it decides whether completion yields the glass */
-  render_completion(now_us > 0 ? (uint64_t)now_us / 1000ULL : 0);
+  render_needs_you(); /* it decides whether completion yields the glass */
+  render_completion(now_ms);
 
   const tk_agent_provider_status *providers[2] = {
-      &snapshot->claude, &snapshot->codex,
+      &mon.snapshot.claude, &mon.snapshot.codex,
   };
   for (int provider = 0; provider < 2; provider++) {
     for (uint8_t i = 0; i < providers[provider]->job_count; i++) {
@@ -1181,6 +1175,27 @@ void tk_agent_monitor_apply(const tk_agent_snapshot *snapshot,
       }
     }
   }
+}
+
+void tk_agent_monitor_apply(const tk_agent_snapshot *snapshot,
+                            int64_t now_us) {
+  if (!snapshot) return;
+  mon.snapshot = *snapshot;
+  uint64_t now_ms = monitor_now_ms(now_us);
+  (void)tk_ir_policy_update_lan(&mon.interaction_policy, &snapshot->pending,
+                                now_ms);
+  select_pending(now_ms);
+  apply_provider_render(now_us);
+}
+
+void tk_agent_monitor_apply_status_relay(
+    const tk_agent_snapshot *snapshot, int64_t now_us) {
+  if (snapshot == NULL) return;
+  mon.snapshot.seq = snapshot->seq;
+  mon.snapshot.claude = snapshot->claude;
+  mon.snapshot.codex = snapshot->codex;
+  select_pending(monitor_now_ms(now_us));
+  apply_provider_render(now_us);
 }
 
 void tk_agent_monitor_apply_relay(const tk_pending_interaction *pending,

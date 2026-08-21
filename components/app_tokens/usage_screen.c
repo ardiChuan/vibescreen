@@ -1069,6 +1069,20 @@ void usage_screen_apply_agent(const tk_agent_snapshot *snapshot,
   tk_agent_monitor_apply(snapshot, now_us);
 }
 
+void usage_screen_apply_agent_status_relay(
+    const tk_agent_snapshot *snapshot, int64_t now_us) {
+  if (!snapshot) return;
+  ui.agent_snapshot.seq = snapshot->seq;
+  ui.agent_snapshot.claude = snapshot->claude;
+  ui.agent_snapshot.codex = snapshot->codex;
+  ui.agent_applied_at_us = now_us;
+  ui.last_now_us = now_us;
+  ui.has_agent_snapshot = true;
+  for (int i = 0; i < 3; i++) refresh_header(&ui.quotas[i], now_us);
+  for (int i = 0; i < 2; i++) refresh_tracker_header(&ui.trackers[i], now_us);
+  tk_agent_monitor_apply_status_relay(snapshot, now_us);
+}
+
 void usage_screen_tick(int64_t now_us) {
   ui.last_now_us = now_us;
   for (int i = 0; i < 3; i++) refresh_header(&ui.quotas[i], now_us);

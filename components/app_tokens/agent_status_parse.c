@@ -1022,8 +1022,9 @@ static bool provider_member(const char *json, size_t len, const cJSON *root,
   return true;
 }
 
-bool tk_agent_status_parse(const char *json, size_t len,
-                           tk_agent_snapshot *out) {
+static bool agent_status_parse(const char *json, size_t len,
+                               tk_agent_snapshot *out,
+                               bool allow_pending) {
   if (!json || !out || !json_lexically_valid(json, len)) return false;
 
   const char *parse_end = NULL;
@@ -1037,6 +1038,8 @@ bool tk_agent_status_parse(const char *json, size_t len,
   if (!trailing_is_whitespace(json, len, parse_end)) goto done;
   if (!cJSON_IsObject(root)) goto done;
   if (cJSON_GetObjectItemCaseSensitive(root, "error")) goto done;
+  if (!allow_pending &&
+      cJSON_GetObjectItemCaseSensitive(root, "pending") != NULL) goto done;
   if (!required_keys_once(root, root_required_keys)) goto done;
   if (!uint32_member(json, len, root, root, "v", &version) || version != 2) {
     goto done;
@@ -1061,4 +1064,14 @@ bool tk_agent_status_parse(const char *json, size_t len,
 done:
   cJSON_Delete(root);
   return ok;
+}
+
+bool tk_agent_status_parse(const char *json, size_t len,
+                           tk_agent_snapshot *out) {
+  return agent_status_parse(json, len, out, true);
+}
+
+bool tk_agent_status_parse_relay(const char *json, size_t len,
+                                 tk_agent_snapshot *out) {
+  return agent_status_parse(json, len, out, false);
 }
