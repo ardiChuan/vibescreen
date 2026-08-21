@@ -83,6 +83,7 @@ static const char *const AGENT_FIXTURES[] = {
 };
 static int agent_fixture_idx;
 static int capture_failures;
+static void pump_ms(uint32_t ms);
 
 static const char *const MAX_TRACKER_FIXTURES[] = {
   "max-tracker-full.json",
@@ -872,9 +873,9 @@ static void capture_wifi_surface(const char *surface) {
   }
 }
 
-/* Every ordinary surface uses the same top-layer object.  The matrix proves
+/* Every ordinary surface uses the same page-shell image. The matrix proves
  * all four physical association states on provider pages, non-provider pages,
- * the launcher, the takeover, and the optional companion when present. */
+ * the launcher, Needs You, and the optional companion when present. */
 static void capture_global_wifi_matrix(void) {
   torget_launcher_open();
   capture_wifi_surface("launcher");
@@ -899,6 +900,25 @@ static void capture_global_wifi_matrix(void) {
   torget_app_show(1);
   capture_wifi_surface("companion");
 #endif
+}
+
+static void capture_wifi_drift_matrix(void) {
+  static const char *tags[5] = {
+      "wifi-drift-0", "wifi-drift-1", "wifi-drift-2",
+      "wifi-drift-3", "wifi-drift-return",
+  };
+  torget_app_show(SIM_APP_VIBEPULSE);
+  feed_tokens();
+  tokens_show_view(VIEW_CODEX_WEEKLY);
+  sim_wifi_signal_bars = 3;
+  torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL);
+  torget_wifi_status_foreground();
+  dump_frame(tags[0]);
+  for (int i = 1; i < 5; i++) {
+    torget_drift_step();
+    pump_ms(1300);
+    dump_frame(tags[i]);
+  }
 }
 
 static int run_vibepulse_static_qa(void) {
@@ -1295,6 +1315,7 @@ static int run_vibepulse_static_qa(void) {
   tokens_apply(&value_solo);
   dump_frame("vibepulse-value-solo");
 
+  capture_wifi_drift_matrix();
   capture_global_wifi_matrix();
 
   /* The Needs You takeover last: its payoff beat owns the glass, so nothing

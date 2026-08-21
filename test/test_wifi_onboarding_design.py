@@ -31,15 +31,13 @@ class WifiOnboardingDesignTests(unittest.TestCase):
         self.assertEqual(
             wifi,
             {
-                "x": 418,
-                "y": 38,
-                "size": 28,
-                "scope": "global-top-layer",
-                "activeColor": "#FFFFFF",
-                "inactiveColor": "#9298A2",
-                "normalBars": [0, 1, 2, 3],
-                "setupBars": 3,
-                "disconnectedSlash": True,
+                "x": 426,
+                "y": 28,
+                "width": 20,
+                "height": 18,
+                "scope": "page-drift-shell",
+                "color": "#9298A2",
+                "states": ["offline", "weak", "medium", "strong"],
                 "hiddenDuringBoot": True,
             },
         )
@@ -81,6 +79,7 @@ class WifiOnboardingDesignTests(unittest.TestCase):
                 self.validate(changed)
 
     def test_source_matches_saved_tokens(self):
+        self.validate(self.design)
         source = SOURCE_PATH.read_text(encoding="utf-8")
         platform = PLATFORM_UI_PATH.read_text(encoding="utf-8")
         macros = {
@@ -112,17 +111,19 @@ class WifiOnboardingDesignTests(unittest.TestCase):
         self.assertIn("memset(ui.rendered_secondary", hidden)
         self.assertIn('lv_label_set_text(ui.secondary, "")', hidden)
         wifi = self.design["wifi"]
-        self.assertIn("lv_layer_top()", platform)
         self.assertIn(
             f"lv_obj_set_pos(tg.wifi_group, {wifi['x']}, {wifi['y']})",
             platform,
         )
         self.assertIn(
-            f"lv_obj_set_size(tg.wifi_group, {wifi['size']}, {wifi['size']})",
+            "lv_obj_set_size(tg.wifi_group, "
+            f"{wifi['width']}, {wifi['height']})",
             platform,
         )
+        self.assertIn("tg.wifi_group = bare(tg.shift)", platform)
+        self.assertIn("lv_image_create(tg.wifi_group)", platform)
+        self.assertNotIn("LV_SYMBOL_WIFI", platform)
         self.assertIn("TG_WIFI_STATUS_SETUP", platform)
-        self.assertIn("lv_line_create(tg.wifi_group)", platform)
 
     def test_repository_runner_wires_contract(self):
         runner = (ROOT / "test/run.sh").read_text(encoding="utf-8")

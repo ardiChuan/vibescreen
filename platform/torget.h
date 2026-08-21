@@ -40,11 +40,12 @@ void torget_net_wait(void);
 /* 0 disconnected, 1 weak, 2 medium, 3 strong. Never implies relay health. */
 uint8_t torget_wifi_signal_bars(void);
 
-/* One neutral Wi-Fi status mark shared by every app and full-screen overlay.
- * NORMAL follows the real 0..3 association strength, SETUP shows the complete
- * symbol while the phone flow owns the glass, and HIDDEN is reserved for the
- * one-time boot screen.  These UI calls require the caller to hold the LVGL
- * lock, matching the rest of the platform UI API. */
+/* One neutral Wi-Fi status mark shared by every ordinary app page. It lives
+ * in the translated page shell; opaque setup/OTA takeovers cover it instead
+ * of letting it float above them. NORMAL follows real 0..3 association
+ * strength, SETUP selects the complete mark for the phone flow, and HIDDEN is
+ * reserved for the one-time boot screen. These UI calls require the caller
+ * to hold the LVGL lock, matching the rest of the platform UI API. */
 typedef enum {
   TG_WIFI_STATUS_NORMAL = 0,
   TG_WIFI_STATUS_SETUP,

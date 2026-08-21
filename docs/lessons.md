@@ -393,8 +393,10 @@ divider also continued beneath the global slot, making the top-layer object
 feel pasted over the screen. **The rule:** small bright status marks need
 deliberate multi-pixel negative space at final native size, and shared chrome
 needs a reserved lane in every underlying page—not merely a high z-order.
-**Guards:** a dedicated one-glyph Wi-Fi font renders three disconnected lobes;
-the raster test counts real connected components, while every app capture
-keeps the ten-pixel lane to its left black. **Watch for:** approving tiny
-rounded shapes from enlarged simulator previews or testing only bounding boxes
-and total lit pixels.
+**Guards:** four muted 20×18 native assets render separated signal bands; the
+raster test counts real connected components, while every app capture keeps
+the eighteen-pixel lane to its left black. The one image is owned by the same
+translated page shell as the header, so burn-in drift cannot make it appear
+pasted above a page or takeover. **Watch for:** approving tiny rounded shapes
+from enlarged simulator previews or testing only bounding boxes and total lit
+pixels.

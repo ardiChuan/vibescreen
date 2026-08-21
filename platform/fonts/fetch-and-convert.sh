@@ -27,18 +27,6 @@ conv() { font_conv --font "src/IBMPlexSans-$1.ttf" --size "$2" \
   python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().rstrip() + "\n")' "$4.c"; \
   echo "  $4.c"; }
 
-# Plattformens globala Wi-Fi-status använder Font Awesome-symbolen som redan
-# följer med LVGL, men bara den enda glyfen U+F1EB i dess riktiga 22 px-storlek.
-# Fontens 5:4-proportion gör själva glyfen exakt 28 px bred i denna storlek.
-# Ett separat minifont undviker både LVGL-transformer och en hel symbolfont.
-FA_URL="https://raw.githubusercontent.com/lvgl/lvgl/v9.5.0/scripts/built_in_font/FontAwesome5-Solid+Brands+Regular.woff"
-FA_FONT="src/FontAwesome5-Solid+Brands+Regular.woff"
-[ -f "$FA_FONT" ] || curl -fsSL "$FA_URL" -o "$FA_FONT"
-font_conv --font "$FA_FONT" --size 22 --bpp 4 --format lvgl --no-compress \
-  --range "0xF1EB" -o torget_wifi_22.c
-python3 -c 'import pathlib; p=pathlib.Path("torget_wifi_22.c"); p.write_text(p.read_text().rstrip() + "\n")'
-echo "  torget_wifi_22.c"
-
 # Sifferfonter (Bold). Ranger: 0-9, komma, mellanslag, U+00A0, %, en-dash.
 conv Bold     146 "0x30-0x39,0x2C,0x20,0xA0,0x25,0x2013" plex_num_146
 conv Bold     164 "0x30-0x39,0x25,0x2E,0x2013"           plex_num_164

@@ -4,7 +4,14 @@
 
 **Goal:** Replace the physically rejected Wi-Fi overlay with four native 20×18 status assets whose single shared host stays aligned with the page header and burn-in drift.
 
-**Architecture:** Generate four deterministic I4 assets from explicit final-size pixel masks. The platform owns one `lv_image` object: normally it is a child of the translated `tg.shift` shell; OTA and Wi-Fi setup temporarily reparent that same object to `lv_layer_top()` while their full-screen takeover is visible, then return it without duplication. Existing Wi-Fi sampling remains unchanged.
+**Architecture:** Generate four deterministic I4 assets from explicit final-size pixel masks. The platform owns one `lv_image` object as a permanent child of the translated `tg.shift` shell. Opaque OTA and Wi-Fi setup surfaces on `lv_layer_top()` naturally cover it. Existing Wi-Fi sampling remains unchanged.
+
+**Execution revision (user-approved 2026-08-22):** the original takeover
+reparenting below was rejected as unnecessary complexity. Any checklist step
+that mentions takeover owners, attach/detach, or reparenting is superseded by
+the permanent page-shell ownership above. The implemented scope is native
+assets, page-shell ownership, exact drift captures, and ordinary overlay
+coverage only.
 
 **Tech Stack:** C11, LVGL 9.5, Python 3.11+/`unittest`, deterministic generated C assets, Pillow raster inspection, SDL simulator, ESP-IDF 5.5.
 

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "lvgl.h"
+#include "wifi_status_assets.h"
 
 /*
  * Plattformens delade UI: drift-lagret, appväxlingen och launchern som läser
@@ -15,12 +16,8 @@
  */
 
 extern const lv_font_t plex_text_16;
-extern const lv_font_t torget_wifi_22;
 
 #define COL_LABEL lv_color_hex(0x8994A5)
-#define COL_WIFI_MUTED lv_color_hex(0x9298A2)
-#define WIFI_GLYPH_Y 4
-#define WIFI_GLYPH_H 21
 
 static struct {
   lv_obj_t *shift;                 /* driftlådan — allt bor i den */
@@ -29,11 +26,7 @@ static struct {
   int active;                      /* index i registret, -1 = launchern uppe */
   int shift_step;
   lv_obj_t *wifi_group;
-  lv_obj_t *wifi_base;
-  lv_obj_t *wifi_active_clip;
-  lv_obj_t *wifi_active;
-  lv_obj_t *wifi_slash;
-  lv_point_precise_t wifi_slash_points[2];
+  lv_obj_t *wifi_image;
   tg_wifi_status_mode wifi_mode;
   tg_wifi_status_mode wifi_rendered_mode;
   uint8_t wifi_rendered_bars;
@@ -72,18 +65,13 @@ static void wifi_status_render(void) {
   }
 
   lv_obj_remove_flag(tg.wifi_group, LV_OBJ_FLAG_HIDDEN);
-  if (bars == 0) {
-    lv_obj_add_flag(tg.wifi_active_clip, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(tg.wifi_slash, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    const int active_h = WIFI_GLYPH_H * bars / 3;
-    const int clip_y = WIFI_GLYPH_Y + WIFI_GLYPH_H - active_h;
-    lv_obj_set_pos(tg.wifi_active_clip, 0, clip_y);
-    lv_obj_set_size(tg.wifi_active_clip, 28, active_h);
-    lv_obj_set_pos(tg.wifi_active, 0, -(clip_y - WIFI_GLYPH_Y));
-    lv_obj_remove_flag(tg.wifi_active_clip, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(tg.wifi_slash, LV_OBJ_FLAG_HIDDEN);
-  }
+  static const lv_image_dsc_t *states[4] = {
+      &tg_img_wifi_offline,
+      &tg_img_wifi_weak,
+      &tg_img_wifi_medium,
+      &tg_img_wifi_strong,
+  };
+  lv_image_set_src(tg.wifi_image, states[bars]);
 }
 
 static void wifi_status_timer(lv_timer_t *timer) {
@@ -93,43 +81,17 @@ static void wifi_status_timer(lv_timer_t *timer) {
 
 static void wifi_status_create(void) {
   tg.wifi_mode = TG_WIFI_STATUS_HIDDEN;
-  tg.wifi_group = bare(lv_layer_top());
-  lv_obj_set_pos(tg.wifi_group, 418, 38);
-  lv_obj_set_size(tg.wifi_group, 28, 28);
-  /* One standard native-size glyph is shared by every page.  The muted base
-   * keeps the complete silhouette legible; a clipped white copy rises from
-   * the dot through the lobes for 1/2/3 bars.  The font's 28 px glyph width
-   * exactly matches this globally reserved header slot. */
-  tg.wifi_base = lv_label_create(tg.wifi_group);
-  lv_obj_remove_style_all(tg.wifi_base);
-  lv_label_set_text_static(tg.wifi_base, LV_SYMBOL_WIFI);
-  lv_obj_set_style_text_font(tg.wifi_base, &torget_wifi_22, 0);
-  lv_obj_set_style_text_color(tg.wifi_base, COL_WIFI_MUTED, 0);
-  lv_obj_set_pos(tg.wifi_base, 0, WIFI_GLYPH_Y);
-  lv_obj_remove_flag(tg.wifi_base, LV_OBJ_FLAG_CLICKABLE);
-
-  tg.wifi_active_clip = bare(tg.wifi_group);
-  lv_obj_set_pos(tg.wifi_active_clip, 0, WIFI_GLYPH_Y);
-  lv_obj_set_size(tg.wifi_active_clip, 28, WIFI_GLYPH_H);
-  lv_obj_remove_flag(tg.wifi_active_clip, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_remove_flag(tg.wifi_active_clip, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
-
-  tg.wifi_active = lv_label_create(tg.wifi_active_clip);
-  lv_obj_remove_style_all(tg.wifi_active);
-  lv_label_set_text_static(tg.wifi_active, LV_SYMBOL_WIFI);
-  lv_obj_set_style_text_font(tg.wifi_active, &torget_wifi_22, 0);
-  lv_obj_set_style_text_color(tg.wifi_active, lv_color_white(), 0);
-  lv_obj_set_pos(tg.wifi_active, 0, 0);
-  lv_obj_remove_flag(tg.wifi_active, LV_OBJ_FLAG_CLICKABLE);
-
-  tg.wifi_slash_points[0] = (lv_point_precise_t){4, 4};
-  tg.wifi_slash_points[1] = (lv_point_precise_t){24, 24};
-  tg.wifi_slash = lv_line_create(tg.wifi_group);
-  lv_line_set_points(tg.wifi_slash, tg.wifi_slash_points, 2);
-  lv_obj_set_style_line_color(tg.wifi_slash, lv_color_white(), 0);
-  lv_obj_set_style_line_width(tg.wifi_slash, 3, 0);
-  lv_obj_set_style_line_rounded(tg.wifi_slash, true, 0);
-  lv_obj_remove_flag(tg.wifi_slash, LV_OBJ_FLAG_CLICKABLE);
+  tg.wifi_group = bare(tg.shift);
+  lv_obj_set_pos(tg.wifi_group, 426, 28);
+  lv_obj_set_size(tg.wifi_group, 20, 18);
+  /* One muted, native-size image sits in the same translated page shell as
+   * every app.  It therefore follows burn-in drift and cannot float above a
+   * full-screen setup or OTA takeover. */
+  tg.wifi_image = lv_image_create(tg.wifi_group);
+  lv_obj_remove_style_all(tg.wifi_image);
+  lv_image_set_src(tg.wifi_image, &tg_img_wifi_offline);
+  lv_obj_set_pos(tg.wifi_image, 0, 0);
+  lv_obj_remove_flag(tg.wifi_image, LV_OBJ_FLAG_CLICKABLE);
 
   wifi_status_render();
   lv_timer_create(wifi_status_timer, 1000, NULL);

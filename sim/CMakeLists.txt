@@ -59,6 +59,7 @@ endif()
 add_executable(torget-sim
   main.c
   ../platform/torget_ui.c
+  ../platform/wifi_status_assets.c
   ../platform/boot_screen.c
   ../main/registry.c
   ../components/app_tokens/app.c
