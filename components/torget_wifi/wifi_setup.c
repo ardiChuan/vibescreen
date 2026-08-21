@@ -54,6 +54,8 @@ static atomic_bool s_open;
 static atomic_bool s_want_open;
 static atomic_bool s_want_close;
 static atomic_bool s_dns_stop;
+static _Atomic tg_wifi_setup_phase s_phase;
+static TaskHandle_t s_guard_task;
 static _Atomic int64_t s_joined_at_us; /* satt av POST /join, läst av vakten */
 static char s_joined_ssid[TG_WIFI_SSID_CAP];
 
@@ -481,11 +483,14 @@ static void guard_task(void *arg) {
   bool applied = false;
 
   for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(500));
+    /* Ett KEY3-håll väcker oss direkt. Timeouten behåller den vanliga
+     * nät-/autoöppningsvakten utan en separat timer eller busy-loop. */
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
 
     const int64_t now = esp_timer_get_time();
     const bool have_ip = s_hooks->have_ip && s_hooks->have_ip();
     const bool open = atomic_load(&s_open);
+    tg_wifi_setup_phase phase = atomic_load(&s_phase);
 
     if (have_ip) {
       /* Flanken false->true är den enda gången listan behöver skrivas om;
@@ -499,17 +504,31 @@ static void guard_task(void *arg) {
     }
 
     if (!open) {
+      if (phase == TG_WIFI_PHASE_FAILED &&
+          atomic_exchange(&s_want_close, false)) {
+        atomic_store(&s_phase, TG_WIFI_PHASE_IDLE);
+        torget_wifi_ui_set(TG_WIFI_UI_HIDDEN, NULL, NULL, NULL, 0);
+        last_close_us = now;
+        continue;
+      }
       bool asked = atomic_exchange(&s_want_open, false);
-      atomic_store(&s_want_close, false);
-      if (asked ||
-          tg_wifi_setup_should_open(have_ip, now, no_ip_since, last_close_us)) {
+      if (phase != TG_WIFI_PHASE_FAILED)
+        atomic_store(&s_want_close, false);
+      bool automatic = phase == TG_WIFI_PHASE_IDLE &&
+          tg_wifi_setup_should_open(have_ip, now, no_ip_since, last_close_us);
+      if (asked || automatic) {
         opened_us = now;
         got_ip_us = 0;
         applied = false;
+        atomic_store(&s_phase, TG_WIFI_PHASE_STARTING);
+        torget_wifi_ui_set(TG_WIFI_UI_STARTING, NULL, NULL, NULL, 0);
         window_open();
         if (!atomic_load(&s_open)) { /* öppningen föll — försök inte i loop */
           opened_us = 0;
           last_close_us = now;
+          atomic_store(&s_phase, TG_WIFI_PHASE_FAILED);
+        } else {
+          atomic_store(&s_phase, TG_WIFI_PHASE_OPEN);
         }
       }
     } else {
@@ -520,9 +539,13 @@ static void guard_task(void *arg) {
         if (s_hooks->sta_pause) s_hooks->sta_pause(false);
         if (s_hooks->creds_changed) s_hooks->creds_changed(s_joined_ssid);
       }
+      if (atomic_load(&s_joined_at_us) != 0)
+        atomic_store(&s_phase, have_ip ? TG_WIFI_PHASE_JOINED
+                                      : TG_WIFI_PHASE_JOINING);
       if (atomic_exchange(&s_want_close, false) ||
           tg_wifi_setup_should_close(now, opened_us, got_ip_us)) {
         window_close();
+        atomic_store(&s_phase, TG_WIFI_PHASE_IDLE);
         last_close_us = now;
         opened_us = 0;
       }
@@ -539,7 +562,13 @@ static void guard_task(void *arg) {
      * Setupfönstret är undantaget: window_open() stängde OTA-fönstret för
      * port 80, så konflikten kan inte uppstå där. */
     const bool now_open = atomic_load(&s_open);
-    if (!now_open && torget_ota_service_maintenance_open()) {
+    phase = atomic_load(&s_phase);
+    if (phase == TG_WIFI_PHASE_STARTING) {
+      torget_wifi_ui_set(TG_WIFI_UI_STARTING, NULL, NULL, NULL, 0);
+    } else if (phase == TG_WIFI_PHASE_FAILED) {
+      torget_wifi_ui_set(TG_WIFI_UI_FAILED, NULL, NULL,
+                         "TRY AGAIN WITH KEY3", 0);
+    } else if (!now_open && torget_ota_service_maintenance_open()) {
       torget_wifi_ui_set(TG_WIFI_UI_HIDDEN, NULL, NULL, NULL, 0);
     } else if (have_ip && !now_open) {
       torget_wifi_ui_set(TG_WIFI_UI_HIDDEN, NULL, NULL, NULL, 0);
@@ -571,10 +600,36 @@ void torget_wifi_setup_start(const tg_wifi_setup_hooks *hooks) {
   ESP_LOGI(TAG, "%d ihågkomna nät i NVS", tg_wifi_creds_count());
   /* 5 kB, inte 4: vakten är den som får röra NVS åt värdlagret, och en
    * hel slotlista är 600 byte på stacken innan NVS ens börjat. */
-  if (xTaskCreate(guard_task, "tg-wifi-setup", 5120, NULL, 4, NULL) != pdPASS)
+  s_guard_task = NULL;
+  if (xTaskCreate(guard_task, "tg-wifi-setup", 5120, NULL, 4,
+                  &s_guard_task) != pdPASS) {
+    s_guard_task = NULL;
     ESP_LOGE(TAG, "setupvakten kunde inte skapas — nya nät kräver USB");
+  }
 }
 
-void torget_wifi_setup_request_open(void) { atomic_store(&s_want_open, true); }
-void torget_wifi_setup_request_close(void) { atomic_store(&s_want_close, true); }
+void torget_wifi_setup_request_open(void) {
+  if (!s_guard_task) return;
+  tg_wifi_setup_phase phase = atomic_load(&s_phase);
+  while (phase == TG_WIFI_PHASE_IDLE || phase == TG_WIFI_PHASE_FAILED) {
+    if (atomic_compare_exchange_weak(&s_phase, &phase,
+                                     TG_WIFI_PHASE_STARTING)) {
+      atomic_store(&s_want_close, false);
+      atomic_store(&s_want_open, true);
+      if (s_guard_task) xTaskNotifyGive(s_guard_task);
+      return;
+    }
+  }
+}
+
+void torget_wifi_setup_request_close(void) {
+  tg_wifi_setup_phase phase = atomic_load(&s_phase);
+  if (!tg_wifi_setup_can_close(phase)) return;
+  atomic_store(&s_want_close, true);
+  if (s_guard_task) xTaskNotifyGive(s_guard_task);
+}
+
 bool torget_wifi_setup_is_open(void) { return atomic_load(&s_open); }
+bool torget_wifi_setup_owns_input(void) {
+  return tg_wifi_setup_owns_input(atomic_load(&s_phase));
+}

@@ -22,9 +22,11 @@
 typedef enum {
   TG_WIFI_UI_HIDDEN = 0,
   TG_WIFI_UI_SEARCHING, /* inget nät än; fönstret är inte öppet          */
+  TG_WIFI_UI_STARTING,  /* begärt; skanning/AP/portal startar            */
   TG_WIFI_UI_OPEN,      /* accesspunkten uppe, väntar på uppgifter       */
   TG_WIFI_UI_JOINING,   /* uppgifter mottagna, provar dem                */
   TG_WIFI_UI_JOINED,    /* IP! lagret kliver av om ett ögonblick         */
+  TG_WIFI_UI_FAILED,    /* startgrinden eller AP-starten vägrade         */
 } tg_wifi_ui_state;
 
 void torget_wifi_ui_create(void);

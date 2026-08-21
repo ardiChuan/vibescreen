@@ -51,6 +51,23 @@ typedef struct {
 #define TG_WIFI_SETUP_WINDOW_US   (600LL * 1000000LL)
 #define TG_WIFI_SETUP_LINGER_US   (5LL * 1000000LL)
 
+/* Setupfönstrets synliga livscykel. STARTING finns uttryckligen eftersom
+ * accesspunkt + skanning tar sekunder: knappen och glaset måste ägas redan
+ * när användarens håll godkänns, inte först när AP:n är färdig. */
+typedef enum {
+  TG_WIFI_PHASE_IDLE = 0,
+  TG_WIFI_PHASE_STARTING,
+  TG_WIFI_PHASE_OPEN,
+  TG_WIFI_PHASE_JOINING,
+  TG_WIFI_PHASE_JOINED,
+  TG_WIFI_PHASE_FAILED,
+} tg_wifi_setup_phase;
+
+/* Alla synliga faser äger KEY3. STARTING slukar däremot den utlösande
+ * knappens släpp i stället för att omedelbart stänga eller växla app. */
+bool tg_wifi_setup_owns_input(tg_wifi_setup_phase phase);
+bool tg_wifi_setup_can_close(tg_wifi_setup_phase phase);
+
 /* Så länge utan IP innan nätsidan tar glaset. Sextio sekunder är valt mot
  * två grannar: bootskärmen äger de första 45 (den ger upp där, och två
  * lager som slåss om samma pixlar hjälper ingen), och en router som startar

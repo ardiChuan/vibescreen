@@ -119,6 +119,15 @@ bool tg_wifi_setup_should_open(bool have_ip, int64_t now_us,
   return true;
 }
 
+bool tg_wifi_setup_owns_input(tg_wifi_setup_phase phase) {
+  return phase >= TG_WIFI_PHASE_STARTING && phase <= TG_WIFI_PHASE_FAILED;
+}
+
+bool tg_wifi_setup_can_close(tg_wifi_setup_phase phase) {
+  return phase == TG_WIFI_PHASE_OPEN || phase == TG_WIFI_PHASE_JOINING ||
+         phase == TG_WIFI_PHASE_JOINED || phase == TG_WIFI_PHASE_FAILED;
+}
+
 bool tg_wifi_setup_dma_ok_to_open(size_t largest_dma, size_t flush_bytes) {
   /* flush_bytes == 0 vore en felkonfiguration som gjorde grinden till en
    * papperstiger — behandla den som "vet inte" och vägra. */

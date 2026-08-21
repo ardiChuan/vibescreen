@@ -81,6 +81,48 @@ assert "torget_ota_service_close_maintenance();\n      torget_wifi_setup_request
     "the LVGL task must not close the OTA window itself when switching"
 )
 
+# --- Immediate KEY3 ownership ---------------------------------------------
+# request_open is called by the LVGL task but all slow radio work belongs to
+# the setup guard. The request must atomically claim KEY3 and wake that task;
+# otherwise the release is seen as NEXT_APP during the old 500 ms polling gap.
+assert "TaskHandle_t s_guard_task" in setup_c, (
+    "the setup guard handle is required for immediate wakeup"
+)
+request_open = setup_c.split("void torget_wifi_setup_request_open(void)")[1]
+request_open = request_open.split("void torget_wifi_setup_request_close", 1)[0]
+guard_ready = request_open.find("if (!s_guard_task) return;")
+phase_claim = request_open.find("TG_WIFI_PHASE_STARTING")
+assert 0 <= guard_ready < phase_claim, (
+    "a missing guard task must fail without trapping KEY3 in STARTING"
+)
+assert "TG_WIFI_PHASE_STARTING" in request_open, (
+    "request_open must claim the STARTING phase synchronously"
+)
+assert "xTaskNotifyGive(s_guard_task)" in request_open, (
+    "request_open must wake the guard instead of waiting for its poll"
+)
+assert "ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500))" in setup_c, (
+    "the guard must combine immediate notification with the existing poll"
+)
+
+guard = setup_c.split("static void guard_task(void *arg)")[1]
+starting_render = guard.find("torget_wifi_ui_set(TG_WIFI_UI_STARTING")
+slow_open = guard.find("window_open();")
+assert 0 <= starting_render < slow_open, (
+    "STARTING must be rendered before scanning, APSTA and portal startup"
+)
+
+ownership_branch = main_c.find("if (torget_wifi_setup_owns_input())")
+ota_branch = main_c.find("else if (torget_ota_service_maintenance_open())")
+app_switch = main_c.find("torget_app_next();", ota_branch)
+panic = main_c.find("tk_needs_you_send_panic();", ota_branch)
+assert 0 <= ownership_branch < ota_branch < app_switch < panic, (
+    "setup input ownership must be checked before OTA, app switching and panic"
+)
+assert "torget_wifi_setup_is_open()" not in main_c, (
+    "main must not expose the STARTING gap by checking AP-open state only"
+)
+
 # The setup window may never become a firmware path.
 assert "esp_ota" not in setup_c and "ota_ops" not in setup_c, (
     "the WiFi setup window must never gain a firmware-writing surface"

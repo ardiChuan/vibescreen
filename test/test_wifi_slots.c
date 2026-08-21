@@ -181,6 +181,34 @@ static void test_setup_window_closes(void) {
         tg_wifi_setup_should_close(306 * s, 100 * s, 300 * s));
 }
 
+static void test_setup_phase_owns_key3_without_accidental_release(void) {
+  check("idle leaves KEY3 to apps",
+        !tg_wifi_setup_owns_input(TG_WIFI_PHASE_IDLE));
+  check("starting owns KEY3",
+        tg_wifi_setup_owns_input(TG_WIFI_PHASE_STARTING));
+  check("open owns KEY3",
+        tg_wifi_setup_owns_input(TG_WIFI_PHASE_OPEN));
+  check("joining owns KEY3",
+        tg_wifi_setup_owns_input(TG_WIFI_PHASE_JOINING));
+  check("joined owns KEY3",
+        tg_wifi_setup_owns_input(TG_WIFI_PHASE_JOINED));
+  check("failed owns KEY3 until dismissed",
+        tg_wifi_setup_owns_input(TG_WIFI_PHASE_FAILED));
+
+  check("starting ignores the triggering release",
+        !tg_wifi_setup_can_close(TG_WIFI_PHASE_STARTING));
+  check("idle cannot close",
+        !tg_wifi_setup_can_close(TG_WIFI_PHASE_IDLE));
+  check("open is dismissible",
+        tg_wifi_setup_can_close(TG_WIFI_PHASE_OPEN));
+  check("joining is dismissible",
+        tg_wifi_setup_can_close(TG_WIFI_PHASE_JOINING));
+  check("joined is dismissible",
+        tg_wifi_setup_can_close(TG_WIFI_PHASE_JOINED));
+  check("failed is dismissible",
+        tg_wifi_setup_can_close(TG_WIFI_PHASE_FAILED));
+}
+
 static void test_dma_gates_protect_the_flush(void) {
   const size_t flush = 12 * 480 * 2; /* 11 520 — panelflushens block */
   const size_t open_floor = TG_WIFI_SETUP_DMA_OPEN_FACTOR * flush +
@@ -234,6 +262,7 @@ int main(void) {
   test_setup_window_opens_only_when_it_can_help();
   test_search_screen_lets_the_boot_screen_finish();
   test_setup_window_closes();
+  test_setup_phase_owns_key3_without_accidental_release();
 
   if (failures == 0) {
     printf("OK: all WiFi slot/window policy tests pass\n");

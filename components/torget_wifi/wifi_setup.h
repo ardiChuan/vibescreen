@@ -52,7 +52,7 @@ typedef struct {
 /* Startar vakten. Hooks måste överleva anropet (statisk struct). */
 void torget_wifi_setup_start(const tg_wifi_setup_hooks *hooks);
 
-/* KEY3-hållets väg in. Vakten öppnar vid nästa poll. */
+/* KEY3-hållets väg in. STARTING äger knappen omedelbart och vakten väcks. */
 void torget_wifi_setup_request_open(void);
 
 /* Kort KEY3-tryck medan fönstret är öppet: stäng i förtid. */
@@ -61,5 +61,8 @@ void torget_wifi_setup_request_close(void);
 /* Äger nätlagret glaset just nu? main.c använder det för att avgöra vad
  * ett KEY3-håll ska betyda. */
 bool torget_wifi_setup_is_open(void);
+
+/* Äger någon setupfas KEY3, även medan AP:n fortfarande startar? */
+bool torget_wifi_setup_owns_input(void);
 
 #endif

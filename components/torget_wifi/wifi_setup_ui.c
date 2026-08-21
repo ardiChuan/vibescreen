@@ -100,9 +100,11 @@ static const char *state_word(tg_wifi_ui_state state) {
   /* Bara A-Z och mellanslag: plex_attention_52 bär inga andra glyfer. */
   switch (state) {
     case TG_WIFI_UI_SEARCHING: return "NO NETWORK";
+    case TG_WIFI_UI_STARTING:  return "STARTING";
     case TG_WIFI_UI_OPEN:      return "WIFI SETUP";
     case TG_WIFI_UI_JOINING:   return "JOINING";
     case TG_WIFI_UI_JOINED:    return "ON THE NET";
+    case TG_WIFI_UI_FAILED:    return "SETUP FAILED";
     default:                   return "";
   }
 }
@@ -173,7 +175,11 @@ void torget_wifi_ui_set(tg_wifi_ui_state state, const char *primary,
   /* Foten: nedräkningen är ärlig data i båda lägena — kvarvarande lucktid
    * när fönstret är öppet, tid kvar tills det öppnar sig självt när
    * panelen letar. Utgången nämns bara när det finns en. */
-  if (seconds_left > 0) {
+  if (state == TG_WIFI_UI_STARTING) {
+    lv_label_set_text(ui.foot, "PLEASE WAIT");
+  } else if (state == TG_WIFI_UI_FAILED) {
+    lv_label_set_text(ui.foot, "KEY3 CLOSES");
+  } else if (seconds_left > 0) {
     char foot[48];
     snprintf(foot, sizeof foot, open ? "%02d:%02d   KEY3 CLOSES" : "%02d:%02d",
              seconds_left / 60, seconds_left % 60);

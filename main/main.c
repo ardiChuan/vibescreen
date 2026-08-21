@@ -507,11 +507,11 @@ static void tick_cb(lv_timer_t *t) {
   tg_button_action key3_action = tg_button_update(&key3, key3_down, now);
   if (key3_down)
     s_last_touch_us = now; /* knappkontakt är aktivitet, precis som touch */
-  if (torget_wifi_setup_is_open()) {
-    /* Samma nödutgång som OTA-fönstret: medan setupfönstret äger glaset
-     * stänger VILKET släpp som helst det. Ingen appväxling, ingen panik —
-     * ett fönster man inte kan stänga fick en frisk panel att se hängd ut
-     * (hårdvaruläxan 2026-08-16). */
+  if (torget_wifi_setup_owns_input()) {
+    /* Även STARTING äger knappen. AP/skanning kan ta sekunder och under den
+     * tiden får det utlösande släppet aldrig bli appväxling eller panik.
+     * request_close() ignorerar STARTING men stänger OPEN/JOINING/JOINED/
+     * FAILED, så nödutgången finns kvar när fönstret väl kan stängas. */
     if (key3_action == TG_BUTTON_NEXT_APP || key3_action == TG_BUTTON_PANIC)
       torget_wifi_setup_request_close();
   } else if (torget_ota_service_maintenance_open()) {
