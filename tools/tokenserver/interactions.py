@@ -148,6 +148,14 @@ def _optional_text_is_safe(value: Any) -> bool:
     return not isinstance(value, str) or _is_safe_text(value)
 
 
+def _is_internal_question_permission(kind: str,
+                                     event: Dict[str, Any]) -> bool:
+    """The dedicated question hook owns Claude's AskUserQuestion tool."""
+    tool = event.get("tool_name")
+    return (kind == "approval" and isinstance(tool, str) and
+            tool.strip().casefold() == "askuserquestion")
+
+
 def _claude_event_text_is_safe(kind: str, event: Dict[str, Any]) -> bool:
     """Validate raw Claude text before cleanup can change its semantics."""
     if not _optional_text_is_safe(event.get("cwd")):
@@ -831,6 +839,8 @@ class InteractionStore:
     def _park_claude(self, kind: str, event: Dict[str, Any], hold_s: float,
                      *, requires_v2: bool) -> Optional[_Pending]:
         if kind not in KINDS or not isinstance(event, dict):
+            return None
+        if _is_internal_question_permission(kind, event):
             return None
         if not _claude_event_text_is_safe(kind, event):
             return None

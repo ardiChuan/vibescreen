@@ -338,6 +338,14 @@ LAN-out). In Claude Code settings:
    }
    ```
 
+Claude Code can emit both hooks for one `AskUserQuestion`: the dedicated
+question hook contains the choices the panel should show, while the broad
+permission hook may repeat the same internal tool. VibePulse keeps the
+dedicated question and immediately returns no decision for that duplicate
+permission. This prevents a second generic `AskUserQuestion` card from
+replacing or queueing behind the real question; every unrelated permission
+still follows the normal approval path.
+
 Fail-safe by design: a held hook that times out or is left alone renders no
 decision, so Claude Code falls back to its normal terminal prompt. This is the
 same computer fallback as Codex. A managed/enterprise `allowedHttpHookUrls`
