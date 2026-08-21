@@ -321,6 +321,25 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(self.image(name).size, (480, 480))
 
+    def test_needs_you_countdown_updates_only_the_ring(self):
+        result = subprocess.run(
+            [str(ROOT / "sim/build/torget-sim"),
+             "--vibepulse-needs-you-render-qa"],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        match = re.fullmatch(
+            r"full_repaints=(\d+) ring_updates=(\d+) unchanged_ticks=(\d+)\n",
+            result.stdout,
+        )
+        self.assertIsNotNone(match, result.stdout)
+        full_repaints, ring_updates, unchanged_ticks = map(int, match.groups())
+        self.assertEqual(full_repaints, 1)
+        self.assertGreaterEqual(ring_updates, 2)
+        self.assertGreater(unchanged_ticks, 0)
+
     def test_long_question_never_overwrites_the_recommendation_card(self):
         # A long question steps to 21px and is capped in its band above the
         # card (y140); it must not bleed onto the card or bury the recommended

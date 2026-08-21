@@ -40,6 +40,7 @@
 #include "boot_health.h"
 #include "boot_screen.h"
 #include "button_policy.h"
+#include "agent_monitor.h"
 #include "needs_you_net.h"
 #include "ota_service.h"
 #include "ota_ui.h"
@@ -537,6 +538,13 @@ static void tick_cb(lv_timer_t *t) {
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
              dma_largest);
+    tk_agent_render_stats render_stats;
+    tk_agent_monitor_render_stats(&render_stats);
+    ESP_LOGI(TAG, "needs-you render: full=%u ring=%u unchanged=%u",
+             (unsigned)render_stats.full_repaints,
+             (unsigned)render_stats.ring_updates,
+             (unsigned)render_stats.unchanged_ticks);
+    tk_agent_monitor_render_stats_reset();
     /* Tidig varning INNAN glaset fryser: panelflushen behöver ett
      * sammanhängande DMA-block på DISPLAY_FLUSH_ROWS×480×2 byte. Faller
      * största DMA-blocket mot det taket dör nästa flush i NO_MEM och hela

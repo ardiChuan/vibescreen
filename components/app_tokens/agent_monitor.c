@@ -130,7 +130,6 @@ typedef struct {
   uint8_t stage;
   uint8_t options_total;
   uint8_t provider;
-  uint16_t ring_permille;
   char request_id[TK_PENDING_ID_CAP];
 } needs_you_key;
 
@@ -155,6 +154,9 @@ static struct {
   int64_t rendered_at_us;
   bool has_snapshot;
   bool suppress_click;
+  tk_agent_render_stats render_stats;
+  uint16_t rendered_ring_permille;
+  bool rendered_ring_valid;
 } mon;
 
 static lv_obj_t *bare(lv_obj_t *parent) {
@@ -650,6 +652,19 @@ static void ny_ring_set(lv_obj_t *arc, uint16_t permille) {
   uint32_t degrees = ((uint32_t)permille * 360u) / 1000u;
   if (degrees > 360u) degrees = 360u;
   lv_arc_set_angles(arc, 0, degrees);
+  mon.render_stats.ring_updates++;
+}
+
+static bool ny_ring_update(needs_you_view *view, ny_stage stage,
+                           bool private_view, uint16_t permille) {
+  if (mon.rendered_ring_valid &&
+      mon.rendered_ring_permille == permille) return false;
+  lv_obj_t *ring = stage == NY_ATTRACT ? view->a_ring
+                   : private_view ? view->pv_ring : view->h_ring;
+  ny_ring_set(ring, permille);
+  mon.rendered_ring_permille = permille;
+  mon.rendered_ring_valid = true;
+  return true;
 }
 
 /* A touch target: filled slab or outlined pill, ASCII-uppercase label centred,
@@ -905,14 +920,18 @@ static void render_needs_you(void) {
     if (!mon.needs_you_rendered.valid ||
         memcmp(&mon.needs_you_rendered, &key, sizeof key) != 0) {
       memcpy(&mon.needs_you_rendered, &key, sizeof key);
+      mon.render_stats.full_repaints++;
+      mon.rendered_ring_valid = false;
       ny_hide_all_groups(v);
       ny_set_provider(v, codex, accent);
       lv_label_set_text(v->po_echo, mon.echo);
       ny_show(v->po_echo, mon.echo[0] != '\0');
       ny_show(v->po_group, true);
+      ny_show(v->root, true);
+      lv_obj_move_foreground(v->root);
+    } else {
+      mon.render_stats.unchanged_ticks++;
     }
-    ny_show(v->root, true);
-    lv_obj_move_foreground(v->root);
     return;
   }
   if (mon.stage == NY_PAYOFF) { /* the static window elapsed */
@@ -930,6 +949,7 @@ static void render_needs_you(void) {
     mon.stage = NY_ATTRACT;
     mon.stage_id[0] = '\0';
     memset(&mon.needs_you_rendered, 0, sizeof mon.needs_you_rendered);
+    mon.rendered_ring_valid = false;
     return;
   }
 
@@ -959,14 +979,16 @@ static void render_needs_you(void) {
   key.stage = (uint8_t)mon.stage;
   key.options_total = p->options_total;
   key.provider = (uint8_t)p->provider;
-  key.ring_permille = decision.ring_permille;
   memcpy(key.request_id, p->request_id, sizeof key.request_id);
   if (mon.needs_you_rendered.valid &&
       memcmp(&mon.needs_you_rendered, &key, sizeof key) == 0) {
-    ny_show(v->root, true);
+    if (!ny_ring_update(v, mon.stage, is_private, decision.ring_permille))
+      mon.render_stats.unchanged_ticks++;
     return;
   }
   memcpy(&mon.needs_you_rendered, &key, sizeof key);
+  mon.render_stats.full_repaints++;
+  mon.rendered_ring_valid = false;
 
   ny_hide_all_groups(v);
   ny_set_provider(v, codex, accent);
@@ -977,7 +999,7 @@ static void render_needs_you(void) {
 
   /* -- ATTRACT ------------------------------------------------------------- */
   if (mon.stage == NY_ATTRACT) {
-    ny_ring_set(v->a_ring, decision.ring_permille);
+    ny_ring_update(v, mon.stage, false, decision.ring_permille);
     lv_label_set_text(v->a_project, project);
     ny_show(v->a_project, project[0] != '\0');
     ny_show(v->a_group, true);
@@ -988,7 +1010,7 @@ static void render_needs_you(void) {
 
   /* -- PRIVATE: no buttons; a background tap hands off to the terminal ----- */
   if (is_private) {
-    ny_ring_set(v->pv_ring, decision.ring_permille);
+    ny_ring_update(v, mon.stage, true, decision.ring_permille);
     ny_show(v->pv_group, true);
     ny_show(v->root, true);
     lv_obj_move_foreground(v->root);
@@ -996,7 +1018,7 @@ static void render_needs_you(void) {
   }
 
   /* -- Shared decision header --------------------------------------------- */
-  ny_ring_set(v->h_ring, decision.ring_permille);
+  ny_ring_update(v, mon.stage, false, decision.ring_permille);
   lv_image_set_src(v->h_mascot, is_question ? &tk_img_mascot_asking_4
                                             : &tk_img_mascot_neutral_4);
   char eyebrow[80];
@@ -1081,6 +1103,14 @@ static void render_needs_you(void) {
 
 void tk_agent_monitor_set_needs_you_cb(tk_agent_monitor_needs_you_cb cb) {
   mon.tk_needs_you_cb = cb;
+}
+
+void tk_agent_monitor_render_stats(tk_agent_render_stats *out) {
+  if (out) *out = mon.render_stats;
+}
+
+void tk_agent_monitor_render_stats_reset(void) {
+  memset(&mon.render_stats, 0, sizeof mon.render_stats);
 }
 
 /* Deterministic glass taps for the simulator and host tests. On the device the

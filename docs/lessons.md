@@ -336,3 +336,18 @@ two doc-content tests (`test_shared_amoled_skill.py`,
 `design-qa.md` has already drifted again (OBS-26). **Watch for:** every
 new doc in this observability set is prose too; comb step 7 includes
 checking that these files still tell the truth.
+
+## 2026-08-21 · A changing ring is not a changing screen
+
+**What happened:** the Needs You countdown belongs to one arc, but its
+`ring_permille` lived in the full-screen render key. At 10 Hz, every new
+ring value hid every group, restyled the provider, reassigned all labels and
+buttons, then moved the root foreground again. That amplified draw traffic on
+the same partial-buffer ESP32 path that previously wedged in glyph rendering.
+**The rule:** separate stable semantic state from small animated state; update
+the smallest LVGL object that actually changed. **Guard:** the simulator now
+advances twenty deterministic ticks and requires one full paint, multiple
+ring-only updates, and unchanged ticks. The target's ten-second heap heartbeat
+logs and resets content-free `full/ring/unchanged` counters. **Watch for:** any
+timer field added to a `memcmp` render key can silently turn a cheap animation
+into a full-tree repaint.

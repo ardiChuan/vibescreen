@@ -1358,6 +1358,30 @@ static int run_vibepulse_needs_you_qa(void) {
   return capture_failures == 0 ? 0 : 1;
 }
 
+static int run_vibepulse_needs_you_render_qa(void) {
+  size_t len = 0;
+  char *json = read_fixture("agent-status-needs-you-codex-question.json", &len);
+  tk_agent_snapshot snapshot;
+  if (!json || !tk_agent_status_parse(json, len, &snapshot)) {
+    free(json);
+    return 1;
+  }
+  free(json);
+
+  const int64_t base_us = 1000000LL;
+  tk_agent_monitor_render_stats_reset();
+  usage_screen_apply_agent(&snapshot, base_us);
+  for (int i = 1; i <= 20; i++)
+    usage_screen_tick(base_us + (int64_t)i * 100000LL);
+
+  tk_agent_render_stats stats;
+  tk_agent_monitor_render_stats(&stats);
+  printf("full_repaints=%u ring_updates=%u unchanged_ticks=%u\n",
+         (unsigned)stats.full_repaints, (unsigned)stats.ring_updates,
+         (unsigned)stats.unchanged_ticks);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   /* Radbuffrat även vid pipe: fixtureloggen ska överleva en kill. */
   setvbuf(stdout, NULL, _IOLBF, 0);
@@ -1374,6 +1398,11 @@ int main(int argc, char **argv) {
   /* OTA-ringen på topplagret, dold tills QA-dumparna väcker den — samma
    * ordning som targetets app_main (overlay EFTER det delade UI:t). */
   torget_ota_ui_create();
+
+  if (argc == 2 &&
+      strcmp(argv[1], "--vibepulse-needs-you-render-qa") == 0) {
+    return run_vibepulse_needs_you_render_qa();
+  }
 
 #ifdef TORGET_HAVE_SOLELKOLLEN
   /* Sverige-vyn (P23): en hämtning vid start, genom samma parser som

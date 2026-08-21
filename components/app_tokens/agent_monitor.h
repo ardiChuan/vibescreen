@@ -18,6 +18,16 @@ void tk_agent_monitor_apply_relay(const tk_pending_interaction *pending,
                                   int64_t now_us);
 void tk_agent_monitor_tick(int64_t now_us);
 
+/* Content-free render diagnostics. Safe to log: counters contain no prompt,
+ * command, project, provider, or request identifier. */
+typedef struct {
+  uint32_t full_repaints;
+  uint32_t ring_updates;
+  uint32_t unchanged_ticks;
+} tk_agent_render_stats;
+void tk_agent_monitor_render_stats(tk_agent_render_stats *out);
+void tk_agent_monitor_render_stats_reset(void);
+
 /* Deterministisk simulatorväg; glastrycket går genom samma köfunktion. */
 void tk_agent_monitor_dismiss_current(void);
 

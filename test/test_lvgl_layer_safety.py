@@ -11,6 +11,9 @@ usage_screen = (root / "components/app_tokens/usage_screen.c").read_text(
 agent_monitor = (root / "components/app_tokens/agent_monitor.c").read_text(
     encoding="utf-8"
 )
+agent_monitor_header = (
+    root / "components/app_tokens/agent_monitor.h"
+).read_text(encoding="utf-8")
 target_main = (root / "main/main.c").read_text(encoding="utf-8")
 sim_main = (root / "sim/main.c").read_text(encoding="utf-8")
 platform_header = (root / "platform/torget.h").read_text(encoding="utf-8")
@@ -116,6 +119,15 @@ assert "392, 20" in agent_monitor
 assert "432, 62" in agent_monitor
 assert "24, 182, 432" in agent_monitor
 assert "payoff_provider" in agent_monitor
+
+# The 10 Hz countdown may mutate only its visible arc.  Stable copy/provider/
+# button state must not be keyed on ring_permille and fully repainted.  Target
+# diagnostics expose counters only (never interaction content) and reset every
+# ten-second heap sample.
+assert "uint16_t ring_permille;" not in agent_monitor
+assert "tk_agent_render_stats" in agent_monitor_header
+assert "needs-you render: full=%u ring=%u unchanged=%u" in target_main
+assert "tk_agent_monitor_render_stats_reset();" in target_main
 
 # Connectivity becomes public only after the EventGroup and compact signal
 # state agree; readers can never observe bars contradicting WIFI_GOT_IP.
