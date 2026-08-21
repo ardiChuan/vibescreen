@@ -12,7 +12,8 @@ also make the mark feel pasted over the page.
 ## Chosen design
 
 Use the familiar Font Awesome Wi-Fi silhouette already shipped with LVGL,
-converted into a dedicated single-glyph 24 px LVGL font. Render one complete
+converted into a dedicated single-glyph 22 px LVGL font. Font Awesome's 5:4
+proportion makes that glyph exactly 28 px wide. Render one complete
 muted symbol as the base and clip a white copy from the bottom upward for the
 0/1/2/3 signal-strength states. Keep the existing disconnected slash for zero
 bars. There is no runtime scaling and no dependency on a large general-purpose

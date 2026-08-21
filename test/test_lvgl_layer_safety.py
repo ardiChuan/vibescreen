@@ -18,6 +18,12 @@ target_main = (root / "main/main.c").read_text(encoding="utf-8")
 sim_main = (root / "sim/main.c").read_text(encoding="utf-8")
 platform_header = (root / "platform/torget.h").read_text(encoding="utf-8")
 platform_ui = (root / "platform/torget_ui.c").read_text(encoding="utf-8")
+font_generator = (root / "platform/fonts/fetch-and-convert.sh").read_text(
+    encoding="utf-8"
+)
+wifi_font = (root / "platform/fonts/torget_wifi_22.c").read_text(
+    encoding="utf-8"
+)
 boot_screen = (root / "platform/boot_screen.c").read_text(encoding="utf-8")
 wifi_setup_ui = (root / "components/torget_wifi/wifi_setup_ui.c").read_text(
     encoding="utf-8"
@@ -71,7 +77,7 @@ assert "wifi_group" not in agent_monitor
 assert "wifi_bars" not in agent_monitor
 assert "lv_obj_set_pos(tg.wifi_group, 418, 38)" in platform_ui
 assert "lv_obj_set_size(tg.wifi_group, 28, 28)" in platform_ui
-assert "extern const lv_font_t torget_wifi_24;" in platform_ui
+assert "extern const lv_font_t torget_wifi_22;" in platform_ui
 assert platform_ui.count("LV_SYMBOL_WIFI") == 2
 assert "wifi_active_clip" in platform_ui
 assert "lv_arc_create" not in platform_ui
@@ -85,6 +91,11 @@ assert "void torget_wifi_status_set_mode(tg_wifi_status_mode mode);" in platform
 assert "void torget_wifi_status_foreground(void);" in platform_header
 assert "uint8_t torget_wifi_signal_bars(void);" in platform_header
 assert "Never implies relay health" in platform_header
+assert "const lv_font_t torget_wifi_22" in wifi_font
+assert ".box_w = 28" in wifi_font
+assert ".box_h = 21" in wifi_font
+assert ".line_height = 21" in wifi_font
+assert "0xF1EB" in font_generator
 
 # Full-screen overlays move themselves first, then deliberately lift the one
 # shared indicator.  Setup forces the complete symbol; ordinary OTA uses live

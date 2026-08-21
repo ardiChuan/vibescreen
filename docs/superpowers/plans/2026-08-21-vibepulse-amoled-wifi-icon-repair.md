@@ -4,7 +4,7 @@
 
 **Goal:** Replace the cloud-like physical Wi-Fi mark with a familiar native-size symbol that has AMOLED-safe negative space and a reserved top-right slot on every surface.
 
-**Architecture:** A dedicated 24 px, one-glyph Font Awesome LVGL font supplies the standard Wi-Fi silhouette without runtime scaling or a large general font. The shared platform layer draws one muted base glyph plus a clipped white foreground glyph for 0/1/2/3 strength; every page keeps the existing `(418, 38, 28, 28)` header slot clear.
+**Architecture:** A dedicated 22 px, one-glyph Font Awesome LVGL font supplies an exactly 28 px-wide standard Wi-Fi silhouette without runtime scaling or a large general font. The shared platform layer draws one muted base glyph plus a clipped white foreground glyph for 0/1/2/3 strength; every page keeps the existing `(418, 38, 28, 28)` header slot clear.
 
 **Tech Stack:** C11, LVGL 9.5, `lv_font_conv`, Python `unittest`/Pillow raster assertions, CMake/Ninja simulator, ESP-IDF 5.5.
 
@@ -35,11 +35,11 @@ def test_global_wifi_icon_preserves_amoled_safe_negative_space(self):
 
 - [ ] **Step 2: Pin the source architecture before production edits**
 
-Require `torget_wifi_24`, two glyph labels, one foreground clipping object, no
+Require `torget_wifi_22`, two glyph labels, one foreground clipping object, no
 `lv_arc_create`, no transforms, and the unchanged global slot/top layer.
 
 ```python
-assert "extern const lv_font_t torget_wifi_24;" in platform_ui
+assert "extern const lv_font_t torget_wifi_22;" in platform_ui
 assert platform_ui.count("LV_SYMBOL_WIFI") == 2
 assert "wifi_active_clip" in platform_ui
 assert "lv_arc_create" not in platform_ui
@@ -70,16 +70,17 @@ git commit -m "test: reproduce AMOLED WiFi icon bloom"
 
 **Files:**
 - Modify: `platform/fonts/fetch-and-convert.sh`
-- Create: `platform/fonts/torget_wifi_24.c`
+- Create: `platform/fonts/torget_wifi_22.c`
 - Create: `platform/fonts/LICENSE-FONTAWESOME.txt`
 - Modify: `test/test_lvgl_layer_safety.py`
 
 - [ ] **Step 1: Extend the red source contract to the exact font descriptor**
 
 ```python
-wifi_font = (root / "platform/fonts/torget_wifi_24.c").read_text(encoding="utf-8")
-assert "const lv_font_t torget_wifi_24" in wifi_font
-assert ".line_height = 24" in wifi_font
+wifi_font = (root / "platform/fonts/torget_wifi_22.c").read_text(encoding="utf-8")
+assert "const lv_font_t torget_wifi_22" in wifi_font
+assert ".box_w = 28" in wifi_font
+assert ".line_height = 21" in wifi_font
 assert "0xF1EB" in (root / "platform/fonts/fetch-and-convert.sh").read_text()
 ```
 
@@ -87,7 +88,7 @@ assert "0xF1EB" in (root / "platform/fonts/fetch-and-convert.sh").read_text()
 
 Run: `PATH="$PWD/.venv/bin:$PATH" ./.venv/bin/python test/test_lvgl_layer_safety.py`
 
-Expected: FAIL opening `platform/fonts/torget_wifi_24.c`.
+Expected: FAIL opening `platform/fonts/torget_wifi_22.c`.
 
 - [ ] **Step 3: Generate only U+F1EB at its final size**
 
@@ -98,9 +99,9 @@ conversions:
 FA_URL="https://raw.githubusercontent.com/lvgl/lvgl/v9.5.0/scripts/built_in_font/FontAwesome5-Solid+Brands+Regular.woff"
 [ -f src/FontAwesome5-Solid+Brands+Regular.woff ] || \
   curl -fsSL "$FA_URL" -o src/FontAwesome5-Solid+Brands+Regular.woff
-font_conv --font src/FontAwesome5-Solid+Brands+Regular.woff --size 24 \
+font_conv --font src/FontAwesome5-Solid+Brands+Regular.woff --size 22 \
   --bpp 4 --format lvgl --no-compress --range 0xF1EB \
-  -o torget_wifi_24.c
+  -o torget_wifi_22.c
 ```
 
 Copy the upstream Font Awesome Free font license text into
@@ -123,7 +124,7 @@ remains red until Task 3; the generated font compiles in the shared simulator.
 - [ ] **Step 5: Commit the native font**
 
 ```sh
-git add platform/fonts/fetch-and-convert.sh platform/fonts/torget_wifi_24.c \
+git add platform/fonts/fetch-and-convert.sh platform/fonts/torget_wifi_22.c \
   platform/fonts/LICENSE-FONTAWESOME.txt test/test_lvgl_layer_safety.py
 git commit -m "feat: add native WiFi status glyph"
 ```
@@ -149,22 +150,22 @@ Create the base at the exact native font size, create an identically positioned
 white child inside a clipping container, and keep the current slash:
 
 ```c
-extern const lv_font_t torget_wifi_24;
+extern const lv_font_t torget_wifi_22;
 
 tg.wifi_base = lv_label_create(tg.wifi_group);
 lv_label_set_text(tg.wifi_base, LV_SYMBOL_WIFI);
-lv_obj_set_style_text_font(tg.wifi_base, &torget_wifi_24, 0);
+lv_obj_set_style_text_font(tg.wifi_base, &torget_wifi_22, 0);
 lv_obj_set_style_text_color(tg.wifi_base, COL_WIFI_MUTED, 0);
 lv_obj_center(tg.wifi_base);
 
 tg.wifi_active_clip = bare(tg.wifi_group);
 tg.wifi_active = lv_label_create(tg.wifi_active_clip);
 lv_label_set_text(tg.wifi_active, LV_SYMBOL_WIFI);
-lv_obj_set_style_text_font(tg.wifi_active, &torget_wifi_24, 0);
+lv_obj_set_style_text_font(tg.wifi_active, &torget_wifi_22, 0);
 lv_obj_set_style_text_color(tg.wifi_active, lv_color_white(), 0);
 ```
 
-For bars 0/1/2/3, set the clip height to 0/8/16/24 px from the bottom and
+For bars 0/1/2/3, set the clip height to 0/7/14/21 px from the bottom and
 offset the child upward by the same clip origin. Hide the foreground clip at
 zero bars and show the unchanged slash only at zero bars.
 
@@ -235,7 +236,7 @@ Expected: all host C, Python, simulator, visual, source, and Worker tests pass.
 
 Run the repository's ESP-IDF 5.5 build with existing local ignored secrets and
 configuration. Do not switch partitions or write flash. Confirm
-`platform/torget_ui.c` and `platform/fonts/torget_wifi_24.c` compile and the
+`platform/torget_ui.c` and `platform/fonts/torget_wifi_22.c` compile and the
 final `build/torget.bin` links successfully.
 
 - [ ] **Step 5: Commit documentation and report the flash gate**
