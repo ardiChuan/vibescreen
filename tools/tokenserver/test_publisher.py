@@ -101,6 +101,20 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(p.publish_once(), 1)
         self.assertEqual(len(sent), 2)
 
+    def test_failed_throttled_update_does_not_restart_the_ceiling(self):
+        value = {"a": 1}
+        p, sent, clock = self._publisher(
+            {"/api/tokens": lambda: dict(value)},
+            results=[True, False, True],
+        )
+        self.assertEqual(p.publish_once(), 1)
+        value["a"] = 2
+        clock["now"] += MIN_SEND_INTERVAL_S["/api/tokens"]
+        self.assertEqual(p.publish_once(), 0)
+        clock["now"] += 30
+        self.assertEqual(p.publish_once(), 1)
+        self.assertEqual(len(sent), 3)
+
     def test_a_broken_producer_does_not_stop_the_others(self):
         def broken():
             raise RuntimeError("boom")
