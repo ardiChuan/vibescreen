@@ -382,3 +382,19 @@ capped at one write per five minutes and Max Tracker/GitHub at one per thirty
 minutes; a regression simulates two continuously changing publishers for a
 full day and requires at most 768 writes. **Watch for:** adding an endpoint or
 shortening a ceiling without recomputing the account-wide two-publisher bound.
+
+## 2026-08-21 · One simulator pixel is not AMOLED-safe spacing
+
+**What happened:** the shared Wi-Fi indicator passed pixel-count and placement
+tests and looked plausible in the SDL simulator, but three bright rounded arcs
+had only about one black pixel between their strokes. The physical AMOLED's
+antialiasing and bloom merged them into one cloud-shaped blob. Its page header
+divider also continued beneath the global slot, making the top-layer object
+feel pasted over the screen. **The rule:** small bright status marks need
+deliberate multi-pixel negative space at final native size, and shared chrome
+needs a reserved lane in every underlying page—not merely a high z-order.
+**Guards:** a dedicated one-glyph Wi-Fi font renders three disconnected lobes;
+the raster test counts real connected components, while every app capture
+keeps the ten-pixel lane to its left black. **Watch for:** approving tiny
+rounded shapes from enlarged simulator previews or testing only bounding boxes
+and total lit pixels.
