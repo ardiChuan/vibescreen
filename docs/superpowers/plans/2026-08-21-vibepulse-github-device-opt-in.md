@@ -22,7 +22,7 @@
 Run:
 
 ```sh
-./.venv/bin/python -m unittest test.test_github_wiring -v
+./.venv/bin/python test/test_github_wiring.py -v
 git check-ignore -v secrets.h
 ```
 
@@ -65,7 +65,7 @@ Expected: no `secrets.h` entry and no tracked default change.
 Run:
 
 ```sh
-./.venv/bin/python -m unittest test.test_github_wiring -v
+./.venv/bin/python test/test_github_wiring.py -v
 cmake --build sim/build -j4
 PATH="$PWD/.venv/bin:$PATH" ./.venv/bin/python \
   test/test_vibepulse_visual_landmarks.py -v
@@ -80,4 +80,3 @@ Run the repository's normal ESP-IDF 5.5 build in a disposable build directory. C
 - [ ] **Step 3: Do not create a Git commit for the local switch**
 
 The screen opt-in is intentionally a per-device ignored configuration change. Any tracked documentation/test changes discovered during verification must be a separate tightly scoped commit.
-
