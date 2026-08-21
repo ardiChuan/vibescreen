@@ -37,7 +37,12 @@ typedef struct {
   int64_t dismissed_at_us;
 } tg_notice_policy;
 
-/* Pollas periodiskt. available = annonserad version skiljer sig från den
+/* Git describe-versionerna ar vMAJOR.MINOR.PATCH eller
+ * vMAJOR.MINOR.PATCH-N-gHEX, med valfritt -dirty. Returnerar true bara nar
+ * advertised ar strikt nyare; okanda/trasiga former faller sakert till false. */
+bool tg_notice_version_is_newer(const char *advertised, const char *running);
+
+/* Pollas periodiskt. available = annonserad version är nyare än den
  * körande; busy = fönster öppet eller överföring igång. */
 tg_notice_action tg_notice_update(tg_notice_policy *policy,
                                   bool available, bool busy,

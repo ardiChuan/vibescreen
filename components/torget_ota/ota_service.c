@@ -434,9 +434,8 @@ static void maintenance_ui_task(void *arg) {
     int64_t now_us = esp_timer_get_time();
     char announced[32];
     bool has_announced = notice_announced_copy(announced, sizeof announced);
-    bool differs = has_announced &&
-        strncmp(announced, esp_app_get_description()->version,
-                sizeof announced) != 0;
+    bool newer = has_announced && tg_notice_version_is_newer(
+        announced, esp_app_get_description()->version);
     /* Trycken draneras VARJE varv (overlayn ar klickbar i alla lagen och
      * en kvarliggande flagga fran t.ex. OPEN skulle sjalvsnooza nasta
      * notis), men de betyder nagot bara nar notisen visas. */
@@ -454,7 +453,7 @@ static void maintenance_ui_task(void *arg) {
       tg_notice_dismiss(&notice, now_us);
     }
     bool busy = until != 0 && (until - now_us) > 0;
-    switch (tg_notice_update(&notice, differs, busy, now_us)) {
+    switch (tg_notice_update(&notice, newer, busy, now_us)) {
       case TG_NOTICE_SHOW:
         ESP_LOGI(TAG, "uppdatering annonserad (%s) — notisen tar glaset",
                  announced);
