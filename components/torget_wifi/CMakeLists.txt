@@ -3,7 +3,7 @@
 # får röra NVS och radion men aldrig bära ett beslut som inte redan är låst
 # i policyn.
 idf_component_register(
-  SRCS "wifi_slots.c" "wifi_form.c"
+  SRCS "wifi_slots.c" "wifi_form.c" "wifi_qr_payload.c"
        "wifi_creds.c" "wifi_setup.c" "wifi_setup_ui.c"
   INCLUDE_DIRS "."
   # torget_app: designsystemets fonter (extern lv_font_t) + torget.h-låset.

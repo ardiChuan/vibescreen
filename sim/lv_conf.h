@@ -12,6 +12,7 @@
 #define LV_USE_TILEVIEW 1
 #define LV_USE_FLEX 1
 #define LV_USE_LABEL 1
+#define LV_USE_QRCODE 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_14
 #define LV_USE_FONT_COMPRESSED 0
 #define LV_DEF_REFR_PERIOD 15

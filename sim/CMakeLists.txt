@@ -88,6 +88,8 @@ add_executable(torget-sim
   # OTA-ringen: ren LVGL utan ESP-beroenden — bänken bevisar dess raster.
   ../components/torget_ota/ota_ui.c
   # Wi-Fi-onboardingen: samma delade LVGL-lager som targetet visar.
+  ../components/torget_wifi/wifi_slots.c
+  ../components/torget_wifi/wifi_qr_payload.c
   ../components/torget_wifi/wifi_setup_ui.c
   ../third_party/cjson/cJSON.c
   ${SOLELKOLLEN_SRCS}

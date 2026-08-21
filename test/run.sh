@@ -234,6 +234,13 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
   -o /tmp/torget-wifi-form-test
 /tmp/torget-wifi-form-test
 
+cc -std=c11 -Wall -Wextra -Werror -O1 \
+  ../components/torget_wifi/wifi_slots.c \
+  ../components/torget_wifi/wifi_qr_payload.c \
+  test_wifi_qr_payload.c \
+  -o /tmp/torget-wifi-qr-test
+/tmp/torget-wifi-qr-test
+
 "$PYTHON_BIN" test_agent_demo_wiring.py
 "$PYTHON_BIN" test_agent_net_wiring.py
 "$PYTHON_BIN" test_github_wiring.py
@@ -242,6 +249,7 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 "$PYTHON_BIN" test_buddy_opt_in.py
 "$PYTHON_BIN" test_lvgl_layer_safety.py
 "$PYTHON_BIN" test_lvgl_memory_config.py
+"$PYTHON_BIN" test_lvgl_qrcode_config.py
 "$PYTHON_BIN" test_vibepulse_layout_wiring.py
 "$PYTHON_BIN" test_preview_ui.py
 "$PYTHON_BIN" test_ota_partition.py
