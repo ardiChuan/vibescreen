@@ -196,8 +196,10 @@ succeeding, their pages keep reading as live (OBS-09). Until fixed, a
 GitHub Actions, four jobs: a `host-gate` job that runs the same
 `./test/run.sh` as the bench (C test binaries, visual landmarks under
 xvfb, crypto vectors, hardware registries, skill contracts, the
-tokenserver suite), the two npm-cached JS jobs it skips via `--skip-js`,
-and an ESP-IDF firmware build. Since OBS-24 closed (2026-08-21), red
+tokenserver suite), the jobs covering the JS suites it skips via
+`--skip-js` (the npm-cached interaction-relay job runs the Worker suite;
+the tokenserver matrix job runs the relay mailbox one), and an ESP-IDF
+firmware build. Since OBS-24 closed (2026-08-21), red
 `./test/run.sh` means red CI too — the remaining gap is only
 platform-shaped (CI is Linux; macOS-only quirks still need the bench).
 

@@ -348,8 +348,9 @@ claim; mention the monitor command + power caveat.
 wiring/capacity tests, the Mbed TLS crypto vectors (compiled against a
 sparse clone of the IDF-pinned sources, same `IDF_VERSION` as the
 firmware job), and the SDL landmark captures under `xvfb-run`. The JS
-suites stay in their own npm-cached jobs — that skip is the gate's only
-CI difference. The tokenserver module list moved to
+suites stay in their own jobs (the Worker suite in the npm-cached
+interaction-relay job, the relay mailbox one in the tokenserver job) —
+that skip is the gate's only CI difference. The tokenserver module list moved to
 `test/tokenserver-suite.txt`, shared by `run.sh` and CI, with a
 completeness guard in `run.sh` (every `tools/tokenserver/test_*.py` must
 be listed). The false "tracked as a follow-up issue" claim is gone from

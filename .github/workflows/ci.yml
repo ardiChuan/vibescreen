@@ -2,8 +2,8 @@
 # same ./test/run.sh a maintainer runs at the bench — C binaries, wiring
 # tests, the Mbed TLS crypto vectors (against the exact IDF-pinned sources)
 # and the SDL landmark captures under xvfb (OBS-24). Only the JS suites are
-# skipped inside run.sh (--skip-js): the interaction-relay and tokenserver
-# jobs run those with npm caching instead.
+# skipped inside run.sh (--skip-js): the npm-cached interaction-relay job
+# runs the Worker suite, and the tokenserver job runs the relay mailbox one.
 name: CI
 
 on:

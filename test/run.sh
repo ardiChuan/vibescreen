@@ -4,8 +4,8 @@
 #
 # Flaggor:
 #   --skip-js  hoppa över Node-lanen (relay + interaction-relay). Enbart för
-#              CI:s host-gate-jobb, som kör dem i egna jobb med npm-cache.
-#              Lokalt körs hela grinden flagglöst: ./test/run.sh
+#              CI:s host-gate-jobb — CI kör dem i egna jobb (Worker-sviten
+#              npm-cachad). Lokalt körs hela grinden flagglöst: ./test/run.sh
 set -e
 cd "$(dirname "$0")"
 
@@ -296,7 +296,7 @@ done
 # Båda molntjänsterna hålls av Node. CI måste ha Node 22; en lokal
 # firmwareutvecklare utan Node får ett ärligt hopp i stället för falskt grönt.
 if [ "$SKIP_JS" = 1 ]; then
-  echo "OBS: --skip-js — relayernas JS-tester körs i CI:s egna jobb med npm-cache"
+  echo "OBS: --skip-js — relayernas JS-tester körs i CI:s egna jobb"
 elif command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
   node --test tools/relay/test.mjs
   (cd tools/interaction-relay && npm ci && npm test && npm run typecheck)

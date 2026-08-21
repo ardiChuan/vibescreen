@@ -79,7 +79,9 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   test binaries, wiring and capacity tests, the Mbed TLS crypto vectors
   (against a sparse clone of the IDF-pinned sources) and the SDL landmark
   captures under `xvfb-run`. Only the JS suites are skipped (`--skip-js`);
-  their own npm-cached jobs still run them. The tokenserver module list
+  their own jobs still run them — the Worker suite npm-cached in the
+  interaction-relay job, the relay mailbox test in the tokenserver job.
+  The tokenserver module list
   moved to `test/tokenserver-suite.txt` — one list shared by `run.sh` and
   CI, with a completeness guard so a new test module cannot silently stay
   outside the gate (the PR #11 lesson, made structural). Two
