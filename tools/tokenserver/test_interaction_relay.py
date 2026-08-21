@@ -229,6 +229,7 @@ class InteractionRelayTests(unittest.TestCase):
                         request_aead=keys.request_aead,
                         verdict_aead=keys.verdict_aead,
                         verdict_mac=b"\xff" * 32,
+                        status_aead=keys.status_aead,
                     )
                     verdict = encode_verdict(
                         bad_keys, MAILBOX, request, "approve")

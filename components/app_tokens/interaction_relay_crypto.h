@@ -17,11 +17,13 @@ extern "C" {
 #define TK_IR_MAX_VIEW_BYTES 640u
 #define TK_IR_REQUEST_FRAME_BYTES 2048u
 #define TK_IR_VERDICT_FRAME_BYTES 1024u
+#define TK_IR_STATUS_FRAME_BYTES 2816u
+#define TK_IR_MAX_STATUS_BYTES 2560u
 #define TK_IR_MAX_ENVELOPE_BYTES 4096u
 
 /* One caller-owned scratch region holds padded base64, ciphertext and the
  * authenticated fixed-size plaintext frame. It is wiped on every return. */
-#define TK_IR_WORK_BYTES 6912u
+#define TK_IR_WORK_BYTES 9472u
 
 typedef enum {
   TK_IR_OK = 0,
@@ -45,6 +47,7 @@ typedef struct {
   uint8_t request_aead[TK_IR_KEY_BYTES];
   uint8_t verdict_aead[TK_IR_KEY_BYTES];
   uint8_t verdict_mac[TK_IR_KEY_BYTES];
+  uint8_t status_aead[TK_IR_KEY_BYTES];
 } tk_ir_keys_t;
 
 typedef struct {
@@ -55,6 +58,14 @@ typedef struct {
   size_t view_len;
   uint8_t view_sha256[TK_IR_KEY_BYTES];
 } tk_ir_request_t;
+
+typedef struct {
+  uint64_t publication_id;
+  uint32_t expires_at;
+  uint8_t status[TK_IR_MAX_STATUS_BYTES];
+  size_t status_len;
+  uint8_t status_sha256[TK_IR_KEY_BYTES];
+} tk_ir_status_t;
 
 /* Minimal authenticated request state carried through the UI. The panel
  * creates this only from a successfully decoded relay request; verdict wire
@@ -92,6 +103,14 @@ tk_ir_error_t tk_ir_sha256(const uint8_t *input, size_t input_len,
 tk_ir_error_t tk_ir_decode_request(
     const tk_ir_keys_t *keys, const char *mailbox, const char *request_id,
     const uint8_t *envelope, size_t envelope_len, tk_ir_request_t *out,
+    uint8_t *work, size_t work_cap);
+
+/* Decrypt the fixed-size Mac-to-panel agent-status frame. The payload is
+ * authenticated but remains opaque JSON at this layer. On any failure both
+ * `out` and caller scratch are wiped. */
+tk_ir_error_t tk_ir_decode_status(
+    const tk_ir_keys_t *keys, const char *mailbox,
+    const uint8_t *envelope, size_t envelope_len, tk_ir_status_t *out,
     uint8_t *work, size_t work_cap);
 
 /* Bind the panel decision to mailbox, request ID, challenge, view digest and

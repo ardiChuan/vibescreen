@@ -22,7 +22,9 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 REQUEST_FRAME_BYTES = 2048
 VERDICT_FRAME_BYTES = 1024
+STATUS_FRAME_BYTES = 2816
 MAX_VIEW_BYTES = 640
+MAX_STATUS_BYTES = 2560
 MAX_ENVELOPE_BYTES = 4096
 GCM_NONCE_BYTES = 12
 GCM_TAG_BYTES = 16
@@ -40,6 +42,8 @@ _VERDICT_KEYS = frozenset((
     "v", "requestId", "challenge", "viewSha256", "verdict", "hmac",
 ))
 _VERDICT_CODES = {"approve": 1, "deny": 2, "terminal": 3, "panic": 4}
+_STATUS_MAGIC = b"VPS1"
+_STATUS_HEADER_BYTES = 50
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,7 @@ class RelayKeys:
     request_aead: bytes
     verdict_aead: bytes
     verdict_mac: bytes
+    status_aead: bytes
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,14 @@ class RelayVerdict:
     view_sha256: bytes
     verdict: str
     mac: bytes
+
+
+@dataclass(frozen=True)
+class RelayStatus:
+    publication_id: int
+    expires_at: int
+    status_bytes: bytes
+    status_sha256: bytes
 
 
 def b64url_encode(raw: bytes) -> str:
@@ -131,6 +144,7 @@ def derive_keys(device_key: bytes, mailbox: str) -> RelayKeys:
         request_aead=derive(b"mac-to-panel-aead"),
         verdict_aead=derive(b"panel-to-mac-aead"),
         verdict_mac=derive(b"panel-verdict-mac"),
+        status_aead=derive(b"mac-to-panel-status-aead"),
     )
 
 
@@ -146,6 +160,10 @@ def verdict_aad(mailbox: str, request_id: str) -> bytes:
     _request_id_bytes(request_id)
     return (_PROTOCOL + b"|" + mailbox_bytes + b"|" +
             request_id.encode("ascii") + b"|verdict")
+
+
+def status_aad(mailbox: str) -> bytes:
+    return _PROTOCOL + b"|" + _mailbox_bytes(mailbox) + b"|status"
 
 
 def _canonical_json(value: dict) -> bytes:
@@ -308,6 +326,74 @@ def decode_request(keys: RelayKeys, mailbox: str, request_id: str,
         )
     except (InvalidTag, ValueError, TypeError, OverflowError) as exc:
         raise ValueError("invalid request envelope") from exc
+
+
+def _validate_status_fields(publication_id: int, expires_at: int,
+                            status_bytes: bytes) -> bytes:
+    if type(publication_id) is not int or not (
+            0 < publication_id <= 0xFFFFFFFFFFFFFFFF):
+        raise ValueError("invalid publication id")
+    if type(expires_at) is not int or not (0 < expires_at <= 0xFFFFFFFF):
+        raise ValueError("invalid expiry")
+    if not isinstance(status_bytes, bytes) or not (
+            0 < len(status_bytes) <= MAX_STATUS_BYTES):
+        raise ValueError("invalid status size")
+    return hashlib.sha256(status_bytes).digest()
+
+
+def encode_status(keys: RelayKeys, mailbox: str, publication_id: int,
+                  expires_at: int, status_bytes: bytes,
+                  nonce: bytes | None = None, padding=None) -> bytes:
+    if not isinstance(keys, RelayKeys):
+        raise ValueError("invalid relay keys")
+    digest = _validate_status_fields(
+        publication_id, expires_at, status_bytes)
+    nonce = secrets.token_bytes(GCM_NONCE_BYTES) if nonce is None else nonce
+    if not isinstance(nonce, bytes) or len(nonce) != GCM_NONCE_BYTES:
+        raise ValueError("nonce must be 12 bytes")
+    padding_size = STATUS_FRAME_BYTES - _STATUS_HEADER_BYTES - len(status_bytes)
+    frame = (
+        _STATUS_MAGIC +
+        publication_id.to_bytes(8, "big") +
+        expires_at.to_bytes(4, "big") +
+        len(status_bytes).to_bytes(2, "big") +
+        digest + status_bytes + _padding_bytes(padding, padding_size)
+    )
+    ciphertext = AESGCM(keys.status_aead).encrypt(
+        nonce, frame, status_aad(mailbox))
+    return _outer_envelope(nonce, ciphertext)
+
+
+def decode_status(keys: RelayKeys, mailbox: str,
+                  envelope: bytes) -> RelayStatus:
+    try:
+        if not isinstance(keys, RelayKeys):
+            raise ValueError("invalid relay keys")
+        nonce, ciphertext = _decode_outer(
+            envelope, STATUS_FRAME_BYTES + GCM_TAG_BYTES)
+        frame = AESGCM(keys.status_aead).decrypt(
+            nonce, ciphertext, status_aad(mailbox))
+        if len(frame) != STATUS_FRAME_BYTES or frame[:4] != _STATUS_MAGIC:
+            raise ValueError("invalid status frame")
+        publication_id = int.from_bytes(frame[4:12], "big")
+        expires_at = int.from_bytes(frame[12:16], "big")
+        status_len = int.from_bytes(frame[16:18], "big")
+        if status_len > STATUS_FRAME_BYTES - _STATUS_HEADER_BYTES:
+            raise ValueError("invalid status length")
+        status_bytes = frame[50:50 + status_len]
+        calculated = _validate_status_fields(
+            publication_id, expires_at, status_bytes)
+        digest = frame[18:50]
+        if not hmac.compare_digest(digest, calculated):
+            raise ValueError("status digest mismatch")
+        return RelayStatus(
+            publication_id=publication_id,
+            expires_at=expires_at,
+            status_bytes=status_bytes,
+            status_sha256=digest,
+        )
+    except (InvalidTag, ValueError, TypeError, OverflowError) as exc:
+        raise ValueError("invalid status envelope") from exc
 
 
 def _validate_request_object(request: RelayRequest) -> None:

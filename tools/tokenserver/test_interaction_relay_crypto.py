@@ -8,18 +8,24 @@ import unittest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tools.tokenserver.interaction_relay_crypto import (
+    MAX_STATUS_BYTES,
     REQUEST_FRAME_BYTES,
+    STATUS_FRAME_BYTES,
     VERDICT_FRAME_BYTES,
     RelayRequest,
+    RelayStatus,
     b64url_decode,
     b64url_encode,
     decode_device_key,
     decode_request,
+    decode_status,
     decode_verdict,
     derive_keys,
     encode_request,
+    encode_status,
     encode_verdict,
     request_aad,
+    status_aad,
     verdict_aad,
     verdict_mac_bytes,
     verdict_mac_message,
@@ -49,6 +55,13 @@ VIEW_BYTES = (
     b'"subtitle":"Desktop + CLI, one setup",'
     b'"can_approve":true}'
 )
+STATUS_PUBLICATION_ID = 1_787_097_600_123
+STATUS_EXPIRES_AT = 1_787_097_615
+STATUS_NONCE = bytes.fromhex("606162636465666768696a6b")
+STATUS_BYTES = (
+    b'{"agents":{"claude":{"active_count":1,"jobs":[]},'
+    b'"codex":{"active_count":0,"jobs":[]}},"seq":7,"v":2}'
+)
 
 
 def _outer(envelope: bytes) -> dict:
@@ -65,6 +78,174 @@ def _mutate_bytes(value: bytes, index: int) -> bytes:
     changed = bytearray(value)
     changed[index] ^= 1
     return bytes(changed)
+
+
+class StatusRelayCryptoTests(unittest.TestCase):
+    def setUp(self):
+        self.keys = derive_keys(decode_device_key(DEVICE_KEY_HEX), MAILBOX)
+        self.envelope = encode_status(
+            self.keys, MAILBOX, STATUS_PUBLICATION_ID, STATUS_EXPIRES_AT,
+            STATUS_BYTES, nonce=STATUS_NONCE,
+            padding=lambda size: b"\xa5" * size,
+        )
+
+    def test_status_key_is_direction_separated(self):
+        self.assertEqual(len(self.keys.status_aead), 32)
+        self.assertEqual(len({
+            self.keys.request_aead,
+            self.keys.verdict_aead,
+            self.keys.verdict_mac,
+            self.keys.status_aead,
+        }), 4)
+        self.assertEqual(
+            status_aad(MAILBOX),
+            b"vibepulse-ir/v1|vp_A1b2C3d4E5f6G7h8|status",
+        )
+
+    def test_status_roundtrip_uses_an_exact_fixed_frame(self):
+        outer = _outer(self.envelope)
+        ciphertext = b64url_decode(outer["ciphertext"])
+        self.assertEqual(STATUS_FRAME_BYTES, 2816)
+        self.assertEqual(MAX_STATUS_BYTES, 2560)
+        self.assertEqual(len(ciphertext), STATUS_FRAME_BYTES + 16)
+        self.assertEqual(
+            self.envelope,
+            json.dumps(outer, sort_keys=True, separators=(",", ":")).encode(),
+        )
+        decoded = decode_status(self.keys, MAILBOX, self.envelope)
+        self.assertIsInstance(decoded, RelayStatus)
+        self.assertEqual(decoded.publication_id, STATUS_PUBLICATION_ID)
+        self.assertEqual(decoded.expires_at, STATUS_EXPIRES_AT)
+        self.assertEqual(decoded.status_bytes, STATUS_BYTES)
+        self.assertEqual(decoded.status_sha256,
+                         hashlib.sha256(STATUS_BYTES).digest())
+
+    def test_status_plaintext_layout_and_padding_are_pinned(self):
+        outer = _outer(self.envelope)
+        frame = AESGCM(self.keys.status_aead).decrypt(
+            STATUS_NONCE, b64url_decode(outer["ciphertext"]),
+            status_aad(MAILBOX),
+        )
+        self.assertEqual(len(frame), STATUS_FRAME_BYTES)
+        self.assertEqual(frame[:4], b"VPS1")
+        self.assertEqual(int.from_bytes(frame[4:12], "big"),
+                         STATUS_PUBLICATION_ID)
+        self.assertEqual(int.from_bytes(frame[12:16], "big"),
+                         STATUS_EXPIRES_AT)
+        self.assertEqual(int.from_bytes(frame[16:18], "big"),
+                         len(STATUS_BYTES))
+        self.assertEqual(frame[18:50], hashlib.sha256(STATUS_BYTES).digest())
+        self.assertEqual(frame[50:50 + len(STATUS_BYTES)], STATUS_BYTES)
+        self.assertEqual(frame[50 + len(STATUS_BYTES):],
+                         b"\xa5" * (STATUS_FRAME_BYTES - 50 -
+                                      len(STATUS_BYTES)))
+
+    def test_tamper_wrong_key_and_wrong_mailbox_are_rejected(self):
+        outer = _outer(self.envelope)
+        nonce = b64url_decode(outer["nonce"])
+        ciphertext = b64url_decode(outer["ciphertext"])
+        invalid = (
+            _replace_outer(
+                self.envelope, nonce=b64url_encode(_mutate_bytes(nonce, 0))),
+            _replace_outer(
+                self.envelope,
+                ciphertext=b64url_encode(_mutate_bytes(ciphertext, 0))),
+            _replace_outer(
+                self.envelope,
+                ciphertext=b64url_encode(_mutate_bytes(ciphertext, -1))),
+        )
+        for envelope in invalid:
+            with self.subTest(envelope=envelope[:64]):
+                with self.assertRaises(ValueError):
+                    decode_status(self.keys, MAILBOX, envelope)
+        with self.assertRaises(ValueError):
+            decode_status(
+                derive_keys(b"\xff" * 32, MAILBOX), MAILBOX, self.envelope)
+        with self.assertRaises(ValueError):
+            decode_status(
+                self.keys, "vp_Z9y8X7w6V5u4T3s2", self.envelope)
+
+    def _authenticated_frame(self, mutate) -> bytes:
+        outer = _outer(self.envelope)
+        nonce = b64url_decode(outer["nonce"])
+        frame = AESGCM(self.keys.status_aead).decrypt(
+            nonce, b64url_decode(outer["ciphertext"]),
+            status_aad(MAILBOX),
+        )
+        changed = mutate(bytearray(frame))
+        ciphertext = AESGCM(self.keys.status_aead).encrypt(
+            nonce, bytes(changed), status_aad(MAILBOX))
+        return _replace_outer(
+            self.envelope, ciphertext=b64url_encode(ciphertext))
+
+    def test_authenticated_malformed_status_frames_are_rejected(self):
+        def replace(start, end, value):
+            def mutate(frame):
+                frame[start:end] = value
+                return frame
+            return mutate
+
+        invalid = {
+            "magic": replace(0, 4, b"BAD!"),
+            "zero publication": replace(4, 12, b"\0" * 8),
+            "zero expiry": replace(12, 16, b"\0" * 4),
+            "zero length": replace(16, 18, b"\0\0"),
+            "over-cap length": replace(
+                16, 18, (MAX_STATUS_BYTES + 1).to_bytes(2, "big")),
+            "digest": replace(18, 50, b"\0" * 32),
+            "short frame": lambda frame: frame[:-1],
+        }
+        for name, mutate in invalid.items():
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    decode_status(
+                        self.keys, MAILBOX, self._authenticated_frame(mutate))
+
+    def test_status_encode_rejects_invalid_fields_and_sources(self):
+        cases = (
+            {"publication_id": 0},
+            {"publication_id": True},
+            {"publication_id": 0x10000000000000000},
+            {"expires_at": 0},
+            {"expires_at": True},
+            {"expires_at": 0x100000000},
+            {"status_bytes": b""},
+            {"status_bytes": b"x" * (MAX_STATUS_BYTES + 1)},
+            {"status_bytes": "not bytes"},
+            {"nonce": b"short"},
+            {"padding": b"wrong"},
+            {"padding": lambda size: "not bytes"},
+        )
+        base = {
+            "publication_id": STATUS_PUBLICATION_ID,
+            "expires_at": STATUS_EXPIRES_AT,
+            "status_bytes": STATUS_BYTES,
+            "nonce": STATUS_NONCE,
+            "padding": lambda size: b"\0" * size,
+        }
+        for changes in cases:
+            with self.subTest(changes=changes):
+                with self.assertRaises(ValueError):
+                    encode_status(self.keys, MAILBOX, **{**base, **changes})
+
+    def test_status_outer_envelope_remains_strict(self):
+        outer = _outer(self.envelope)
+        invalid = (
+            b"{}",
+            b"[]",
+            self.envelope + b" ",
+            _replace_outer(self.envelope, extra=1),
+            _replace_outer(self.envelope, v=True),
+            _replace_outer(self.envelope, nonce="AA"),
+            _replace_outer(self.envelope, ciphertext="AA"),
+            (b'{"ciphertext":"' + outer["ciphertext"].encode() +
+             b'","nonce":"' + outer["nonce"].encode() +
+             b'","v":1,"v":1}'),
+        )
+        for envelope in invalid:
+            with self.subTest(envelope=envelope[:64]):
+                with self.assertRaises(ValueError):
+                    decode_status(self.keys, MAILBOX, envelope)
 
 
 class ProtocolVectorTests(unittest.TestCase):

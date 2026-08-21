@@ -59,6 +59,8 @@ static void test_keys_and_base64(void) {
   assert(strcmp(actual, VECTOR_VERDICT_KEY_HEX) == 0);
   hex(actual, sizeof actual, keys.verdict_mac, sizeof keys.verdict_mac);
   assert(strcmp(actual, VECTOR_VERDICT_MAC_KEY_HEX) == 0);
+  hex(actual, sizeof actual, keys.status_aead, sizeof keys.status_aead);
+  assert(strcmp(actual, VECTOR_STATUS_KEY_HEX) == 0);
 
   memset(s_work, 0xcc, sizeof s_work);
   assert(tk_ir_b64url_decode(VECTOR_REQUEST_ID, strlen(VECTOR_REQUEST_ID),
@@ -170,6 +172,73 @@ static void test_request_decode(void) {
   tk_ir_keys_zero(&keys);
 }
 
+static tk_ir_error_t decode_status_case(const tk_ir_keys_t *keys,
+                                        const char *mailbox,
+                                        const char *envelope,
+                                        tk_ir_status_t *status) {
+  memset(s_work, 0xcc, sizeof s_work);
+  tk_ir_error_t result = tk_ir_decode_status(
+      keys, mailbox, (const uint8_t *)envelope, strlen(envelope), status,
+      s_work, sizeof s_work);
+  assert(all_zero(s_work, sizeof s_work));
+  return result;
+}
+
+static void test_status_decode(void) {
+  tk_ir_keys_t keys;
+  tk_ir_keys_t wrong_keys;
+  tk_ir_status_t status;
+  char digest_hex[65];
+  assert(tk_ir_derive_keys(VECTOR_DEVICE_KEY_HEX, VECTOR_MAILBOX, &keys) ==
+         TK_IR_OK);
+
+  assert(decode_status_case(&keys, VECTOR_MAILBOX, VECTOR_STATUS_ENVELOPE,
+                            &status) == TK_IR_OK);
+  assert(status.publication_id == VECTOR_STATUS_PUBLICATION_ID);
+  assert(status.expires_at == VECTOR_STATUS_EXPIRES_AT);
+  assert(status.status_len == strlen(VECTOR_STATUS_UTF8));
+  assert(memcmp(status.status, VECTOR_STATUS_UTF8, status.status_len) == 0);
+  hex(digest_hex, sizeof digest_hex, status.status_sha256, 32);
+  assert(strcmp(digest_hex, VECTOR_STATUS_SHA256_HEX) == 0);
+
+  struct {
+    const char *name;
+    const char *envelope;
+    tk_ir_error_t error;
+  } invalid[] = {
+      {"short ciphertext", VECTOR_STATUS_SHORT_CIPHERTEXT, TK_IR_ERR_FORMAT},
+      {"bad tag", VECTOR_STATUS_BAD_TAG, TK_IR_ERR_AUTH},
+      {"bad magic", VECTOR_STATUS_BAD_MAGIC, TK_IR_ERR_FORMAT},
+      {"zero publication", VECTOR_STATUS_ZERO_PUBLICATION, TK_IR_ERR_FORMAT},
+      {"zero expiry", VECTOR_STATUS_ZERO_EXPIRY, TK_IR_ERR_FORMAT},
+      {"zero length", VECTOR_STATUS_ZERO_LENGTH, TK_IR_ERR_FORMAT},
+      {"over length", VECTOR_STATUS_OVER_LENGTH, TK_IR_ERR_FORMAT},
+      {"bad digest", VECTOR_STATUS_BAD_DIGEST, TK_IR_ERR_DIGEST},
+  };
+  for (size_t i = 0; i < sizeof invalid / sizeof invalid[0]; ++i) {
+    memset(&status, 0xa5, sizeof status);
+    assert(decode_status_case(&keys, VECTOR_MAILBOX, invalid[i].envelope,
+                              &status) == invalid[i].error);
+    assert(all_zero((const uint8_t *)&status, sizeof status));
+  }
+
+  memset(&status, 0xa5, sizeof status);
+  assert(decode_status_case(&keys, "vp_Z9y8X7w6V5u4T3s2",
+                            VECTOR_STATUS_ENVELOPE, &status) ==
+         TK_IR_ERR_AUTH);
+  assert(all_zero((const uint8_t *)&status, sizeof status));
+  assert(tk_ir_derive_keys(
+      "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      VECTOR_MAILBOX, &wrong_keys) == TK_IR_OK);
+  memset(&status, 0xa5, sizeof status);
+  assert(decode_status_case(&wrong_keys, VECTOR_MAILBOX,
+                            VECTOR_STATUS_ENVELOPE, &status) ==
+         TK_IR_ERR_AUTH);
+  assert(all_zero((const uint8_t *)&status, sizeof status));
+  tk_ir_keys_zero(&wrong_keys);
+  tk_ir_keys_zero(&keys);
+}
+
 static void test_verdicts(void) {
   const tk_ir_verdict_t verdicts[] = {
       TK_IR_VERDICT_APPROVE, TK_IR_VERDICT_DENY,
@@ -249,6 +318,7 @@ static void test_verdicts(void) {
 int main(void) {
   test_keys_and_base64();
   test_request_decode();
+  test_status_decode();
   test_verdicts();
   puts("OK: encrypted interaction relay C vectors and hostile inputs");
   return 0;
