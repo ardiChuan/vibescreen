@@ -16,6 +16,7 @@ from tools.tokenserver.interaction_relay_crypto import (
     b64url_encode,
     decode_device_key,
     decode_request,
+    decode_status,
     derive_keys,
     encode_verdict,
 )
@@ -66,6 +67,7 @@ class FakeMailboxTransport:
         self.calls = []
         self.requests = OrderedDict()
         self.verdicts = OrderedDict()
+        self.status_envelope = None
         self.forced = deque()
 
     def force(self, value):
@@ -92,6 +94,9 @@ class FakeMailboxTransport:
 
         path = urlsplit(url).path
         no_store = (("Cache-Control", "no-store"),)
+        if method == "PUT" and path.endswith("/status"):
+            self.status_envelope = body
+            return HttpResponse(201, no_store, b"")
         if method == "PUT":
             request_id = path.rsplit("/", 1)[-1]
             existing = self.requests.get(request_id)
@@ -229,6 +234,7 @@ class InteractionRelayTests(unittest.TestCase):
                         request_aead=keys.request_aead,
                         verdict_aead=keys.verdict_aead,
                         verdict_mac=b"\xff" * 32,
+                        status_aead=keys.status_aead,
                     )
                     verdict = encode_verdict(
                         bad_keys, MAILBOX, request, "approve")
@@ -447,6 +453,169 @@ class InteractionRelayTests(unittest.TestCase):
             relay.on_remove(request_id, "timeout")
             relay.run_once()
         self.assertLessEqual(len(relay._deletes), 8)
+
+
+class StatusPublisherTests(unittest.TestCase):
+    def make_relay(self, *, transport=None, source=None, store=None,
+                   publish_interactions=False):
+        self.clock = Clock()
+        self.wall = Clock(50_000.0)
+        self.transport = transport or FakeMailboxTransport()
+        self.audit = []
+        self.source = source or (lambda: {
+            "v": 2,
+            "seq": 7,
+            "agents": {
+                "claude": {"active_count": 1, "jobs": []},
+                "codex": {"active_count": 0, "jobs": []},
+            },
+            "pending": {"private": "must never leave the Mac"},
+        })
+        return InteractionRelay(
+            store=store,
+            publish_interactions=publish_interactions,
+            publish_agent_status=True,
+            status_source=self.source,
+            base_url=BASE_URL,
+            mailbox=MAILBOX,
+            mac_token=MAC_TOKEN,
+            device_key_hex=DEVICE_KEY_HEX,
+            transport=self.transport,
+            now=self.clock,
+            wall=self.wall,
+            random_bytes=DeterministicRandom(),
+            jitter=lambda: 0.0,
+            audit=lambda event, fields: self.audit.append((event, fields)),
+        )
+
+    def decoded_status(self, envelope):
+        keys = derive_keys(decode_device_key(DEVICE_KEY_HEX), MAILBOX)
+        return decode_status(keys, MAILBOX, envelope)
+
+    def test_publishes_immediately_then_at_most_every_two_seconds(self):
+        relay = self.make_relay()
+        relay.run_once()
+        first = self.transport.status_envelope
+        self.assertIsNotNone(first)
+        decoded = self.decoded_status(first)
+        self.assertEqual(decoded.publication_id, 50_000_000)
+        self.assertEqual(decoded.expires_at, 50_015)
+        snapshot = json.loads(decoded.status_bytes)
+        self.assertEqual(snapshot["seq"], 7)
+        self.assertNotIn("pending", snapshot)
+
+        calls = len(self.transport.calls)
+        self.clock.advance(1.999)
+        self.wall.advance(1.999)
+        relay.run_once()
+        self.assertEqual(len(self.transport.calls), calls)
+        self.clock.advance(0.001)
+        self.wall.advance(0.001)
+        relay.run_once()
+        self.assertEqual(len(self.transport.calls), calls + 1)
+        second = self.decoded_status(self.transport.status_envelope)
+        self.assertGreater(second.publication_id, decoded.publication_id)
+        self.assertNotEqual(first, self.transport.status_envelope)
+
+    def test_retry_reuses_exact_ciphertext_then_rotates_after_success(self):
+        self.transport = FakeMailboxTransport()
+        self.transport.force(OSError("offline"))
+        relay = self.make_relay(transport=self.transport)
+        relay.run_once()
+        first = self.transport.calls[-1]["body"]
+        relay.run_once()
+        self.assertEqual(len(self.transport.calls), 1)
+        self.clock.advance(0.5)
+        self.wall.advance(0.5)
+        relay.run_once()
+        self.assertEqual(self.transport.calls[-1]["body"], first)
+        self.clock.advance(2.0)
+        self.wall.advance(2.0)
+        relay.run_once()
+        self.assertNotEqual(self.transport.calls[-1]["body"], first)
+
+    def test_status_failure_cannot_delay_an_interaction_publish(self):
+        class StatusOffline(FakeMailboxTransport):
+            def __call__(self, method, url, headers, body,
+                         connect_timeout, read_timeout):
+                if urlsplit(url).path.endswith("/status"):
+                    self.calls.append({
+                        "method": method, "url": url,
+                        "headers": dict(headers), "body": body,
+                        "connect_timeout": connect_timeout,
+                        "read_timeout": read_timeout,
+                    })
+                    raise OSError("status offline")
+                return super().__call__(method, url, headers, body,
+                                        connect_timeout, read_timeout)
+
+        transport = StatusOffline()
+        store = InteractionStore(
+            secret=DEVICE_KEY_HEX, reveal_detail=True,
+            now=Clock(), wall=Clock(50_000.0),
+            relay_random_bytes=lambda size: b"\x42" * size)
+        relay = self.make_relay(
+            transport=transport, store=store, publish_interactions=True)
+        entry = store.park("approval", approval_event(), 30)
+        relay.run_once()
+        self.assertIn(entry.request_id, transport.requests)
+        self.assertTrue(any(
+            fields["route"] == "put_status" for _event, fields in self.audit))
+
+    def test_blocked_status_http_cannot_hold_the_verdict_worker(self):
+        status_entered = threading.Event()
+        release_status = threading.Event()
+        request_published = threading.Event()
+
+        class BlockingStatus(FakeMailboxTransport):
+            def __call__(self, method, url, headers, body,
+                         connect_timeout, read_timeout):
+                if urlsplit(url).path.endswith("/status"):
+                    status_entered.set()
+                    release_status.wait(2)
+                response = super().__call__(
+                    method, url, headers, body,
+                    connect_timeout, read_timeout)
+                if method == "PUT" and not urlsplit(url).path.endswith(
+                        "/status"):
+                    request_published.set()
+                return response
+
+        transport = BlockingStatus()
+        store = InteractionStore(
+            secret=DEVICE_KEY_HEX, reveal_detail=True,
+            now=Clock(), wall=Clock(50_000.0),
+            relay_random_bytes=lambda size: b"\x42" * size)
+        relay = self.make_relay(
+            transport=transport, store=store, publish_interactions=True)
+        relay.start()
+        try:
+            self.assertTrue(status_entered.wait(1))
+            entry = store.park("approval", approval_event(), 30)
+            self.assertIsNotNone(entry)
+            self.assertTrue(
+                request_published.wait(0.5),
+                "blocked status request delayed interaction publishing")
+        finally:
+            release_status.set()
+            relay.stop()
+
+    def test_status_only_requires_a_source_but_not_an_interaction_store(self):
+        defaults = {
+            "store": None,
+            "publish_interactions": False,
+            "publish_agent_status": True,
+            "base_url": BASE_URL,
+            "mailbox": MAILBOX,
+            "mac_token": MAC_TOKEN,
+            "device_key_hex": DEVICE_KEY_HEX,
+        }
+        with self.assertRaises(ValueError):
+            InteractionRelay(**defaults)
+        with self.assertRaises(ValueError):
+            InteractionRelay(
+                **{**defaults, "publish_interactions": True,
+                   "status_source": lambda: {}})
 
 
 if __name__ == "__main__":

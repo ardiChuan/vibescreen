@@ -31,6 +31,7 @@ AGENT_STATUS_H = (REPO_ROOT / "components" / "app_tokens" /
 sys.path.insert(0, str(REPO_ROOT / "tools" / "tokenserver"))
 
 import interactions  # noqa: E402
+import interaction_relay_crypto  # noqa: E402
 
 # Provider and view binding make 75 % unattainable without shortening the
 # established display fields.  The field-wise maximum must still stay within
@@ -112,6 +113,20 @@ def worst_case_pending() -> dict:
 
 
 class AgentStatusBodyCapacityTests(unittest.TestCase):
+    def test_encrypted_status_strips_pending_and_fits_fixed_frame(self):
+        payload = worst_case_snapshot()
+        payload["pending"] = worst_case_pending()
+        public = {key: value for key, value in payload.items()
+                  if key != "pending"}
+        encoded = json.dumps(
+            public, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":")).encode("utf-8")
+
+        self.assertNotIn(b'"pending"', encoded)
+        self.assertLessEqual(
+            len(encoded), interaction_relay_crypto.MAX_STATUS_BYTES)
+        self.assertEqual(interaction_relay_crypto.STATUS_FRAME_BYTES, 2816)
+
     def test_codex_fixtures_carry_the_production_public_view_digest(self):
         fixture_dir = REPO_ROOT / "sim-fixtures"
         for name in (

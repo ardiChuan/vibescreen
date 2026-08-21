@@ -207,9 +207,13 @@ EXPECTED = {
 
     # Wi-Fi onboarding uses the same target LVGL overlay in the simulator.
     "torget-wifi-searching.bmp",
+    "torget-wifi-starting.bmp",
     "torget-wifi-setup-open.bmp",
+    "torget-wifi-setup-qr.bmp",
+    "torget-wifi-setup-manual.bmp",
     "torget-wifi-joining.bmp",
     "torget-wifi-joined.bmp",
+    "torget-wifi-failed-password.bmp",
 
     "torget-boot-cold.bmp",
     "torget-boot-wifi.bmp",
@@ -256,6 +260,22 @@ EXPECTED = {
     "torget-vibepulse-needs-you-codex-payoff-post-expiry.bmp",
 }
 
+WIFI_GLOBAL_SURFACES = [
+    "launcher",
+    "claude",
+    "codex",
+    "value",
+    "github",
+    "needs-you",
+]
+if (Path.home() / "Solelkollen/components/app_solelkollen").is_dir():
+    WIFI_GLOBAL_SURFACES.append("companion")
+EXPECTED.update(
+    f"torget-wifi-global-{surface}-{bars}.bmp"
+    for surface in WIFI_GLOBAL_SURFACES
+    for bars in range(4)
+)
+
 
 class VibePulseVisualLandmarkTests(unittest.TestCase):
     @classmethod
@@ -300,6 +320,25 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         for name in sorted(EXPECTED):
             with self.subTest(name=name):
                 self.assertEqual(self.image(name).size, (480, 480))
+
+    def test_needs_you_countdown_updates_only_the_ring(self):
+        result = subprocess.run(
+            [str(ROOT / "sim/build/torget-sim"),
+             "--vibepulse-needs-you-render-qa"],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        match = re.fullmatch(
+            r"full_repaints=(\d+) ring_updates=(\d+) unchanged_ticks=(\d+)\n",
+            result.stdout,
+        )
+        self.assertIsNotNone(match, result.stdout)
+        full_repaints, ring_updates, unchanged_ticks = map(int, match.groups())
+        self.assertEqual(full_repaints, 1)
+        self.assertGreaterEqual(ring_updates, 2)
+        self.assertGreater(unchanged_ticks, 0)
 
     def test_long_question_never_overwrites_the_recommendation_card(self):
         # A long question steps to 21px and is capped in its band above the
@@ -453,13 +492,16 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         later_row = [image.getpixel((x, 366)) for x in range(120, 360)]
         self.assertIn(muted, later_row)
 
-    def test_wifi_onboarding_states_are_legible_and_visually_distinct(self):
+    def test_wifi_onboarding_states(self):
         searching = self.image("torget-wifi-searching.bmp")
-        opened = self.image("torget-wifi-setup-open.bmp")
+        starting = self.image("torget-wifi-starting.bmp")
+        opened = self.image("torget-wifi-setup-qr.bmp")
+        manual = self.image("torget-wifi-setup-manual.bmp")
         joining = self.image("torget-wifi-joining.bmp")
         joined = self.image("torget-wifi-joined.bmp")
+        failed = self.image("torget-wifi-failed-password.bmp")
 
-        for image in (searching, opened, joining, joined):
+        for image in (searching, starting, opened, manual, joining, joined, failed):
             with self.subTest(image=image):
                 self.assertEqual(image.getpixel((5, 5)), (0, 0, 0))
                 header = image.crop((34, 48, 446, 116))
@@ -469,15 +511,22 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                     300,
                 )
 
-        # The setup frame must visibly carry the AP, password, phone URL,
-        # one-command Mac path, and bounded-window footer in their own bands.
+        # The QR frame has one white 196px canvas with black finder/data ink.
+        qr = opened.crop((142, 108, 338, 304))
+        pixels = list(qr.get_flattened_data())
+        self.assertGreater(sum(pixel == (255, 255, 255) for pixel in pixels), 12000)
+        self.assertGreater(sum(pixel == (0, 0, 0) for pixel in pixels), 2500)
+        for x, y in ((153, 119), (311, 119), (153, 277)):
+            finder = opened.crop((x, y, x + 24, y + 24))
+            self.assertIn((0, 0, 0), finder.get_flattened_data())
+
+        # QR, SSID, password, fallback URL and footer occupy separate bands.
         for box in (
-            (34, 132, 446, 164),
-            (34, 166, 446, 204),
-            (34, 210, 446, 266),
-            (34, 274, 446, 302),
-            (34, 302, 446, 332),
-            (34, 390, 446, 430),
+            (142, 108, 338, 304),
+            (34, 312, 446, 344),
+            (34, 346, 446, 394),
+            (34, 400, 446, 432),
+            (34, 438, 446, 476),
         ):
             with self.subTest(box=box):
                 self.assertTrue(any(
@@ -485,9 +534,30 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                     for pixel in opened.crop(box).get_flattened_data()
                 ))
 
-        self.assertNotEqual(searching.tobytes(), opened.tobytes())
+        # Manual fallback has no large white QR canvas but retains instructions.
+        manual_qr = manual.crop((142, 108, 338, 304))
+        self.assertLess(
+            sum(pixel == (255, 255, 255)
+                for pixel in manual_qr.get_flattened_data()),
+            3000,
+        )
+
+        self.assertNotEqual(searching.tobytes(), starting.tobytes())
+        self.assertNotEqual(starting.tobytes(), opened.tobytes())
+        self.assertNotEqual(opened.tobytes(), manual.tobytes())
         self.assertNotEqual(opened.tobytes(), joining.tobytes())
         self.assertNotEqual(joining.tobytes(), joined.tobytes())
+        self.assertNotEqual(joined.tobytes(), failed.tobytes())
+        self.assertEqual(
+            joining.crop((70, 390, 410, 432)).tobytes(),
+            failed.crop((70, 390, 410, 432)).tobytes(),
+            "joining is inside the setup window, so KEY3 must say CLOSES",
+        )
+        self.assertEqual(
+            joined.crop((70, 390, 410, 432)).tobytes(),
+            failed.crop((70, 390, 410, 432)).tobytes(),
+            "joined linger is still inside the setup window",
+        )
 
     def test_provider_bars_are_segmented_with_locked_colors_and_marker(self):
         cases = (
@@ -551,13 +621,13 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
             claude_stale.crop((22, 72, 458, 118)).tobytes(),
             "no-data must retain the fixed FABLE · WEEK page identity",
         )
-        status = [(x, y) for y in range(18, 56) for x in range(300, 458)
+        status = [(x, y) for y in range(18, 56) for x in range(300, 408)
                   if no_data.getpixel((x, y)) != (0, 0, 0)]
         self.assertEqual(
             (min(x for x, _ in status), max(x for x, _ in status),
              min(y for _, y in status), max(y for _, y in status)),
-            (395, 457, 32, 41),
-            "NO DATA must occupy the one reserved status slot",
+            (345, 407, 32, 41),
+            "NO DATA must end before the reserved Wi-Fi lane",
         )
         hero = [(x, y) for y in range(140, 280) for x in range(22, 458)
                 if no_data.getpixel((x, y)) == (255, 255, 255)]
@@ -645,10 +715,10 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
 
     def test_missing_and_stale_headers_show_only_quota_truth_status(self):
         cases = (
-            ("torget-vibepulse-claude-stale.bmp", 414),
-            ("torget-vibepulse-claude-missing.bmp", 395),
-            ("torget-vibepulse-codex-stale.bmp", 414),
-            ("torget-vibepulse-codex-missing.bmp", 395),
+            ("torget-vibepulse-claude-stale.bmp", 364),
+            ("torget-vibepulse-claude-missing.bmp", 345),
+            ("torget-vibepulse-codex-stale.bmp", 364),
+            ("torget-vibepulse-codex-missing.bmp", 345),
         )
         for name, expected_left in cases:
             with self.subTest(name=name):
@@ -656,13 +726,13 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                 status_pixels = [
                     (x, y)
                     for y in range(18, 56)
-                    for x in range(200, 458)
+                    for x in range(200, 408)
                     if image.getpixel((x, y)) != (0, 0, 0)
                 ]
                 self.assertTrue(status_pixels)
                 self.assertEqual(min(x for x, _ in status_pixels),
                                  expected_left)
-                self.assertEqual(max(x for x, _ in status_pixels), 457)
+                self.assertEqual(max(x for x, _ in status_pixels), 407)
                 self.assertEqual(
                     (min(y for _, y in status_pixels),
                      max(y for _, y in status_pixels)),
@@ -1152,18 +1222,48 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         self.assertGreater(
             self._count(image, (24, 358, 232, 452), self.NY_RED), 0)
 
-    def test_wifi_icon_distinguishes_strong_weak_and_disconnected(self):
-        strong = self._ny("codex-question")
-        weak = self._ny("codex-wifi-weak")
-        off = self._ny("codex-wifi-off")
+    def test_global_wifi_icon_is_neutral_consistent_and_distinct(self):
         box = (418, 38, 446, 66)
-        strong_blue = self._count(strong, box, self.NY_CODEX)
-        weak_blue = self._count(weak, box, self.NY_CODEX)
-        off_blue = self._count(off, box, self.NY_CODEX)
-        self.assertGreater(strong_blue, weak_blue)
-        self.assertGreater(weak_blue, 0)
-        self.assertEqual(off_blue, 0)
-        self.assertGreater(self._count(off, box, self.NY_MUTED), 0)
+        signatures = []
+        for bars in range(4):
+            counts = []
+            for surface in WIFI_GLOBAL_SURFACES:
+                image = self.image(f"torget-wifi-global-{surface}-{bars}.bmp")
+                with self.subTest(surface=surface, bars=bars):
+                    self.assertEqual(self._count(image, box, self.NY_CODEX), 0)
+                    self.assertEqual(self._count(image, box, self.NY_CLAUDE), 0)
+                    for x in range(408, 418):
+                        for y in range(21, 58):
+                            self.assertEqual(image.getpixel((x, y)), (0, 0, 0))
+                    counts.append((
+                        self._count(image, box, self.NY_WHITE),
+                        self._count(image, box, self.NY_MUTED),
+                    ))
+                    if bars < 3:
+                        self.assertGreater(
+                            counts[-1][1], 10,
+                            "the complete inactive silhouette must remain "
+                            "visible on the physical AMOLED",
+                        )
+            self.assertTrue(all(count == counts[0] for count in counts))
+            signatures.append(counts[0])
+        self.assertEqual(len(set(signatures)), 4)
+        self.assertGreater(signatures[0][0], 0)  # disconnected slash
+        self.assertGreater(signatures[0][1], 0)  # complete faint silhouette
+        for signature in signatures[1:]:
+            self.assertGreater(signature[0], 0)
+
+    def test_wifi_status_is_hidden_on_boot_and_foreground_on_overlays(self):
+        box = (418, 38, 446, 66)
+        for name in ("boot-cold", "boot-wifi", "boot-time"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    self.image(f"torget-{name}.bmp").crop(box).getbbox(), None
+                )
+        for name in ("ota-ring-open", "wifi-setup-qr"):
+            with self.subTest(name=name):
+                image = self.image(f"torget-{name}.bmp")
+                self.assertGreater(self._count(image, box, self.NY_WHITE), 0)
 
     def test_every_semantic_field_must_physically_fit_before_approval(self):
         fields = ("title", "subtitle", "description", "command", "tool")

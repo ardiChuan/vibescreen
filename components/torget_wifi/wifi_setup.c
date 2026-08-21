@@ -6,6 +6,7 @@
 #include <sys/time.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "lwip/sockets.h"
@@ -54,8 +55,25 @@ static atomic_bool s_open;
 static atomic_bool s_want_open;
 static atomic_bool s_want_close;
 static atomic_bool s_dns_stop;
-static _Atomic int64_t s_joined_at_us; /* satt av POST /join, läst av vakten */
-static char s_joined_ssid[TG_WIFI_SSID_CAP];
+static _Atomic tg_wifi_setup_phase s_phase;
+static TaskHandle_t s_guard_task;
+static SemaphoreHandle_t s_join_lock;
+static struct {
+  char ssid[TG_WIFI_SSID_CAP];
+  char pass[TG_WIFI_PASS_CAP];
+  uint32_t seq;
+} s_join_submission;
+static _Atomic tg_wifi_join_status s_join_status;
+
+static void join_submission_clear(void) {
+  if (!s_join_lock) return;
+  xSemaphoreTake(s_join_lock, portMAX_DELAY);
+  memset(s_join_submission.ssid, 0, sizeof s_join_submission.ssid);
+  memset(s_join_submission.pass, 0, sizeof s_join_submission.pass);
+  s_join_submission.seq = 0;
+  xSemaphoreGive(s_join_lock);
+  atomic_store(&s_join_status, TG_WIFI_JOIN_IDLE);
+}
 
 /* ------------------------------------------------------ AP-lösenordet */
 
@@ -149,22 +167,50 @@ static const char PAGE_HEAD[] =
     "color:#eaeaea;margin:0;padding:28px 20px;max-width:420px}"
     "h1{font-size:19px;letter-spacing:.08em;text-transform:uppercase}"
     "p{color:#9298a2;font-size:14px;line-height:1.5}"
+    "label{display:block;color:#c8cbd1;font-size:14px;margin-top:12px}"
     "select,input,button{font-size:17px;padding:12px;width:100%;"
     "box-sizing:border-box;margin:6px 0;border-radius:10px;"
     "border:1px solid #303238;background:#151517;color:#eaeaea}"
     "button{background:#eaeaea;color:#0b0b0c;font-weight:600;border:0;"
     "margin-top:14px}"
     "</style></head><body><h1>VibePulse</h1>"
-    "<p>Pick the network this panel should join. It is remembered, so the "
-    "next time you are here it joins by itself.</p>"
-    "<form method=\"POST\" action=\"/join\">"
-    "<select name=\"ssid\">";
+    "<p>Pick a 2.4 GHz network. It is saved only after the panel connects "
+    "successfully. 2.4 GHz only&mdash;5 GHz networks are not visible.</p>"
+    "<form method=\"POST\" action=\"/join\" "
+    "onsubmit=\"this.querySelector('button').disabled=true\">"
+    "<label for=\"ssid\">Wi-Fi network</label>"
+    "<select id=\"ssid\" name=\"ssid\">";
 
 static const char PAGE_TAIL[] =
     "</select>"
-    "<input name=\"pass\" type=\"password\" autocapitalize=\"off\" "
+    "<label for=\"pass\">Password</label>"
+    "<input id=\"pass\" name=\"pass\" type=\"password\" autocapitalize=\"off\" "
     "autocorrect=\"off\" placeholder=\"Password (leave blank if open)\">"
     "<button type=\"submit\">Join</button></form></body></html>";
+
+static const char JOIN_PAGE[] =
+    "<!doctype html><html><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+    "<title>VibePulse</title><style>"
+    "body{font-family:-apple-system,system-ui,sans-serif;background:#0b0b0c;"
+    "color:#eaeaea;margin:0;padding:28px 20px;max-width:420px}"
+    "h1{font-size:19px;letter-spacing:.08em;text-transform:uppercase}"
+    "p{color:#9298a2;font-size:16px;line-height:1.5}"
+    "a{display:none;color:#0b0b0c;background:#eaeaea;text-decoration:none;"
+    "font-weight:600;padding:13px;border-radius:10px;text-align:center}"
+    "</style></head><body><h1>VibePulse</h1>"
+    "<p id=\"result\">Connecting&hellip;</p><a id=\"retry\" href=\"/\">"
+    "Try again</a><script>"
+    "async function check(){try{const r=await fetch('/status',{cache:'no-store'});"
+    "const s=await r.json(),p=document.getElementById('result'),"
+    "a=document.getElementById('retry');"
+    "if(s.state==='connected'){p.textContent='Connected. This Wi-Fi is saved.';}"
+    "else if(s.state==='retry'){p.textContent=s.reason==='password'?"
+    "'That password did not work.':s.reason==='not-found'?"
+    "'Network not found. Check that it has 2.4 GHz Wi-Fi.':"
+    "'Could not connect. Please try again.';a.style.display='block';}"
+    "}catch(e){}}setInterval(check,750);check();"
+    "</script></body></html>";
 
 static esp_err_t page_get(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
@@ -213,30 +259,52 @@ static esp_err_t join_post(httpd_req_t *req) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid credentials");
     return ESP_FAIL;
   }
-  if (!tg_wifi_creds_remember(ssid, pass)) {
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "store failed");
+  if (!s_join_lock) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    httpd_resp_sendstr(req, "not ready");
     return ESP_FAIL;
   }
 
-  /* Vakten äger radion: den läser flaggan vid nästa poll och byter nät.
-   * Att koppla om härifrån vore att röra WiFi-stacken från httpd-tasken. */
-  snprintf(s_joined_ssid, sizeof s_joined_ssid, "%s", ssid);
-  atomic_store(&s_joined_at_us, esp_timer_get_time());
+  /* HTTP-tasken publicerar EN atomisk RAM-kopia. Bara vakten rör radion
+   * och först efter GOT_IP får kopian skrivas till NVS. */
+  xSemaphoreTake(s_join_lock, portMAX_DELAY);
+  snprintf(s_join_submission.ssid, sizeof s_join_submission.ssid, "%s", ssid);
+  snprintf(s_join_submission.pass, sizeof s_join_submission.pass, "%s", pass);
+  s_join_submission.seq++;
+  if (s_join_submission.seq == 0) s_join_submission.seq = 1;
+  xSemaphoreGive(s_join_lock);
+  atomic_store(&s_join_status, TG_WIFI_JOIN_CONNECTING);
+  if (s_guard_task) xTaskNotifyGive(s_guard_task);
 
-  char escaped[TG_WIFI_SSID_CAP * 6 + 1];
-  tg_wifi_html_escape(ssid, escaped, sizeof escaped);
-  char page[sizeof escaped + 512];
-  snprintf(page, sizeof page,
-           "<!doctype html><html><head><meta charset=\"utf-8\"><title>VibePulse"
-           "</title></head><body style=\"font-family:-apple-system,system-ui,"
-           "sans-serif;background:#0b0b0c;color:#eaeaea;padding:28px\">"
-           "<h1 style=\"font-size:19px\">Joining %s</h1>"
-           "<p style=\"color:#9298a2\">Watch the panel. This network is "
-           "remembered.</p></body></html>",
-           escaped);
   httpd_resp_set_type(req, "text/html");
-  httpd_resp_sendstr(req, page);
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_sendstr(req, JOIN_PAGE);
   ESP_LOGI(TAG, "nya uppgifter för \"%s\" mottagna", ssid);
+  return ESP_OK;
+}
+
+static esp_err_t status_get(httpd_req_t *req) {
+  const char *body = "{\"state\":\"connecting\"}";
+  switch (atomic_load(&s_join_status)) {
+    case TG_WIFI_JOIN_IDLE:
+    case TG_WIFI_JOIN_CONNECTING:
+      break;
+    case TG_WIFI_JOIN_CONNECTED:
+      body = "{\"state\":\"connected\"}";
+      break;
+    case TG_WIFI_JOIN_RETRY_PASSWORD:
+      body = "{\"state\":\"retry\",\"reason\":\"password\"}";
+      break;
+    case TG_WIFI_JOIN_RETRY_NOT_FOUND:
+      body = "{\"state\":\"retry\",\"reason\":\"not-found\"}";
+      break;
+    case TG_WIFI_JOIN_RETRY_CONNECTION:
+      body = "{\"state\":\"retry\",\"reason\":\"connection\"}";
+      break;
+  }
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_sendstr(req, body);
   return ESP_OK;
 }
 
@@ -343,10 +411,13 @@ static void server_start(void) {
     .uri = "/", .method = HTTP_GET, .handler = page_get };
   static const httpd_uri_t join = {
     .uri = "/join", .method = HTTP_POST, .handler = join_post };
+  static const httpd_uri_t status = {
+    .uri = "/status", .method = HTTP_GET, .handler = status_get };
   static const httpd_uri_t rest = {
     .uri = "/*", .method = HTTP_GET, .handler = catch_all_get };
   httpd_register_uri_handler(s_server, &root);
   httpd_register_uri_handler(s_server, &join);
+  httpd_register_uri_handler(s_server, &status);
   httpd_register_uri_handler(s_server, &rest);
 }
 
@@ -360,6 +431,8 @@ static size_t dma_log(const char *stage) {
   return largest;
 }
 
+static void window_close(void);
+
 static void window_open(void) {
   /* GRIND 1, före allt: ryms accesspunkten utan att närma sig flushens
    * DMA-tak? Ett vägrat fönster är en loggrad och ett nytt försök om en
@@ -367,9 +440,10 @@ static void window_open(void) {
   size_t largest = dma_log("före öppning");
   if (!tg_wifi_setup_dma_ok_to_open(largest, s_hooks->flush_dma_bytes)) {
     ESP_LOGW(TAG, "setupfönstret VÄGRAR öppna: DMA-blocket %u byte < "
-             "%d x flushens %u — hellre stängt än fryst glas",
+             "%d x flushens %u + %u reserv — hellre stängt än fryst glas",
              (unsigned)largest, TG_WIFI_SETUP_DMA_OPEN_FACTOR,
-             (unsigned)s_hooks->flush_dma_bytes);
+             (unsigned)s_hooks->flush_dma_bytes,
+             (unsigned)TG_WIFI_SETUP_DMA_OPEN_RESERVE_BYTES);
     return;
   }
 
@@ -428,7 +502,20 @@ static void window_open(void) {
   if (xTaskCreate(dns_task, "tg-wifi-dns", 3072, NULL, 4, NULL) != pdPASS)
     ESP_LOGW(TAG, "DNS-lögnaren startade inte — portalen nås via " AP_ADDRESS);
   server_start();
-  dma_log("fönstret uppe");
+
+  /* GRIND 3, efter den verkliga portalallokeringen. Startreserven ovan ska
+   * bära DNS- och httpd-taskarna, men mät utfallet i stället för att lita
+   * på uppskattningen. Publicera aldrig ett setupfönster som redan har ätit
+   * upp displayens etablerade x2-marginal. */
+  largest = dma_log("efter portalstart");
+  if (!tg_wifi_setup_dma_ok_to_continue(largest, s_hooks->flush_dma_bytes)) {
+    ESP_LOGE(TAG, "setupfönstret AVBRYTER: DMA-blocket %u byte < "
+             "%d x flushens %u efter portalstart — river innan glaset fryser",
+             (unsigned)largest, TG_WIFI_SETUP_DMA_ABORT_FACTOR,
+             (unsigned)s_hooks->flush_dma_bytes);
+    window_close();
+    return;
+  }
 
   atomic_store(&s_open, true);
   /* Lösenordet står på glaset, inte i loggen: den som läser serieloggen
@@ -446,10 +533,10 @@ static void window_close(void) {
    * själv; sockeln stängs där, inte här. */
   vTaskDelay(pdMS_TO_TICKS(1200));
 
+  if (s_hooks->credentials_abandoned) s_hooks->credentials_abandoned();
   esp_wifi_set_mode(WIFI_MODE_STA);
   atomic_store(&s_open, false);
-  atomic_store(&s_joined_at_us, 0);
-  s_joined_ssid[0] = '\0';
+  join_submission_clear();
   if (s_hooks->sta_pause) s_hooks->sta_pause(false);
   ESP_LOGI(TAG, "setupfönstret stängt");
 }
@@ -462,51 +549,117 @@ static void guard_task(void *arg) {
   int64_t opened_us = 0;
   int64_t last_close_us = 0;
   int64_t got_ip_us = 0;
-  bool applied = false;
+  tg_wifi_slot active_trial = {0};
+  uint32_t applied_seq = 0;
 
   for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(500));
+    /* Ett KEY3-håll väcker oss direkt. Timeouten behåller den vanliga
+     * nät-/autoöppningsvakten utan en separat timer eller busy-loop. */
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
 
     const int64_t now = esp_timer_get_time();
     const bool have_ip = s_hooks->have_ip && s_hooks->have_ip();
     const bool open = atomic_load(&s_open);
+    tg_wifi_setup_phase phase = atomic_load(&s_phase);
 
     if (have_ip) {
       /* Flanken false->true är den enda gången listan behöver skrivas om;
        * att göra det varje halvsekund vore rent flashslitage. */
       if (no_ip_since != 0 && s_hooks->ip_acquired) s_hooks->ip_acquired();
       no_ip_since = 0;
-      if (open && got_ip_us == 0) got_ip_us = now;
     } else if (no_ip_since == 0) {
       no_ip_since = now;
       got_ip_us = 0;
     }
 
     if (!open) {
+      if (phase == TG_WIFI_PHASE_FAILED &&
+          atomic_exchange(&s_want_close, false)) {
+        atomic_store(&s_phase, TG_WIFI_PHASE_IDLE);
+        torget_wifi_ui_set(TG_WIFI_UI_HIDDEN, NULL, NULL, NULL, 0);
+        last_close_us = now;
+        continue;
+      }
       bool asked = atomic_exchange(&s_want_open, false);
-      atomic_store(&s_want_close, false);
-      if (asked ||
-          tg_wifi_setup_should_open(have_ip, now, no_ip_since, last_close_us)) {
+      if (phase != TG_WIFI_PHASE_FAILED)
+        atomic_store(&s_want_close, false);
+      bool automatic = phase == TG_WIFI_PHASE_IDLE &&
+          tg_wifi_setup_should_open(have_ip, now, no_ip_since, last_close_us);
+      if (asked || automatic) {
         opened_us = now;
         got_ip_us = 0;
-        applied = false;
+        applied_seq = 0;
+        memset(&active_trial, 0, sizeof active_trial);
+        atomic_store(&s_phase, TG_WIFI_PHASE_STARTING);
+        torget_wifi_ui_set(TG_WIFI_UI_STARTING, NULL, NULL, NULL, 0);
         window_open();
         if (!atomic_load(&s_open)) { /* öppningen föll — försök inte i loop */
           opened_us = 0;
           last_close_us = now;
+          atomic_store(&s_phase, TG_WIFI_PHASE_FAILED);
+        } else {
+          atomic_store(&s_phase, TG_WIFI_PHASE_OPEN);
         }
       }
     } else {
-      /* Uppgifter mottagna: bygg om kandidatlistan EN gång och släpp
-       * STA:n fri mot det nya nätet. */
-      if (!applied && atomic_load(&s_joined_at_us) != 0) {
-        applied = true;
-        if (s_hooks->sta_pause) s_hooks->sta_pause(false);
-        if (s_hooks->creds_changed) s_hooks->creds_changed(s_joined_ssid);
+      /* POST-tasken får bara publicera RAM. Vakten kopierar en hel version
+       * under lås och provar varje version exakt en gång. */
+      uint32_t submitted_seq = 0;
+      bool applied_now = false;
+      if (s_join_lock) {
+        xSemaphoreTake(s_join_lock, portMAX_DELAY);
+        submitted_seq = s_join_submission.seq;
+        if (tg_wifi_join_should_apply(submitted_seq, applied_seq)) {
+          snprintf(active_trial.ssid, sizeof active_trial.ssid, "%s",
+                   s_join_submission.ssid);
+          snprintf(active_trial.pass, sizeof active_trial.pass, "%s",
+                   s_join_submission.pass);
+          active_trial.seq = submitted_seq;
+        }
+        xSemaphoreGive(s_join_lock);
       }
+
+      if (tg_wifi_join_should_apply(submitted_seq, applied_seq)) {
+        applied_now = true;
+        applied_seq = submitted_seq;
+        got_ip_us = 0;
+        atomic_store(&s_join_status, TG_WIFI_JOIN_CONNECTING);
+        atomic_store(&s_phase, TG_WIFI_PHASE_JOINING);
+        if (!s_hooks->try_credentials ||
+            !s_hooks->try_credentials(active_trial.ssid, active_trial.pass)) {
+          atomic_store(&s_join_status, TG_WIFI_JOIN_RETRY_CONNECTION);
+        }
+      }
+
+      tg_wifi_join_status join_status = atomic_load(&s_join_status);
+      if (join_status == TG_WIFI_JOIN_CONNECTING) {
+        if (!applied_now && have_ip) {
+          /* Detta är den enda skrivvägen: fungerande IP först, NVS sedan. */
+          if (tg_wifi_creds_remember(active_trial.ssid, active_trial.pass)) {
+            got_ip_us = now;
+            memset(active_trial.pass, 0, sizeof active_trial.pass);
+            atomic_store(&s_join_status, TG_WIFI_JOIN_CONNECTED);
+            atomic_store(&s_phase, TG_WIFI_PHASE_JOINED);
+            if (s_hooks->credentials_accepted)
+              s_hooks->credentials_accepted(active_trial.ssid);
+          } else {
+            atomic_store(&s_join_status, TG_WIFI_JOIN_RETRY_CONNECTION);
+            if (s_hooks->credentials_abandoned)
+              s_hooks->credentials_abandoned();
+          }
+        } else if (s_hooks->last_disconnect_reason) {
+          int reason = s_hooks->last_disconnect_reason();
+          if (reason != 0)
+            atomic_store(&s_join_status, tg_wifi_disconnect_status(reason));
+        }
+      }
+
       if (atomic_exchange(&s_want_close, false) ||
           tg_wifi_setup_should_close(now, opened_us, got_ip_us)) {
         window_close();
+        memset(&active_trial, 0, sizeof active_trial);
+        applied_seq = 0;
+        atomic_store(&s_phase, TG_WIFI_PHASE_IDLE);
         last_close_us = now;
         opened_us = 0;
       }
@@ -523,13 +676,33 @@ static void guard_task(void *arg) {
      * Setupfönstret är undantaget: window_open() stängde OTA-fönstret för
      * port 80, så konflikten kan inte uppstå där. */
     const bool now_open = atomic_load(&s_open);
-    if (!now_open && torget_ota_service_maintenance_open()) {
+    phase = atomic_load(&s_phase);
+    if (phase == TG_WIFI_PHASE_STARTING) {
+      torget_wifi_ui_set(TG_WIFI_UI_STARTING, NULL, NULL, NULL, 0);
+    } else if (phase == TG_WIFI_PHASE_FAILED) {
+      torget_wifi_ui_set(TG_WIFI_UI_FAILED, NULL, NULL,
+                         "TRY AGAIN WITH KEY3", 0);
+    } else if (!now_open && torget_ota_service_maintenance_open()) {
       torget_wifi_ui_set(TG_WIFI_UI_HIDDEN, NULL, NULL, NULL, 0);
     } else if (have_ip && !now_open) {
       torget_wifi_ui_set(TG_WIFI_UI_HIDDEN, NULL, NULL, NULL, 0);
-    } else if (now_open && atomic_load(&s_joined_at_us) != 0) {
-      torget_wifi_ui_set(have_ip ? TG_WIFI_UI_JOINED : TG_WIFI_UI_JOINING,
-                         s_joined_ssid, NULL, NULL, 0);
+    } else if (now_open && applied_seq != 0) {
+      tg_wifi_join_status status = atomic_load(&s_join_status);
+      tg_wifi_ui_state ui_state = TG_WIFI_UI_JOINING;
+      const char *detail = NULL;
+      if (status == TG_WIFI_JOIN_CONNECTED) {
+        ui_state = TG_WIFI_UI_JOINED;
+      } else if (status == TG_WIFI_JOIN_RETRY_PASSWORD) {
+        ui_state = TG_WIFI_UI_FAILED;
+        detail = "WRONG PASSWORD - TRY AGAIN ON PHONE";
+      } else if (status == TG_WIFI_JOIN_RETRY_NOT_FOUND) {
+        ui_state = TG_WIFI_UI_FAILED;
+        detail = "NOT FOUND - 2.4 GHZ ONLY";
+      } else if (status == TG_WIFI_JOIN_RETRY_CONNECTION) {
+        ui_state = TG_WIFI_UI_FAILED;
+        detail = "COULD NOT CONNECT - TRY AGAIN";
+      }
+      torget_wifi_ui_set(ui_state, active_trial.ssid, NULL, detail, 0);
     } else if (now_open) {
       int left = (int)((TG_WIFI_SETUP_WINDOW_US - (now - opened_us)) / 1000000);
       torget_wifi_ui_set(TG_WIFI_UI_OPEN, AP_SSID, s_ap_pass, NULL, left);
@@ -553,12 +726,44 @@ void torget_wifi_setup_start(const tg_wifi_setup_hooks *hooks) {
   if (!hooks) return;
   s_hooks = hooks;
   ESP_LOGI(TAG, "%d ihågkomna nät i NVS", tg_wifi_creds_count());
+  if (!s_join_lock) s_join_lock = xSemaphoreCreateMutex();
+  if (!s_join_lock) {
+    ESP_LOGE(TAG, "setupvakten saknar credential-lås — nya nät kräver USB");
+    return;
+  }
+  join_submission_clear();
   /* 5 kB, inte 4: vakten är den som får röra NVS åt värdlagret, och en
    * hel slotlista är 600 byte på stacken innan NVS ens börjat. */
-  if (xTaskCreate(guard_task, "tg-wifi-setup", 5120, NULL, 4, NULL) != pdPASS)
+  s_guard_task = NULL;
+  if (xTaskCreate(guard_task, "tg-wifi-setup", 5120, NULL, 4,
+                  &s_guard_task) != pdPASS) {
+    s_guard_task = NULL;
     ESP_LOGE(TAG, "setupvakten kunde inte skapas — nya nät kräver USB");
+  }
 }
 
-void torget_wifi_setup_request_open(void) { atomic_store(&s_want_open, true); }
-void torget_wifi_setup_request_close(void) { atomic_store(&s_want_close, true); }
+void torget_wifi_setup_request_open(void) {
+  if (!s_guard_task) return;
+  tg_wifi_setup_phase phase = atomic_load(&s_phase);
+  while (phase == TG_WIFI_PHASE_IDLE || phase == TG_WIFI_PHASE_FAILED) {
+    if (atomic_compare_exchange_weak(&s_phase, &phase,
+                                     TG_WIFI_PHASE_STARTING)) {
+      atomic_store(&s_want_close, false);
+      atomic_store(&s_want_open, true);
+      if (s_guard_task) xTaskNotifyGive(s_guard_task);
+      return;
+    }
+  }
+}
+
+void torget_wifi_setup_request_close(void) {
+  tg_wifi_setup_phase phase = atomic_load(&s_phase);
+  if (!tg_wifi_setup_can_close(phase)) return;
+  atomic_store(&s_want_close, true);
+  if (s_guard_task) xTaskNotifyGive(s_guard_task);
+}
+
 bool torget_wifi_setup_is_open(void) { return atomic_load(&s_open); }
+bool torget_wifi_setup_owns_input(void) {
+  return tg_wifi_setup_owns_input(atomic_load(&s_phase));
+}

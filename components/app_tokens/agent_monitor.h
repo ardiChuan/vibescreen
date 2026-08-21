@@ -11,12 +11,26 @@
 
 void tk_agent_monitor_create(lv_obj_t *app_root);
 void tk_agent_monitor_apply(const tk_agent_snapshot *snapshot, int64_t now_us);
+/* Replace only seq/Claude/Codex from authenticated status relay data. The
+ * independently selected LAN/relay pending interaction remains untouched. */
+void tk_agent_monitor_apply_status_relay(
+    const tk_agent_snapshot *snapshot, int64_t now_us);
 /* Apply only the encrypted relay slot. Agent rows and the independent LAN
  * pending slot remain untouched. Passing NULL/an absent item clears the relay
  * slot. The caller holds torget_ui_lock; this function performs no I/O. */
 void tk_agent_monitor_apply_relay(const tk_pending_interaction *pending,
                                   int64_t now_us);
 void tk_agent_monitor_tick(int64_t now_us);
+
+/* Content-free render diagnostics. Safe to log: counters contain no prompt,
+ * command, project, provider, or request identifier. */
+typedef struct {
+  uint32_t full_repaints;
+  uint32_t ring_updates;
+  uint32_t unchanged_ticks;
+} tk_agent_render_stats;
+void tk_agent_monitor_render_stats(tk_agent_render_stats *out);
+void tk_agent_monitor_render_stats_reset(void);
 
 /* Deterministisk simulatorväg; glastrycket går genom samma köfunktion. */
 void tk_agent_monitor_dismiss_current(void);

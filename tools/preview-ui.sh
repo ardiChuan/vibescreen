@@ -139,9 +139,13 @@ expected_names = {
     "torget-ota-ring-restarting.bmp",
     "torget-ota-ring-notice.bmp",
     "torget-wifi-searching.bmp",
+    "torget-wifi-starting.bmp",
     "torget-wifi-setup-open.bmp",
+    "torget-wifi-setup-qr.bmp",
+    "torget-wifi-setup-manual.bmp",
     "torget-wifi-joining.bmp",
     "torget-wifi-joined.bmp",
+    "torget-wifi-failed-password.bmp",
     "torget-vibepulse-value-ahead.bmp",
     "torget-vibepulse-value-early.bmp",
     "torget-vibepulse-value-wide.bmp",
@@ -190,6 +194,16 @@ expected_names = {
     "torget-vibepulse-needs-you-codex-payoff-exact-expiry.bmp",
     "torget-vibepulse-needs-you-codex-payoff-post-expiry.bmp",
 }
+wifi_global_surfaces = [
+    "launcher", "claude", "codex", "value", "github", "needs-you"
+]
+if (Path.home() / "Solelkollen/components/app_solelkollen").is_dir():
+    wifi_global_surfaces.append("companion")
+expected_names.update(
+    f"torget-wifi-global-{surface}-{bars}.bmp"
+    for surface in wifi_global_surfaces
+    for bars in range(4)
+)
 actual_names = {path.name for path in capture_dir.iterdir()}
 missing = sorted(expected_names - actual_names)
 unexpected = sorted(actual_names - expected_names)

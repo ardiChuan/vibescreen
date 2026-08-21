@@ -67,12 +67,40 @@ static void test_dismiss_without_takeover_is_a_no_op(void) {
         tg_notice_update(&policy, true, false, 2000) == TG_NOTICE_SHOW);
 }
 
+static void test_only_a_demonstrably_newer_build_is_available(void) {
+  check("same build is not an update",
+        !tg_notice_version_is_newer("v0.6.0-97-g1b6ba3a",
+                                    "v0.6.0-97-g1b6ba3a"));
+  check("older commit count is not an update",
+        !tg_notice_version_is_newer("v0.6.0-18-g3d88bb3-dirty",
+                                    "v0.6.0-97-g1b6ba3a"));
+  check("newer commit count is an update",
+        tg_notice_version_is_newer("v0.6.0-98-g1234567",
+                                   "v0.6.0-97-g1b6ba3a"));
+  check("newer release is an update",
+        tg_notice_version_is_newer("v0.7.0", "v0.6.0-97-g1b6ba3a"));
+  check("older release is not an update",
+        !tg_notice_version_is_newer("v0.5.0-999-g1234567", "v0.6.0"));
+  check("commit after an exact tag is newer",
+        tg_notice_version_is_newer("v0.7.0-1-g1234567", "v0.7.0"));
+  check("exact tag is older than a commit after that tag",
+        !tg_notice_version_is_newer("v0.7.0", "v0.7.0-1-g1234567"));
+  check("malformed advertisement fails closed",
+        !tg_notice_version_is_newer("newest", "v0.6.0-97-g1b6ba3a"));
+  check("trailing junk fails closed",
+        !tg_notice_version_is_newer("v0.7.0-surprise", "v0.6.0"));
+  check("overflow fails closed",
+        !tg_notice_version_is_newer("v999999999999999999999.0.0",
+                                    "v0.6.0"));
+}
+
 int main(void) {
   test_first_discovery_takes_over_immediately();
   test_dismiss_snoozes_then_nags_again();
   test_busy_device_is_never_taken_over();
   test_installed_update_silences_the_notice();
   test_dismiss_without_takeover_is_a_no_op();
+  test_only_a_demonstrably_newer_build_is_available();
   if (failures) {
     printf("%d failure(s)\n", failures);
     return 1;

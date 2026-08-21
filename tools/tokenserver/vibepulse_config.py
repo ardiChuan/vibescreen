@@ -30,6 +30,7 @@ _FIELDS = frozenset({
     "interaction_detail",
     "legacy_claude_panel_v1",
     "interaction_relay",
+    "agent_status_relay",
     "interaction_relay_url",
     "interaction_mailbox",
 })
@@ -56,6 +57,7 @@ class VibePulseConfig:
     interaction_detail: bool = False
     legacy_claude_panel_v1: bool = False
     interaction_relay: bool = False
+    agent_status_relay: bool = False
     interaction_relay_url: str | None = None
     interaction_mailbox: str | None = None
 
@@ -63,7 +65,7 @@ class VibePulseConfig:
         for field_name in (
                 "claude_interactions", "codex_interactions",
                 "interaction_detail", "legacy_claude_panel_v1",
-                "interaction_relay"):
+                "interaction_relay", "agent_status_relay"):
             if type(getattr(self, field_name)) is not bool:
                 raise ConfigError(
                     f"{field_name} must be a boolean")

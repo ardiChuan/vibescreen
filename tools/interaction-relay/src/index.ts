@@ -7,6 +7,7 @@ import {
   readEnvelope,
   REQUEST_CIPHERTEXT_BYTES,
   sha256Hex,
+  STATUS_CIPHERTEXT_BYTES,
   VERDICT_CIPHERTEXT_BYTES,
 } from "./envelope";
 
@@ -14,7 +15,8 @@ type Route =
   | { kind: "request_item"; mailbox: string; requestId: string }
   | { kind: "next_request"; mailbox: string }
   | { kind: "put_verdict"; mailbox: string; requestId: string }
-  | { kind: "list_verdicts"; mailbox: string };
+  | { kind: "list_verdicts"; mailbox: string }
+  | { kind: "status"; mailbox: string };
 
 type LogRoute =
   | "put_request"
@@ -22,6 +24,8 @@ type LogRoute =
   | "next_request"
   | "put_verdict"
   | "list_verdicts"
+  | "put_status"
+  | "get_status"
   | "unknown";
 
 export default {
@@ -88,7 +92,51 @@ async function dispatch(
       return request.method === "GET"
         ? { route: "list_verdicts", response: await listVerdicts(request, env) }
         : { route: "unknown", response: methodNotAllowed("GET") };
+    case "status":
+      if (request.method === "PUT") {
+        return {
+          route: "put_status",
+          response: await putStatus(request, env),
+        };
+      }
+      if (request.method === "GET") {
+        return {
+          route: "get_status",
+          response: await getStatus(request, env),
+        };
+      }
+      return { route: "unknown", response: methodNotAllowed("PUT, GET") };
   }
+}
+
+async function putStatus(request: Request, env: Env): Promise<Response> {
+  if (!await authorized(request, env.MAC_TOKEN)) {
+    return textResponse("Not found", 404);
+  }
+  const parsed = await readEnvelope(request, STATUS_CIPHERTEXT_BYTES);
+  if (!parsed.ok) {
+    return textResponse(statusText(parsed.status), parsed.status);
+  }
+  const hash = await sha256Hex(parsed.text);
+  const mailbox = env.INTERACTION_MAILBOX.getByName(env.MAILBOX_ID);
+  await mailbox.putStatus(parsed.text, hash, Date.now());
+  return emptyResponse(201);
+}
+
+async function getStatus(request: Request, env: Env): Promise<Response> {
+  if (!await authorized(request, env.PANEL_TOKEN)) {
+    return textResponse("Not found", 404);
+  }
+  const mailbox = env.INTERACTION_MAILBOX.getByName(env.MAILBOX_ID);
+  const status = await mailbox.getStatus(Date.now());
+  if (status === null) {
+    return emptyResponse(204);
+  }
+  return jsonResponse({
+    envelope: JSON.parse(status.envelope) as unknown,
+    expiresAtMs: status.expiresAtMs,
+    storedAtMs: status.storedAtMs,
+  });
 }
 
 async function putRequest(
@@ -219,9 +267,11 @@ function matchRoute(pathname: string): Route | null {
     return { kind: "put_verdict", mailbox: match[1], requestId: match[2] };
   }
   match = /^\/v1\/mailboxes\/(vp_[A-Za-z0-9_-]{16})\/verdicts$/.exec(pathname);
-  return match === null
-    ? null
-    : { kind: "list_verdicts", mailbox: match[1] };
+  if (match !== null) {
+    return { kind: "list_verdicts", mailbox: match[1] };
+  }
+  match = /^\/v1\/mailboxes\/(vp_[A-Za-z0-9_-]{16})\/status$/.exec(pathname);
+  return match === null ? null : { kind: "status", mailbox: match[1] };
 }
 
 async function authorized(request: Request, expected: string): Promise<boolean> {

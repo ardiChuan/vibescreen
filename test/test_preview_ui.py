@@ -72,9 +72,13 @@ EXPECTED_BMPS = {
     "torget-ota-ring-restarting.bmp",
     "torget-ota-ring-notice.bmp",
     "torget-wifi-searching.bmp",
+    "torget-wifi-starting.bmp",
     "torget-wifi-setup-open.bmp",
+    "torget-wifi-setup-qr.bmp",
+    "torget-wifi-setup-manual.bmp",
     "torget-wifi-joining.bmp",
     "torget-wifi-joined.bmp",
+    "torget-wifi-failed-password.bmp",
     "torget-vibepulse-value-ahead.bmp",
     "torget-vibepulse-value-early.bmp",
     "torget-vibepulse-value-wide.bmp",
@@ -123,6 +127,17 @@ EXPECTED_BMPS = {
     "torget-vibepulse-needs-you-codex-payoff-exact-expiry.bmp",
     "torget-vibepulse-needs-you-codex-payoff-post-expiry.bmp",
 }
+WIFI_GLOBAL_SURFACES = [
+    "launcher", "claude", "codex", "value", "github", "needs-you"
+]
+if (Path.home() / "Solelkollen/components/app_solelkollen").is_dir():
+    WIFI_GLOBAL_SURFACES.append("companion")
+WIFI_GLOBAL_BMPS = {
+    f"torget-wifi-global-{surface}-{bars}.bmp"
+    for surface in WIFI_GLOBAL_SURFACES
+    for bars in range(4)
+}
+EXPECTED_BMPS.update(WIFI_GLOBAL_BMPS)
 EXPECTED_PNGS = {
     f"{Path(name).stem.removeprefix('torget-')}.png"
     for name in EXPECTED_BMPS
@@ -196,9 +211,15 @@ class PreviewWiringTests(unittest.TestCase):
         self.assertIn("os.O_NOFOLLOW", self.script)
         self.assertIn("image.size != expected", self.script)
         self.assertIn("Preview directory:", self.script)
-        for name in EXPECTED_BMPS:
+        for name in EXPECTED_BMPS - WIFI_GLOBAL_BMPS:
             with self.subTest(name=name):
                 self.assertIn(name, self.script)
+        self.assertIn("wifi_global_surfaces", self.script)
+        self.assertIn('"launcher", "claude", "codex", "value", "github"',
+                      self.script)
+        self.assertIn('"needs-you"', self.script)
+        self.assertIn('"companion"', self.script)
+        self.assertIn('f"torget-wifi-global-{surface}-{bars}.bmp"', self.script)
 
     def test_simulator_uses_private_dir_nofollow_and_propagates_failures(self):
         self.assertIn('getenv("TORGET_CAPTURE_DIR")', self.sim)

@@ -36,6 +36,7 @@ class SavedConfigTests(unittest.TestCase):
         self.assertFalse(config.interaction_detail)
         self.assertFalse(config.legacy_claude_panel_v1)
         self.assertFalse(config.interaction_relay)
+        self.assertFalse(config.agent_status_relay)
         self.assertIsNone(config.interaction_relay_url)
         self.assertIsNone(config.interaction_mailbox)
         with self.assertRaises(dataclasses.FrozenInstanceError):
@@ -45,7 +46,7 @@ class SavedConfigTests(unittest.TestCase):
         for field in (
                 "claude_interactions", "codex_interactions",
                 "interaction_detail", "legacy_claude_panel_v1",
-                "interaction_relay"):
+                "interaction_relay", "agent_status_relay"):
             for value in (0, 1, "yes", None):
                 values = {field: value}
                 with self.subTest(field=field, value=value):
@@ -59,6 +60,7 @@ class SavedConfigTests(unittest.TestCase):
         object.__setattr__(forged, "interaction_detail", False)
         object.__setattr__(forged, "legacy_claude_panel_v1", False)
         object.__setattr__(forged, "interaction_relay", False)
+        object.__setattr__(forged, "agent_status_relay", False)
         object.__setattr__(forged, "interaction_relay_url", None)
         object.__setattr__(forged, "interaction_mailbox", None)
 
@@ -241,6 +243,7 @@ class SavedConfigTests(unittest.TestCase):
             interaction_detail=True,
             legacy_claude_panel_v1=True,
             interaction_relay=True,
+            agent_status_relay=True,
             interaction_relay_url="https://relay.example",
             interaction_mailbox="vp_A1b2C3d4E5f6G7h8",
         )
@@ -254,6 +257,7 @@ class SavedConfigTests(unittest.TestCase):
             "interaction_detail": True,
             "legacy_claude_panel_v1": True,
             "interaction_relay": True,
+            "agent_status_relay": True,
             "interaction_relay_url": "https://relay.example",
             "interaction_mailbox": "vp_A1b2C3d4E5f6G7h8",
         })
@@ -280,7 +284,7 @@ class SavedConfigTests(unittest.TestCase):
         for field in (
                 "claude_interactions", "codex_interactions",
                 "interaction_detail", "legacy_claude_panel_v1",
-                "interaction_relay"):
+                "interaction_relay", "agent_status_relay"):
             for value in (0, 1, "true", [], {}, None):
                 with self.subTest(field=field, value=value):
                     self.path.write_text(

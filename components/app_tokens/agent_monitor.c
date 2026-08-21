@@ -78,12 +78,6 @@ typedef struct {
   lv_obj_t *h_codex_icon;
   lv_obj_t *h_eyebrow;    /* PROVIDER NEEDS YOU · PROJECT */
 
-  /* Wi-Fi context, not transport/relay health: one shared 28px top-right
-   * object containing three arcs and their dot. */
-  lv_obj_t *wifi_group;
-  lv_obj_t *wifi_arc[3];
-  lv_obj_t *wifi_dot;
-
   /* QUESTION body */
   lv_obj_t *q_group;
   lv_obj_t *q_prompt;
@@ -136,8 +130,6 @@ typedef struct {
   uint8_t stage;
   uint8_t options_total;
   uint8_t provider;
-  uint8_t wifi_bars;
-  uint16_t ring_permille;
   char request_id[TK_PENDING_ID_CAP];
 } needs_you_key;
 
@@ -162,6 +154,9 @@ static struct {
   int64_t rendered_at_us;
   bool has_snapshot;
   bool suppress_click;
+  tk_agent_render_stats render_stats;
+  uint16_t rendered_ring_permille;
+  bool rendered_ring_valid;
 } mon;
 
 static lv_obj_t *bare(lv_obj_t *parent) {
@@ -657,6 +652,19 @@ static void ny_ring_set(lv_obj_t *arc, uint16_t permille) {
   uint32_t degrees = ((uint32_t)permille * 360u) / 1000u;
   if (degrees > 360u) degrees = 360u;
   lv_arc_set_angles(arc, 0, degrees);
+  mon.render_stats.ring_updates++;
+}
+
+static bool ny_ring_update(needs_you_view *view, ny_stage stage,
+                           bool private_view, uint16_t permille) {
+  if (mon.rendered_ring_valid &&
+      mon.rendered_ring_permille == permille) return false;
+  lv_obj_t *ring = stage == NY_ATTRACT ? view->a_ring
+                   : private_view ? view->pv_ring : view->h_ring;
+  ny_ring_set(ring, permille);
+  mon.rendered_ring_permille = permille;
+  mon.rendered_ring_valid = true;
+  return true;
 }
 
 /* A touch target: filled slab or outlined pill, ASCII-uppercase label centred,
@@ -702,19 +710,6 @@ static lv_obj_t *ny_codex_icon(lv_obj_t *parent, int x, int y) {
   return icon;
 }
 
-static lv_obj_t *ny_wifi_arc(needs_you_view *v, int size, int offset) {
-  lv_obj_t *arc = lv_arc_create(v->wifi_group);
-  lv_obj_remove_style_all(arc);
-  lv_obj_set_size(arc, size, size);
-  lv_obj_set_pos(arc, offset, offset);
-  lv_arc_set_rotation(arc, 225);
-  lv_arc_set_bg_angles(arc, 0, 90);
-  lv_obj_set_style_arc_width(arc, 3, LV_PART_MAIN);
-  lv_obj_set_style_arc_rounded(arc, true, LV_PART_MAIN);
-  lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
-  return arc;
-}
-
 static void create_needs_you(lv_obj_t *app_root) {
   needs_you_view *v = &mon.needs_you;
   const lv_text_align_t C = LV_TEXT_ALIGN_CENTER, L = LV_TEXT_ALIGN_LEFT;
@@ -737,20 +732,6 @@ static void create_needs_you(lv_obj_t *app_root) {
   lv_obj_set_style_border_opa(v->frame, LV_OPA_COVER, 0);
   lv_obj_set_style_border_width(v->frame, 2, 0);
   lv_obj_set_style_radius(v->frame, 40, 0);
-
-  /* A fixed lane shared by every Needs You stage. It describes the local
-   * Wi-Fi association only; no relay or server-health claim is encoded. */
-  v->wifi_group = bare(v->root);
-  lv_obj_set_pos(v->wifi_group, 418, 38);
-  lv_obj_set_size(v->wifi_group, 28, 28);
-  v->wifi_arc[0] = ny_wifi_arc(v, 28, 0);
-  v->wifi_arc[1] = ny_wifi_arc(v, 20, 4);
-  v->wifi_arc[2] = ny_wifi_arc(v, 12, 8);
-  v->wifi_dot = bare(v->wifi_group);
-  lv_obj_set_pos(v->wifi_dot, 12, 22);
-  lv_obj_set_size(v->wifi_dot, 4, 4);
-  lv_obj_set_style_radius(v->wifi_dot, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_opa(v->wifi_dot, LV_OPA_COVER, 0);
 
   /* -- ATTRACT: the across-the-room alert, ring carrying the countdown ------ */
   v->a_group = ny_group(v->root);
@@ -885,21 +866,8 @@ static void ny_hide_all_groups(needs_you_view *v) {
   ny_show(v->leave, false);
 }
 
-static void ny_set_wifi(needs_you_view *v, uint8_t bars, lv_color_t accent) {
-  if (bars > 3) bars = 3;
-  lv_color_t color = bars == 0 ? COL_MUTED : accent;
-  lv_obj_set_style_bg_color(v->wifi_dot, color, 0);
-  for (int i = 0; i < 3; i++) {
-    /* Stored outer-to-inner; one bar therefore exposes only the innermost
-     * arc, while disconnected keeps the complete silhouette in muted grey. */
-    bool visible = bars == 0 || (uint8_t)(3 - i) <= bars;
-    ny_show(v->wifi_arc[i], visible);
-    lv_obj_set_style_arc_color(v->wifi_arc[i], color, LV_PART_MAIN);
-  }
-}
-
 static void ny_set_provider(needs_you_view *v, bool codex,
-                            lv_color_t accent, uint8_t wifi_bars) {
+                            lv_color_t accent) {
   lv_obj_set_style_border_color(v->frame, accent, 0);
   lv_obj_set_style_arc_color(v->a_ring, accent, LV_PART_INDICATOR);
   lv_obj_set_style_arc_color(v->h_ring, accent, LV_PART_INDICATOR);
@@ -923,7 +891,6 @@ static void ny_set_provider(needs_you_view *v, bool codex,
   ny_show(v->pv_codex_icon, codex);
   ny_show(v->po_mascot, !codex);
   ny_show(v->po_codex_icon, codex);
-  ny_set_wifi(v, wifi_bars, accent);
 }
 
 /* Paint the stage the policy and the human's tap put us in. Reads
@@ -940,7 +907,6 @@ static void render_needs_you(void) {
   bool codex = paint_provider == TK_AGENT_PROVIDER_CODEX;
   lv_color_t accent = codex ? COL_CODEX : COL_CLAUDE;
   const char *provider = codex ? "CODEX" : "CLAUDE";
-  uint8_t wifi_bars = torget_wifi_signal_bars();
 
   /* PAYOFF is a device-side beat that outlives the answered interaction; it
    * owns the glass for its short static window, then falls back to the page. */
@@ -951,18 +917,21 @@ static void render_needs_you(void) {
     key.valid = true;
     key.stage = (uint8_t)NY_PAYOFF;
     key.provider = (uint8_t)paint_provider;
-    key.wifi_bars = wifi_bars;
     if (!mon.needs_you_rendered.valid ||
         memcmp(&mon.needs_you_rendered, &key, sizeof key) != 0) {
       memcpy(&mon.needs_you_rendered, &key, sizeof key);
+      mon.render_stats.full_repaints++;
+      mon.rendered_ring_valid = false;
       ny_hide_all_groups(v);
-      ny_set_provider(v, codex, accent, wifi_bars);
+      ny_set_provider(v, codex, accent);
       lv_label_set_text(v->po_echo, mon.echo);
       ny_show(v->po_echo, mon.echo[0] != '\0');
       ny_show(v->po_group, true);
+      ny_show(v->root, true);
+      lv_obj_move_foreground(v->root);
+    } else {
+      mon.render_stats.unchanged_ticks++;
     }
-    ny_show(v->root, true);
-    lv_obj_move_foreground(v->root);
     return;
   }
   if (mon.stage == NY_PAYOFF) { /* the static window elapsed */
@@ -980,6 +949,7 @@ static void render_needs_you(void) {
     mon.stage = NY_ATTRACT;
     mon.stage_id[0] = '\0';
     memset(&mon.needs_you_rendered, 0, sizeof mon.needs_you_rendered);
+    mon.rendered_ring_valid = false;
     return;
   }
 
@@ -1009,18 +979,19 @@ static void render_needs_you(void) {
   key.stage = (uint8_t)mon.stage;
   key.options_total = p->options_total;
   key.provider = (uint8_t)p->provider;
-  key.wifi_bars = wifi_bars;
-  key.ring_permille = decision.ring_permille;
   memcpy(key.request_id, p->request_id, sizeof key.request_id);
   if (mon.needs_you_rendered.valid &&
       memcmp(&mon.needs_you_rendered, &key, sizeof key) == 0) {
-    ny_show(v->root, true);
+    if (!ny_ring_update(v, mon.stage, is_private, decision.ring_permille))
+      mon.render_stats.unchanged_ticks++;
     return;
   }
   memcpy(&mon.needs_you_rendered, &key, sizeof key);
+  mon.render_stats.full_repaints++;
+  mon.rendered_ring_valid = false;
 
   ny_hide_all_groups(v);
-  ny_set_provider(v, codex, accent, wifi_bars);
+  ny_set_provider(v, codex, accent);
 
   char project[TK_AGENT_PROJECT_CAP];
   tk_agent_monitor_project_label(p->has_project ? p->project : "", project,
@@ -1028,7 +999,7 @@ static void render_needs_you(void) {
 
   /* -- ATTRACT ------------------------------------------------------------- */
   if (mon.stage == NY_ATTRACT) {
-    ny_ring_set(v->a_ring, decision.ring_permille);
+    ny_ring_update(v, mon.stage, false, decision.ring_permille);
     lv_label_set_text(v->a_project, project);
     ny_show(v->a_project, project[0] != '\0');
     ny_show(v->a_group, true);
@@ -1039,7 +1010,7 @@ static void render_needs_you(void) {
 
   /* -- PRIVATE: no buttons; a background tap hands off to the terminal ----- */
   if (is_private) {
-    ny_ring_set(v->pv_ring, decision.ring_permille);
+    ny_ring_update(v, mon.stage, true, decision.ring_permille);
     ny_show(v->pv_group, true);
     ny_show(v->root, true);
     lv_obj_move_foreground(v->root);
@@ -1047,7 +1018,7 @@ static void render_needs_you(void) {
   }
 
   /* -- Shared decision header --------------------------------------------- */
-  ny_ring_set(v->h_ring, decision.ring_permille);
+  ny_ring_update(v, mon.stage, false, decision.ring_permille);
   lv_image_set_src(v->h_mascot, is_question ? &tk_img_mascot_asking_4
                                             : &tk_img_mascot_neutral_4);
   char eyebrow[80];
@@ -1134,6 +1105,14 @@ void tk_agent_monitor_set_needs_you_cb(tk_agent_monitor_needs_you_cb cb) {
   mon.tk_needs_you_cb = cb;
 }
 
+void tk_agent_monitor_render_stats(tk_agent_render_stats *out) {
+  if (out) *out = mon.render_stats;
+}
+
+void tk_agent_monitor_render_stats_reset(void) {
+  memset(&mon.render_stats, 0, sizeof mon.render_stats);
+}
+
 /* Deterministic glass taps for the simulator and host tests. On the device the
  * same paths run from LVGL touch events; these let a headless run drive the
  * two-stage summon without synthesising input. */
@@ -1175,23 +1154,17 @@ static void select_pending(uint64_t now_ms) {
   }
 }
 
-void tk_agent_monitor_apply(const tk_agent_snapshot *snapshot,
-                            int64_t now_us) {
-  if (!snapshot) return;
-  mon.snapshot = *snapshot;
+static void apply_provider_render(int64_t now_us) {
   uint64_t now_ms = monitor_now_ms(now_us);
-  (void)tk_ir_policy_update_lan(&mon.interaction_policy, &snapshot->pending,
-                                now_ms);
-  select_pending(now_ms);
   mon.applied_at_us = now_us;
   mon.rendered_at_us = now_us;
   mon.has_snapshot = true;
   tk_completion_queue_apply(&mon.queue, &mon.snapshot, now_ms);
-  render_needs_you(); /* first: it decides whether completion yields the glass */
-  render_completion(now_us > 0 ? (uint64_t)now_us / 1000ULL : 0);
+  render_needs_you(); /* it decides whether completion yields the glass */
+  render_completion(now_ms);
 
   const tk_agent_provider_status *providers[2] = {
-      &snapshot->claude, &snapshot->codex,
+      &mon.snapshot.claude, &mon.snapshot.codex,
   };
   for (int provider = 0; provider < 2; provider++) {
     for (uint8_t i = 0; i < providers[provider]->job_count; i++) {
@@ -1202,6 +1175,27 @@ void tk_agent_monitor_apply(const tk_agent_snapshot *snapshot,
       }
     }
   }
+}
+
+void tk_agent_monitor_apply(const tk_agent_snapshot *snapshot,
+                            int64_t now_us) {
+  if (!snapshot) return;
+  mon.snapshot = *snapshot;
+  uint64_t now_ms = monitor_now_ms(now_us);
+  (void)tk_ir_policy_update_lan(&mon.interaction_policy, &snapshot->pending,
+                                now_ms);
+  select_pending(now_ms);
+  apply_provider_render(now_us);
+}
+
+void tk_agent_monitor_apply_status_relay(
+    const tk_agent_snapshot *snapshot, int64_t now_us) {
+  if (snapshot == NULL) return;
+  mon.snapshot.seq = snapshot->seq;
+  mon.snapshot.claude = snapshot->claude;
+  mon.snapshot.codex = snapshot->codex;
+  select_pending(monitor_now_ms(now_us));
+  apply_provider_render(now_us);
 }
 
 void tk_agent_monitor_apply_relay(const tk_pending_interaction *pending,

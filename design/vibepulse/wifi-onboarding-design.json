@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "deviceCapability": "display.amoled",
+  "canvas": {
+    "width": 480,
+    "height": 480
+  },
+  "wifi": {
+    "x": 418,
+    "y": 38,
+    "size": 28,
+    "scope": "global-top-layer",
+    "activeColor": "#FFFFFF",
+    "inactiveColor": "#9298A2",
+    "normalBars": [0, 1, 2, 3],
+    "setupBars": 3,
+    "disconnectedSlash": true,
+    "hiddenDuringBoot": true
+  },
+  "open": {
+    "wordY": 24,
+    "instructionY": 82,
+    "qrX": 142,
+    "qrY": 108,
+    "qrSize": 196,
+    "ssidY": 316,
+    "passwordY": 350,
+    "addressY": 404,
+    "footerY": 442
+  },
+  "fonts": {
+    "word": 52,
+    "instruction": 21,
+    "ssid": 27,
+    "password": 24,
+    "address": 21,
+    "footer": 21
+  }
+}

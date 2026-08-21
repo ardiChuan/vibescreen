@@ -11,9 +11,18 @@ usage_screen = (root / "components/app_tokens/usage_screen.c").read_text(
 agent_monitor = (root / "components/app_tokens/agent_monitor.c").read_text(
     encoding="utf-8"
 )
+agent_monitor_header = (
+    root / "components/app_tokens/agent_monitor.h"
+).read_text(encoding="utf-8")
 target_main = (root / "main/main.c").read_text(encoding="utf-8")
 sim_main = (root / "sim/main.c").read_text(encoding="utf-8")
 platform_header = (root / "platform/torget.h").read_text(encoding="utf-8")
+platform_ui = (root / "platform/torget_ui.c").read_text(encoding="utf-8")
+boot_screen = (root / "platform/boot_screen.c").read_text(encoding="utf-8")
+wifi_setup_ui = (root / "components/torget_wifi/wifi_setup_ui.c").read_text(
+    encoding="utf-8"
+)
+ota_ui = (root / "components/torget_ota/ota_ui.c").read_text(encoding="utf-8")
 wifi_state_header = (root / "main/wifi_signal_state.h").read_text(encoding="utf-8")
 tokens_app = (root / "components/app_tokens/app.c").read_text(encoding="utf-8")
 torget_http = (root / "components/torget_net/torget_http.c").read_text(
@@ -52,17 +61,38 @@ assert '"ALLOW ONCE"' in agent_monitor
 assert "COL_CODEX" in agent_monitor
 
 # The approved header leaves a hard lane for the radio indicator: the
-# provider/project eyebrow is ellipsized at x=148,w=260 and the Wi-Fi group is
-# the single 28px object rooted at (418,38).  The icon reports Wi-Fi only,
+# provider/project eyebrow is ellipsized at x=148,w=260.  The Wi-Fi group is
+# one provider-neutral top-layer object shared by every app and overlay, not a
+# second provider-colored copy inside Needs You.  It reports Wi-Fi only,
 # never relay health.
 assert "148, 46, 260" in agent_monitor
 assert "lv_label_set_long_mode(v->h_eyebrow, LV_LABEL_LONG_DOT)" in agent_monitor
-assert "lv_obj_set_pos(v->wifi_group, 418, 38)" in agent_monitor
-assert "lv_obj_set_size(v->wifi_group, 28, 28)" in agent_monitor
-assert agent_monitor.count("lv_arc_create(v->wifi_group)") == 1
-assert agent_monitor.count("ny_wifi_arc(v,") == 3
+assert "wifi_group" not in agent_monitor
+assert "wifi_bars" not in agent_monitor
+assert "lv_obj_set_pos(tg.wifi_group, 418, 38)" in platform_ui
+assert "lv_obj_set_size(tg.wifi_group, 28, 28)" in platform_ui
+assert platform_ui.count("wifi_arc_create(") == 4  # helper + three calls
+assert "lv_line_create(tg.wifi_group)" in platform_ui
+assert "lv_layer_top()" in platform_ui
+assert "TG_WIFI_STATUS_NORMAL" in platform_header
+assert "TG_WIFI_STATUS_SETUP" in platform_header
+assert "TG_WIFI_STATUS_HIDDEN" in platform_header
+assert "void torget_wifi_status_set_mode(tg_wifi_status_mode mode);" in platform_header
+assert "void torget_wifi_status_foreground(void);" in platform_header
 assert "uint8_t torget_wifi_signal_bars(void);" in platform_header
 assert "Never implies relay health" in platform_header
+
+# Full-screen overlays move themselves first, then deliberately lift the one
+# shared indicator.  Setup forces the complete symbol; ordinary OTA uses live
+# signal strength.  Boot keeps it hidden until the one-time handoff.
+wifi_foreground = wifi_setup_ui.index("lv_obj_move_foreground(ui.overlay)")
+assert wifi_setup_ui.index("torget_wifi_status_foreground()", wifi_foreground) > wifi_foreground
+ota_foreground = ota_ui.index("lv_obj_move_foreground(ui.overlay)")
+assert ota_ui.index("torget_wifi_status_foreground()", ota_foreground) > ota_foreground
+assert "torget_wifi_status_set_mode(TG_WIFI_STATUS_SETUP)" in wifi_setup_ui
+assert "torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL)" in wifi_setup_ui
+assert "torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL)" in ota_ui
+assert "torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL)" in boot_screen
 
 # Target sampling is lock-free and stays out of LVGL; the simulator supplies a
 # deterministic fixture through the same platform API.
@@ -89,6 +119,15 @@ assert "392, 20" in agent_monitor
 assert "432, 62" in agent_monitor
 assert "24, 182, 432" in agent_monitor
 assert "payoff_provider" in agent_monitor
+
+# The 10 Hz countdown may mutate only its visible arc.  Stable copy/provider/
+# button state must not be keyed on ring_permille and fully repainted.  Target
+# diagnostics expose counters only (never interaction content) and reset every
+# ten-second heap sample.
+assert "uint16_t ring_permille;" not in agent_monitor
+assert "tk_agent_render_stats" in agent_monitor_header
+assert "needs-you render: full=%u ring=%u unchanged=%u" in target_main
+assert "tk_agent_monitor_render_stats_reset();" in target_main
 
 # Connectivity becomes public only after the EventGroup and compact signal
 # state agree; readers can never observe bars contradicting WIFI_GOT_IP.

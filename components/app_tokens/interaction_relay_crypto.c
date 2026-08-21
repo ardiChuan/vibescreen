@@ -11,11 +11,13 @@
 #include <stdio.h>
 #include <string.h>
 
-#define TK_IR_B64_TEMP_BYTES 2756u
+#define TK_IR_B64_TEMP_BYTES 3800u
 #define TK_IR_REQUEST_CIPHERTEXT_BYTES \
   (TK_IR_REQUEST_FRAME_BYTES + TK_IR_TAG_BYTES)
 #define TK_IR_VERDICT_CIPHERTEXT_BYTES \
   (TK_IR_VERDICT_FRAME_BYTES + TK_IR_TAG_BYTES)
+#define TK_IR_STATUS_CIPHERTEXT_BYTES \
+  (TK_IR_STATUS_FRAME_BYTES + TK_IR_TAG_BYTES)
 
 static const uint8_t k_protocol[] = "vibepulse-ir/v1";
 static const uint8_t k_salt_input[] = "VibePulse interaction relay v1";
@@ -152,6 +154,9 @@ tk_ir_error_t tk_ir_derive_keys(const char *device_key_hex,
   if (result != TK_IR_OK) goto done;
   result = hkdf_label(device_key, salt, mailbox, "panel-verdict-mac",
                       out->verdict_mac);
+  if (result != TK_IR_OK) goto done;
+  result = hkdf_label(device_key, salt, mailbox,
+                      "mac-to-panel-status-aead", out->status_aead);
 done:
   wipe(device_key, sizeof device_key);
   wipe(salt, sizeof salt);
@@ -329,6 +334,16 @@ static tk_ir_error_t make_aad(const char *mailbox, const char *request_id,
   return TK_IR_OK;
 }
 
+static tk_ir_error_t make_status_aad(const char *mailbox, uint8_t *out,
+                                     size_t cap, size_t *len) {
+  if (!mailbox_valid(mailbox)) return TK_IR_ERR_FORMAT;
+  int written = snprintf((char *)out, cap, "%s|%s|status",
+                         (const char *)k_protocol, mailbox);
+  if (written < 0 || (size_t)written >= cap) return TK_IR_ERR_CAPACITY;
+  *len = (size_t)written;
+  return TK_IR_OK;
+}
+
 static tk_ir_error_t gcm_decrypt_request(
     const tk_ir_keys_t *keys, const uint8_t nonce[TK_IR_NONCE_BYTES],
     const uint8_t *ciphertext, const uint8_t *aad, size_t aad_len,
@@ -342,6 +357,25 @@ static tk_ir_error_t gcm_decrypt_request(
         &context, TK_IR_REQUEST_FRAME_BYTES,
         nonce, TK_IR_NONCE_BYTES, aad, aad_len,
         ciphertext + TK_IR_REQUEST_FRAME_BYTES, TK_IR_TAG_BYTES,
+        ciphertext, frame);
+  }
+  mbedtls_gcm_free(&context);
+  return result == 0 ? TK_IR_OK : TK_IR_ERR_AUTH;
+}
+
+static tk_ir_error_t gcm_decrypt_status(
+    const tk_ir_keys_t *keys, const uint8_t nonce[TK_IR_NONCE_BYTES],
+    const uint8_t *ciphertext, const uint8_t *aad, size_t aad_len,
+    uint8_t *frame) {
+  mbedtls_gcm_context context;
+  mbedtls_gcm_init(&context);
+  int result = mbedtls_gcm_setkey(
+      &context, MBEDTLS_CIPHER_ID_AES, keys->status_aead, 256);
+  if (result == 0) {
+    result = mbedtls_gcm_auth_decrypt(
+        &context, TK_IR_STATUS_FRAME_BYTES,
+        nonce, TK_IR_NONCE_BYTES, aad, aad_len,
+        ciphertext + TK_IR_STATUS_FRAME_BYTES, TK_IR_TAG_BYTES,
         ciphertext, frame);
   }
   mbedtls_gcm_free(&context);
@@ -473,6 +507,88 @@ tk_ir_error_t tk_ir_decode_request(
 done:
   wipe(nonce, sizeof nonce);
   wipe(aad, sizeof aad);
+  if (work != NULL) wipe(work, work_cap);
+  if (result != TK_IR_OK && out != NULL) wipe(out, sizeof *out);
+  return result;
+}
+
+static uint32_t read_be32(const uint8_t *value) {
+  return ((uint32_t)value[0] << 24) | ((uint32_t)value[1] << 16) |
+         ((uint32_t)value[2] << 8) | (uint32_t)value[3];
+}
+
+static uint64_t read_be64(const uint8_t *value) {
+  uint64_t result = 0;
+  for (size_t i = 0; i < 8; ++i) result = (result << 8) | value[i];
+  return result;
+}
+
+tk_ir_error_t tk_ir_decode_status(
+    const tk_ir_keys_t *keys, const char *mailbox,
+    const uint8_t *envelope, size_t envelope_len, tk_ir_status_t *out,
+    uint8_t *work, size_t work_cap) {
+  tk_ir_error_t result = TK_IR_ERR_ARGUMENT;
+  uint8_t nonce[TK_IR_NONCE_BYTES] = {0};
+  uint8_t aad[96] = {0};
+  uint8_t calculated[TK_IR_KEY_BYTES] = {0};
+  size_t nonce_len = 0, cipher_len = 0, aad_len = 0;
+  outer_fields_t fields = {0};
+  if (out != NULL) wipe(out, sizeof *out);
+  if (keys == NULL || mailbox == NULL || envelope == NULL || out == NULL ||
+      work == NULL) {
+    goto done;
+  }
+  if (work_cap < TK_IR_WORK_BYTES || envelope_len > TK_IR_MAX_ENVELOPE_BYTES) {
+    result = TK_IR_ERR_CAPACITY;
+    goto done;
+  }
+  uint8_t *b64 = work;
+  uint8_t *ciphertext = work + TK_IR_B64_TEMP_BYTES;
+  uint8_t *frame = ciphertext + TK_IR_STATUS_CIPHERTEXT_BYTES;
+  result = parse_outer(envelope, envelope_len, &fields);
+  if (result != TK_IR_OK) goto done;
+  result = tk_ir_b64url_decode(
+      (const char *)fields.nonce, fields.nonce_len,
+      nonce, sizeof nonce, &nonce_len, b64, TK_IR_B64_TEMP_BYTES);
+  if (result != TK_IR_OK || nonce_len != sizeof nonce) {
+    result = TK_IR_ERR_FORMAT;
+    goto done;
+  }
+  result = tk_ir_b64url_decode(
+      (const char *)fields.ciphertext, fields.ciphertext_len,
+      ciphertext, TK_IR_STATUS_CIPHERTEXT_BYTES, &cipher_len,
+      b64, TK_IR_B64_TEMP_BYTES);
+  if (result != TK_IR_OK || cipher_len != TK_IR_STATUS_CIPHERTEXT_BYTES) {
+    result = TK_IR_ERR_FORMAT;
+    goto done;
+  }
+  result = make_status_aad(mailbox, aad, sizeof aad, &aad_len);
+  if (result != TK_IR_OK) goto done;
+  result = gcm_decrypt_status(keys, nonce, ciphertext, aad, aad_len, frame);
+  if (result != TK_IR_OK) goto done;
+  if (memcmp(frame, "VPS1", 4) != 0) {
+    result = TK_IR_ERR_FORMAT;
+    goto done;
+  }
+  out->publication_id = read_be64(frame + 4);
+  out->expires_at = read_be32(frame + 12);
+  out->status_len = ((size_t)frame[16] << 8) | frame[17];
+  if (out->publication_id == 0 || out->expires_at == 0 ||
+      out->status_len == 0 || out->status_len > TK_IR_MAX_STATUS_BYTES) {
+    result = TK_IR_ERR_FORMAT;
+    goto done;
+  }
+  memcpy(out->status_sha256, frame + 18, TK_IR_KEY_BYTES);
+  memcpy(out->status, frame + 50, out->status_len);
+  result = tk_ir_sha256(out->status, out->status_len, calculated);
+  if (result == TK_IR_OK && !constant_equal(
+          calculated, out->status_sha256, sizeof calculated)) {
+    result = TK_IR_ERR_DIGEST;
+  }
+done:
+  wipe(nonce, sizeof nonce);
+  wipe(aad, sizeof aad);
+  wipe(calculated, sizeof calculated);
   if (work != NULL) wipe(work, work_cap);
   if (result != TK_IR_OK && out != NULL) wipe(out, sizeof *out);
   return result;

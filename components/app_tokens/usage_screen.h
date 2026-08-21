@@ -19,6 +19,8 @@ void usage_screen_create(lv_obj_t *root);
 void usage_screen_apply_tokens(const tk_tokens *tokens);
 void usage_screen_apply_agent(const tk_agent_snapshot *snapshot,
                               int64_t now_us);
+void usage_screen_apply_agent_status_relay(
+    const tk_agent_snapshot *snapshot, int64_t now_us);
 void usage_screen_apply_max_tracker(const tk_max_tracker *t);
 void usage_screen_apply_github(const tk_github_status *status);
 void usage_screen_tick(int64_t now_us);

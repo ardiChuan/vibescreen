@@ -24,8 +24,23 @@ agent_monitor = (root / "components/app_tokens/agent_monitor.c").read_text(
 agent_monitor_header = (
     root / "components/app_tokens/agent_monitor.h"
 ).read_text(encoding="utf-8")
+usage_screen = (
+    root / "components/app_tokens/usage_screen.c"
+).read_text(encoding="utf-8")
+kconfig = (root / "main/Kconfig.projbuild").read_text(encoding="utf-8")
+source_policy = root / "components/app_tokens/agent_status_source_policy.c"
 
 assert '"agent_net.c"' in target_cmake, "target must compile agent_net.c"
+assert source_policy.exists(), "agent-status source policy must be portable C"
+assert 'config TK_VIBEPULSE_AGENT_STATUS_RELAY' in kconfig
+assert re.search(
+    r'config TK_VIBEPULSE_AGENT_STATUS_RELAY.*?default n',
+    kconfig, re.DOTALL), "live status relay must remain default off"
+assert re.search(
+    r'if\(CONFIG_TK_VIBEPULSE_INTERACTION_RELAY OR '
+    r'CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY\)', target_cmake), (
+    "relay crypto/net sources must compile when either feature is selected"
+)
 assert "../components/app_tokens/agent_net.c" not in sim_cmake, (
     "simulator must never compile agent_net.c"
 )
@@ -71,6 +86,40 @@ for operation in (
 assert "esp_http_client_cleanup(" not in source, (
     "the long-lived polling task must not destroy its client per poll"
 )
+assert re.search(
+    r"tk_agent_source_note_lan\([^;]+;\s*"
+    r"usage_screen_apply_agent\(snapshot, now_us\);", app, re.DOTALL
+), "a valid direct LAN snapshot must establish precedence before applying"
+
+relay_net = (
+    root / "components/app_tokens/interaction_relay_net.c"
+).read_text(encoding="utf-8")
+for required in (
+    "tk_ir_decode_status(",
+    "tk_agent_status_parse_relay(",
+    "tokens_apply_agent_status_relay(",
+    "tokens_clear_agent_status_relay(",
+):
+    assert required in relay_net, f"missing encrypted status path: {required}"
+assert "#include \"lvgl.h\"" not in relay_net
+assert "lv_" not in relay_net, "network task must not call LVGL"
+status_monitor = agent_monitor[
+    agent_monitor.index("void tk_agent_monitor_apply_status_relay"):
+    agent_monitor.index("void tk_agent_monitor_apply_relay")
+]
+for assignment in (
+        "mon.snapshot.seq = snapshot->seq;",
+        "mon.snapshot.claude = snapshot->claude;",
+        "mon.snapshot.codex = snapshot->codex;"):
+    assert assignment in status_monitor
+assert "mon.snapshot.pending =" not in status_monitor
+assert "mon.snapshot = *snapshot" not in status_monitor
+status_screen = usage_screen[
+    usage_screen.index("void usage_screen_apply_agent_status_relay"):
+    usage_screen.index("void usage_screen_tick")
+]
+assert "ui.agent_snapshot.pending =" not in status_screen
+assert "ui.agent_snapshot = *snapshot" not in status_screen
 assert re.search(r"static\s+tk_agent_http_response\s+response\s*;", source), (
     "the 1536-byte response state must live in static .bss"
 )

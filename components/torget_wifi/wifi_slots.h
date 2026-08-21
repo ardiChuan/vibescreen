@@ -51,6 +51,43 @@ typedef struct {
 #define TG_WIFI_SETUP_WINDOW_US   (600LL * 1000000LL)
 #define TG_WIFI_SETUP_LINGER_US   (5LL * 1000000LL)
 
+/* Setupfönstrets synliga livscykel. STARTING finns uttryckligen eftersom
+ * accesspunkt + skanning tar sekunder: knappen och glaset måste ägas redan
+ * när användarens håll godkänns, inte först när AP:n är färdig. */
+typedef enum {
+  TG_WIFI_PHASE_IDLE = 0,
+  TG_WIFI_PHASE_STARTING,
+  TG_WIFI_PHASE_OPEN,
+  TG_WIFI_PHASE_JOINING,
+  TG_WIFI_PHASE_JOINED,
+  TG_WIFI_PHASE_FAILED,
+} tg_wifi_setup_phase;
+
+/* Telefonportalens anslutningsresultat. Bara denna grova status lämnar
+ * panelen via /status; SSID och lösenord gör det aldrig. */
+typedef enum {
+  TG_WIFI_JOIN_IDLE = 0,
+  TG_WIFI_JOIN_CONNECTING,
+  TG_WIFI_JOIN_CONNECTED,
+  TG_WIFI_JOIN_RETRY_PASSWORD,
+  TG_WIFI_JOIN_RETRY_NOT_FOUND,
+  TG_WIFI_JOIN_RETRY_CONNECTION,
+} tg_wifi_join_status;
+
+/* Ett versionsnummer gör att samma formulärpost aldrig appliceras två
+ * gånger av vakten, men en ny post alltid kan prova igen. Noll betyder
+ * "ingen post". */
+bool tg_wifi_join_should_apply(uint32_t submitted, uint32_t applied);
+
+/* Översätt ESP-IDF:s stabila disconnect-koder till begriplig, hemlighetsfri
+ * portalstatus. Noll betyder att radion fortfarande försöker. */
+tg_wifi_join_status tg_wifi_disconnect_status(int reason);
+
+/* Alla synliga faser äger KEY3. STARTING slukar däremot den utlösande
+ * knappens släpp i stället för att omedelbart stänga eller växla app. */
+bool tg_wifi_setup_owns_input(tg_wifi_setup_phase phase);
+bool tg_wifi_setup_can_close(tg_wifi_setup_phase phase);
+
 /* Så länge utan IP innan nätsidan tar glaset. Sextio sekunder är valt mot
  * två grannar: bootskärmen äger de första 45 (den ger upp där, och två
  * lager som slåss om samma pixlar hjälper ingen), och en router som startar
@@ -114,21 +151,22 @@ bool tg_wifi_search_ui_visible(bool have_ip, int64_t now_us,
  * system bakom (obducerat 2026-08-16, och huvudmisstänkt i kilningen
  * 2026-08-17 när accesspunkten kördes första gången på riktig hårdvara).
  *
- * ÖPPNA kräver x3, FORTSÄTT (mätt igen efter APSTA-bytet, den dyra biten)
- * kräver x2 — under det river vi hellre fönstret än fryser glaset. Ett
- * vägrat fönster är en loggrad och ett nytt försök senare; en fryst panel
- * är en USB-räddning.
+ * ÖPPNA kräver x2 plus en fast 8 KiB-startreserv för portalens taskar.
+ * FORTSÄTT (mätt igen efter APSTA-bytet, den dyra biten) kräver x2 — under
+ * det river vi hellre fönstret än fryser glaset. Ett vägrat fönster är en
+ * loggrad och ett nytt försök senare; en fryst panel är en USB-räddning.
  *
- * Kalibrering mot UPPMÄTT verklighet, inte känsla: v0.5.0:s friska
- * baslinje på torget-home-01 är 40960-47104 byte största DMA-block
- * (serielogg 2026-08-18). Den första faktorn var 4 — men 4 x 11520 =
- * 46080 hade rutinmässigt vägrat en FRISK panel på 40 kB, och en grind
- * som dödar funktionen den skyddar är fel grind. x3 = 34560 släpper
- * baslinjen igenom med marginal; x2-avbrottet efter APSTA är samma
- * tröskel som heap-larmet i main.c redan varnar vid. Faktorerna omprövas
- * mot daa6bf1:s uppmätta tal när den övervakade körningen görs.
+ * Kalibrering mot UPPMÄTT verklighet, inte känsla: v0.7.0 med den rättade
+ * 256 KiB LVGL-poolen, Wi-Fi-signalen och reläklienten har en stabil frisk
+ * baslinje på 31744 byte på torget-home-01 (serielogg 2026-08-21). Den
+ * gamla x3-grinden krävde 34560 och gjorde därför telefonsetup omöjlig.
+ * 2 x 11520 + 8192 = 31232 släpper den friska panelen igenom men behåller
+ * både den etablerade x2-frysvarningen och en uttrycklig startreserv. Den
+ * gamla kilningens rotorsak är dessutom fastställd: den effektiva LVGL-
+ * poolen var 96 KiB, inte 256 KiB; DMA-brist var bara den tidiga hypotesen.
  */
-#define TG_WIFI_SETUP_DMA_OPEN_FACTOR  3
+#define TG_WIFI_SETUP_DMA_OPEN_FACTOR  2
+#define TG_WIFI_SETUP_DMA_OPEN_RESERVE_BYTES 8192u
 #define TG_WIFI_SETUP_DMA_ABORT_FACTOR 2
 
 bool tg_wifi_setup_dma_ok_to_open(size_t largest_dma, size_t flush_bytes);

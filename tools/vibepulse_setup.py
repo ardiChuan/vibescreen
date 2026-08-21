@@ -179,6 +179,16 @@ def _parser() -> argparse.ArgumentParser:
         "doctor", help="validate relay setup without changing anything")
     relay_commands.add_parser(
         "disable", help="turn off relay traffic but keep its credentials")
+    relay_status_enable = relay_commands.add_parser(
+        "enable-status",
+        help="opt in to E2E-encrypted live agent status through the relay")
+    relay_status_enable.add_argument(
+        "--yes-e2e-cloud", action="store_true",
+        help="confirm that minimized E2E-encrypted live status may cross "
+             "the user-owned cloud mailbox")
+    relay_commands.add_parser(
+        "disable-status",
+        help="turn off live status relay traffic but keep credentials")
     relay_uninstall = relay_commands.add_parser(
         "uninstall", help="remove only encrypted-relay settings")
     worker = relay_uninstall.add_mutually_exclusive_group()
@@ -225,6 +235,7 @@ def _chosen_config(providers: str, detail: bool,
         legacy_claude_panel_v1=(legacy_claude_panel_v1 and
                                 providers in {"claude", "both"}),
         interaction_relay=saved.interaction_relay,
+        agent_status_relay=saved.agent_status_relay,
         interaction_relay_url=saved.interaction_relay_url,
         interaction_mailbox=saved.interaction_mailbox,
     )
@@ -240,6 +251,7 @@ def _disabled_config(saved: VibePulseConfig, target: str) -> VibePulseConfig:
         legacy_claude_panel_v1=(saved.legacy_claude_panel_v1
                                 if target == "codex" else False),
         interaction_relay=saved.interaction_relay,
+        agent_status_relay=saved.agent_status_relay,
         interaction_relay_url=saved.interaction_relay_url,
         interaction_mailbox=saved.interaction_mailbox,
     )
@@ -259,12 +271,27 @@ def _relay_config(saved: VibePulseConfig, *, enabled: bool,
         interaction_detail=saved.interaction_detail,
         legacy_claude_panel_v1=saved.legacy_claude_panel_v1,
         interaction_relay=enabled,
+        agent_status_relay=saved.agent_status_relay,
         interaction_relay_url=(None if clear else
                                (saved.interaction_relay_url
                                 if url is None else url)),
         interaction_mailbox=(None if clear else
                              (saved.interaction_mailbox
                               if mailbox is None else mailbox)),
+    )
+
+
+def _agent_status_relay_config(
+        saved: VibePulseConfig, *, enabled: bool) -> VibePulseConfig:
+    return VibePulseConfig(
+        claude_interactions=saved.claude_interactions,
+        codex_interactions=saved.codex_interactions,
+        interaction_detail=saved.interaction_detail,
+        legacy_claude_panel_v1=saved.legacy_claude_panel_v1,
+        interaction_relay=saved.interaction_relay,
+        agent_status_relay=enabled,
+        interaction_relay_url=saved.interaction_relay_url,
+        interaction_mailbox=saved.interaction_mailbox,
     )
 
 
@@ -908,6 +935,87 @@ def _relay_disable(path: Path, stdout) -> bool:
     return True
 
 
+def _relay_ownership_probe(
+        config: VibePulseConfig, token: str, urlopen) -> bool:
+    if (config.interaction_relay_url is None or
+            config.interaction_mailbox is None or
+            not _valid_bearer(token)):
+        return False
+    endpoint = (
+        config.interaction_relay_url.rstrip("/") +
+        f"/v1/mailboxes/{config.interaction_mailbox}/verdicts")
+    request = urllib.request.Request(
+        endpoint,
+        headers={
+            "Accept": "application/json",
+            "Authorization": "Bearer " + token,
+        },
+        method="GET")
+    open_url = _default_urlopen if urlopen is _AUTO else urlopen
+    try:
+        with open_url(
+                request, timeout=NETWORK_TIMEOUT_SECONDS) as response:
+            status_code = getattr(response, "status", None)
+            if status_code == 204:
+                return response.read(1) == b""
+            if status_code != 200 or not _response_content_type(response):
+                return False
+            raw = response.read(MAX_DIAGNOSTIC_BYTES + 1)
+        if not isinstance(raw, bytes) or len(raw) > MAX_DIAGNOSTIC_BYTES:
+            return False
+        payload = _strict_json(raw.decode("utf-8", errors="strict"))
+        return (isinstance(payload, dict) and set(payload) == {"verdicts"} and
+                isinstance(payload["verdicts"], list))
+    except (OSError, UnicodeError, ValueError, RecursionError, TimeoutError):
+        return False
+
+
+def _relay_enable_status(
+        *, path: Path, consent: bool, token_path: Path,
+        secrets_path: Path, urlopen, stdout) -> bool:
+    if not consent:
+        print("FIX E2E cloud consent is required before live status is "
+              "enabled", file=stdout)
+        return False
+    with config_lock(_setup_transaction_path(path)):
+        with config_lock(path):
+            snapshot = load_config(path)
+        token = _private_relay_token(token_path)
+        try:
+            text = _read_small_regular(
+                secrets_path).decode("utf-8", "strict")
+            panel_ready = _relay_block_matches(text, snapshot)
+        except (FileNotFoundError, ConfigError, UnicodeError):
+            panel_ready = False
+        if token is None or not panel_ready:
+            print("FIX Existing private relay credentials are missing or "
+                  "unsafe", file=stdout)
+            return False
+        if not _relay_ownership_probe(snapshot, token, urlopen):
+            print("FIX Relay mailbox ownership could not be verified; live "
+                  "status remains off", file=stdout)
+            return False
+        try:
+            _publish_config(
+                path, snapshot,
+                _agent_status_relay_config(snapshot, enabled=True))
+        except BaseException:
+            print("FIX Live status consent could not be saved safely",
+                  file=stdout)
+            return False
+    print("PASS E2E-encrypted live agent status enabled", file=stdout)
+    return True
+
+
+def _relay_disable_status(path: Path, stdout) -> bool:
+    with config_lock(path):
+        saved = load_config(path)
+        save_config(path, _agent_status_relay_config(saved, enabled=False))
+    print("PASS Live agent status relay disabled; credentials kept",
+          file=stdout)
+    return True
+
+
 def _relay_uninstall(
         *, path: Path, delete_worker: bool, token_path: Path,
         secrets_path: Path, service_dir: Path, run, stdout) -> bool:
@@ -939,6 +1047,7 @@ def _relay_uninstall(
                 token_raw = _read_small_regular(token_path, 256)
             target = _relay_config(
                 snapshot, enabled=False, clear=True)
+            target = _agent_status_relay_config(target, enabled=False)
             if secrets_raw is not None:
                 backup = path.parent / "secrets.h.before-interaction-relay"
                 _atomic_private_write(backup, secrets_raw)
@@ -968,6 +1077,8 @@ def _relay_status(config: VibePulseConfig, *, token_path: Path,
                   secrets_path: Path, stdout) -> None:
     print(f"Interaction relay: {'ON' if config.interaction_relay else 'OFF'}",
           file=stdout)
+    print(f"Agent status relay: "
+          f"{'ON' if config.agent_status_relay else 'OFF'}", file=stdout)
     print("Relay endpoint: " + (
         "CONFIGURED" if config.interaction_relay_url else "MISSING"),
         file=stdout)
@@ -988,14 +1099,16 @@ def _relay_status(config: VibePulseConfig, *, token_path: Path,
 
 def _relay_doctor(config: VibePulseConfig, *, token_path: Path,
                   secrets_path: Path, service_dir: Path, stdout) -> bool:
-    if not config.interaction_relay:
-        print("OFF Encrypted interaction relay intentionally disabled",
+    if not (config.interaction_relay or config.agent_status_relay):
+        print("OFF Encrypted relay traffic intentionally disabled",
               file=stdout)
         return True
     checks = []
-    checks.append((bool(config.claude_interactions or
-                        config.codex_interactions), "provider"))
-    checks.append((config.interaction_detail, "bounded interaction detail"))
+    if config.interaction_relay:
+        checks.append((bool(config.claude_interactions or
+                            config.codex_interactions), "provider"))
+        checks.append((config.interaction_detail,
+                       "bounded interaction detail"))
     checks.append((_private_relay_token(token_path) is not None,
                    "private Mac relay token"))
     try:
@@ -1023,6 +1136,8 @@ def _print_status(config: VibePulseConfig, stdout) -> None:
         if config.legacy_claude_panel_v1 else ""
     print(f"Legacy Claude panel v1: {legacy}{suffix}", file=stdout)
     print(f"Interaction relay: {switch(config.interaction_relay)}",
+          file=stdout)
+    print(f"Agent status relay: {switch(config.agent_status_relay)}",
           file=stdout)
 
 
@@ -1370,13 +1485,19 @@ def _doctor(
             }
             expected_relay = {
                 "status": "ready" if config.interaction_relay else "off"}
-            expected_transport = ("lan+encrypted-relay"
-                                  if config.interaction_relay else "lan")
+            expected_agent_status_relay = {
+                "status": "ready" if config.agent_status_relay else "off"}
+            expected_transport = (
+                "lan+encrypted-relay"
+                if (config.interaction_relay or config.agent_status_relay)
+                else "lan")
             if (payload.get("service") != "torget-tokenserver" or
                     not isinstance(interactions, dict) or
                     any(interactions.get(key) is not value
                         for key, value in expected.items()) or
                     interactions.get("relay") != expected_relay or
+                    interactions.get("agentStatusRelay") !=
+                    expected_agent_status_relay or
                     interactions.get("transport") != expected_transport):
                 raise ValueError("diagnostics mismatch")
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError,
@@ -1720,6 +1841,19 @@ def main(
                     service_dir=relay_service, stdout=output) else 1
             if args.relay_command == "disable":
                 return 0 if _relay_disable(path, output) else 1
+            if args.relay_command == "disable-status":
+                return 0 if _relay_disable_status(path, output) else 1
+            if args.relay_command == "enable-status":
+                consent = bool(args.yes_e2e_cloud)
+                if not consent and interactive:
+                    consent = input_fn(
+                        "This sends minimized E2E-encrypted live agent "
+                        "status through your Cloudflare Worker. Type YES to "
+                        "continue: ").strip() == "YES"
+                return 0 if _relay_enable_status(
+                    path=path, consent=consent, token_path=relay_token,
+                    secrets_path=secrets_header, urlopen=urlopen,
+                    stdout=output) else 1
             if args.relay_command == "install":
                 consent = bool(args.yes_e2e_cloud)
                 if not consent and interactive:

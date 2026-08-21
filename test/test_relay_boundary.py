@@ -22,6 +22,9 @@ example = read("secrets.h.example")
 readme = read("README.md")
 agent_setup = read("docs/agent-setup.md")
 tokenserver_readme = read("tools/tokenserver/README.md")
+interaction_guide = read("docs/interaction-relay.md")
+interaction_worker_readme = read("tools/interaction-relay/README.md")
+observability = read("docs/observability.md")
 mac_service = read("tools/tokenserver/se.torget.tokenserver.plist")
 windows_service = read("tools/tokenserver/install-windows-task.ps1")
 
@@ -89,7 +92,7 @@ assert '"/api/tokens", "/api/max-tracker", "/api/github"' in worker, (
 # These sentences are part of the setup contract, not marketing shorthand:
 # installing one adapter must never silently widen what leaves the computer.
 for heading in ("Claude interactions", "Codex interactions", "Numbers relay",
-                "Interaction relay", "GitHub"):
+                "Interaction relay", "Live agent status relay", "GitHub"):
     assert heading in readme, (
         f"README must list {heading} as one independent switch"
     )
@@ -97,6 +100,50 @@ assert "Installing the Codex plugin does not enable Codex interactions" in readm
 assert "--interactions` is a legacy alias for Claude only" in readme
 assert "encrypted interaction relay" in readme.lower()
 assert "off by default" in readme.lower()
+
+# The live rows path is an independent, explicit E2E opt-in. It may name
+# activity only inside fixed-size ciphertext and must never broaden the old
+# plaintext numbers relay.
+for source, name in ((readme, "README"),
+                     (interaction_guide, "interaction guide")):
+    for required in (
+            "Live agent status relay", "computer must be awake",
+            "end-to-end encrypted", "off by default"):
+        assert required.lower() in source.lower(), (
+            f"{name} must explain {required}"
+        )
+for required in (
+        "relay enable-status --yes-e2e-cloud",
+        "relay disable-status",
+        "CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY=y",
+        "2,816-byte", "15 seconds", "20 seconds", "five seconds",
+        "project basenames"):
+    assert required.lower() in interaction_guide.lower(), (
+        f"interaction guide must pin live-status contract: {required}"
+    )
+for required in (
+        "PUT /v1/mailboxes/{box}/status",
+        "GET /v1/mailboxes/{box}/status",
+        "2,816", "20 seconds"):
+    assert required in interaction_worker_readme, (
+        f"Worker README must document status route/retention: {required}"
+    )
+for required in (
+        "TK_VIBEPULSE_AGENT_STATUS_RELAY", "relay enable-status",
+        "fixed-size ciphertext"):
+    assert required in example, (
+        f"secrets example must document live status: {required}"
+    )
+assert "status_polls_ok" in observability
+assert "status_applied" in observability
+assert "status_cleared" in observability
+
+host_config = read("tools/tokenserver/vibepulse_config.py")
+kconfig = read("main/Kconfig.projbuild")
+assert "agent_status_relay: bool = False" in host_config
+status_option = kconfig.split(
+    "config TK_VIBEPULSE_AGENT_STATUS_RELAY", 1)[1]
+assert "default n" in status_option.split("endmenu", 1)[0]
 
 # A login service loads the saved interaction choices. Provider/detail choices
 # do not belong in a visible, stale process command line.

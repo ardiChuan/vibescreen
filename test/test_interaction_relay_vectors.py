@@ -22,14 +22,17 @@ from tools.tokenserver.interaction_relay_crypto import (
     b64url_encode,
     decode_device_key,
     decode_request,
+    decode_status,
     derive_keys,
     encode_verdict,
     request_aad,
+    status_aad,
     verdict_mac_bytes,
 )
 
 
 VECTOR_PATH = ROOT / "test-vectors/interaction-relay-v1.json"
+STATUS_VECTOR_PATH = ROOT / "test-vectors/agent-status-relay-v1.json"
 MBED_SOURCES = (
     "aes.c", "base64.c", "cipher.c", "cipher_wrap.c", "constant_time.c",
     "gcm.c", "hkdf.c", "md.c", "platform.c", "platform_util.c",
@@ -73,8 +76,21 @@ def authenticated_request(keys, mailbox, request_id, envelope, *,
     return encode_outer(value)
 
 
+def authenticated_status(keys, mailbox, envelope, mutate_frame):
+    value = outer(envelope)
+    nonce = b64url_decode(value["nonce"])
+    frame = AESGCM(keys.status_aead).decrypt(
+        nonce, b64url_decode(value["ciphertext"]), status_aad(mailbox))
+    changed = mutate_frame(bytearray(frame))
+    value["ciphertext"] = b64url_encode(AESGCM(keys.status_aead).encrypt(
+        nonce, bytes(changed), status_aad(mailbox)))
+    return encode_outer(value)
+
+
 def vector_values():
     vector = json.loads(VECTOR_PATH.read_text(encoding="utf-8"))
+    status_vector = json.loads(
+        STATUS_VECTOR_PATH.read_text(encoding="utf-8"))
     inputs = vector["inputs"]
     expected = vector["expected"]
     keys = derive_keys(
@@ -145,7 +161,55 @@ def vector_values():
             verdict_envelope.decode("ascii")
         values[f"VECTOR_VERDICT_{upper}_HMAC_HEX"] = verdict_mac_bytes(
             keys, inputs["mailbox"], request, verdict).hex()
-    return vector, values
+
+    status_inputs = status_vector["inputs"]
+    status_expected = status_vector["expected"]
+    status_envelope = status_expected["statusEnvelopeUtf8"].encode("ascii")
+    status_outer = outer(status_envelope)
+    status_ciphertext = b64url_decode(status_outer["ciphertext"])
+
+    def status_changed_outer(**changes):
+        return encode_outer({**status_outer, **changes}).decode("ascii")
+
+    def replace(start, end, value):
+        def mutate(frame):
+            frame[start:end] = value
+            return frame
+        return mutate
+
+    values.update({
+        "VECTOR_STATUS_UTF8": status_inputs["statusUtf8"],
+        "VECTOR_STATUS_ENVELOPE": status_expected["statusEnvelopeUtf8"],
+        "VECTOR_STATUS_KEY_HEX": status_expected["statusKeyHex"],
+        "VECTOR_STATUS_SHA256_HEX": status_expected["statusSha256Hex"],
+        "VECTOR_STATUS_BAD_TAG": status_changed_outer(
+            ciphertext=b64url_encode(
+                status_ciphertext[:-1] +
+                bytes((status_ciphertext[-1] ^ 1,)))),
+        "VECTOR_STATUS_SHORT_CIPHERTEXT": status_changed_outer(
+            ciphertext=b64url_encode(status_ciphertext[:-1])),
+        "VECTOR_STATUS_BAD_MAGIC": authenticated_status(
+            keys, inputs["mailbox"], status_envelope,
+            replace(0, 4, b"BAD!")).decode("ascii"),
+        "VECTOR_STATUS_ZERO_PUBLICATION": authenticated_status(
+            keys, inputs["mailbox"], status_envelope,
+            replace(4, 12, b"\0" * 8)).decode("ascii"),
+        "VECTOR_STATUS_ZERO_EXPIRY": authenticated_status(
+            keys, inputs["mailbox"], status_envelope,
+            replace(12, 16, b"\0" * 4)).decode("ascii"),
+        "VECTOR_STATUS_ZERO_LENGTH": authenticated_status(
+            keys, inputs["mailbox"], status_envelope,
+            replace(16, 18, b"\0" * 2)).decode("ascii"),
+        "VECTOR_STATUS_OVER_LENGTH": authenticated_status(
+            keys, inputs["mailbox"], status_envelope,
+            replace(16, 18, (2561).to_bytes(2, "big"))).decode("ascii"),
+        "VECTOR_STATUS_BAD_DIGEST": authenticated_status(
+            keys, inputs["mailbox"], status_envelope,
+            replace(18, 50, b"\0" * 32)).decode("ascii"),
+    })
+    decoded_status = decode_status(keys, inputs["mailbox"], status_envelope)
+    assert decoded_status.publication_id == status_inputs["publicationId"]
+    return vector, status_vector, values
 
 
 def locate_idf() -> Path:
@@ -159,8 +223,10 @@ def locate_idf() -> Path:
     raise SystemExit("ESP-IDF with bundled Mbed TLS is required for C vectors")
 
 
-def write_generated_header(path: Path, vector: dict, values: dict):
+def write_generated_header(path: Path, vector: dict, status_vector: dict,
+                           values: dict):
     inputs = vector["inputs"]
+    status_inputs = status_vector["inputs"]
     lines = [
         "#ifndef INTERACTION_RELAY_VECTOR_GENERATED_H",
         "#define INTERACTION_RELAY_VECTOR_GENERATED_H",
@@ -171,6 +237,11 @@ def write_generated_header(path: Path, vector: dict, values: dict):
         "#define VECTOR_VERDICT_NONCE {" + ",".join(
             f"0x{value:02x}" for value in bytes.fromhex(
                 inputs["verdictNonceHex"])) + "}",
+        f"#define VECTOR_STATUS_PUBLICATION_ID UINT64_C({status_inputs['publicationId']})",
+        f"#define VECTOR_STATUS_EXPIRES_AT UINT32_C({status_inputs['expiresAt']})",
+        "#define VECTOR_STATUS_NONCE {" + ",".join(
+            f"0x{value:02x}" for value in bytes.fromhex(
+                status_inputs["statusNonceHex"])) + "}",
     ]
     lines.extend(
         f"#define {name} {c_string(value)}" for name, value in values.items())
@@ -219,11 +290,12 @@ def compile_and_run(temp: Path):
 
 
 def main():
-    vector, values = vector_values()
+    vector, status_vector, values = vector_values()
     with tempfile.TemporaryDirectory(prefix="torget-ir-c-vector-") as tmp:
         temp = Path(tmp)
         write_generated_header(
-            temp / "interaction_relay_vector_generated.h", vector, values)
+            temp / "interaction_relay_vector_generated.h", vector,
+            status_vector, values)
         compile_and_run(temp)
     print("OK: Python and panel relay vectors are byte-identical")
 

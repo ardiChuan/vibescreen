@@ -317,6 +317,18 @@ class ProviderStoreTests(unittest.TestCase):
             {"Which auth approach?": "New auth layer (Recommended)"})
         self.assertIsNone(self.store.pending_public())
 
+    def test_internal_question_permission_never_replaces_real_question(self):
+        question = self.store.park("question", question_event(), 120)
+        self.assertIsNotNone(question)
+        before = self.store.pending_public()
+
+        duplicate = approval_event(tool="  ASKUSERQUESTION  ")
+        duplicate["tool_input"] = question_event()["tool_input"]
+
+        self.assertIsNone(self.store.park("approval", duplicate, 120))
+        self.assertEqual(self.store.pending_public(), before)
+        self.assertEqual(list(self.store._pending), [question.request_id])
+
     def test_claude_utf8_limits_are_bytes_and_preserve_codepoints(self):
         exact_cases = (
             (question_event(
@@ -1433,6 +1445,51 @@ class HttpEndToEndTests(unittest.TestCase):
                          {"Which auth approach?":
                           "New auth layer (Recommended)"})
         self.assertIsNone(self.pending())
+
+    def test_internal_question_permission_is_not_parked(self):
+        question_result = {}
+
+        def question_hook():
+            question_result["status"], question_result["raw"] = self.request(
+                "POST", "/api/hook/question", question_event())
+
+        question_thread = threading.Thread(target=question_hook, daemon=True)
+        question_thread.start()
+        shown = self.wait_for_pending()
+
+        duplicate = approval_event(tool="  AskUserQuestion  ")
+        duplicate["tool_input"] = question_event()["tool_input"]
+        duplicate_result = {}
+
+        def duplicate_hook():
+            duplicate_result["status"], duplicate_result["raw"] = \
+                self.request("POST", "/api/hook/permission", duplicate)
+
+        duplicate_thread = threading.Thread(target=duplicate_hook,
+                                            daemon=True)
+        duplicate_thread.start()
+        duplicate_thread.join(timeout=0.3)
+        duplicate_returned_promptly = not duplicate_thread.is_alive()
+        still_shown = self.pending()
+        with self.store._lock:
+            pending_count = len(self.store._pending)
+
+        self.answer(shown, "deny")
+        question_thread.join(timeout=5)
+        if duplicate_thread.is_alive():
+            self.store.deny_all()
+            duplicate_thread.join(timeout=5)
+
+        self.assertTrue(duplicate_returned_promptly)
+        self.assertEqual(duplicate_result, {"status": 200, "raw": b""})
+        self.assertEqual(still_shown["request_id"], shown["request_id"])
+        self.assertEqual(pending_count, 1)
+        self.assertFalse(question_thread.is_alive())
+        self.assertFalse(duplicate_thread.is_alive())
+        self.assertEqual(question_result["status"], 200)
+        self.assertEqual(
+            json.loads(question_result["raw"])["hookSpecificOutput"]
+            ["permissionDecision"], "deny")
 
     def test_approval_allow_travels_end_to_end(self):
         result = {}

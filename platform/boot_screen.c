@@ -66,6 +66,8 @@ void torget_boot_screen_stage(tg_boot_stage stage) {
       lv_obj_delete(ui.overlay);
       ui.overlay = NULL;
       ui.gone = true;
+      torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL);
+      torget_wifi_status_foreground();
       break;
   }
   torget_ui_unlock();

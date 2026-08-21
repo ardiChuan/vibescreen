@@ -15,7 +15,9 @@ pure-stdlib Python service on your Mac or Windows PC. Local mode needs no
 VibePulse account and keeps agent activity on your LAN. The optional
 numbers-only relay can carry quota data across isolated WiFi; a separate,
 default-off encrypted interaction relay can carry supported Needs You
-decisions without requiring the panel and computer to share a LAN.
+decisions without requiring the panel and computer to share a LAN. A third,
+independent **Live agent status relay** can keep the Claude/Codex activity rows
+current across ordinary internet WiFi. Every cloud feature is off by default.
 
 ## The problem
 
@@ -158,6 +160,7 @@ starts off:
 | **Codex interactions** | Lets supported Codex questions and permissions reach the panel | Off |
 | **Numbers relay** | Publishes only quota, reset, Max Tracker, and optional public GitHub numbers | Off |
 | **Interaction relay** | End-to-end encrypted question/verdict mailbox for unrelated WiFi | Off |
+| **Live agent status relay** | End-to-end encrypted Claude/Codex activity rows for unrelated WiFi | Off |
 | **GitHub** | Shows one public repository's page and/or star notification | Off |
 
 Installing the Codex plugin does not enable Codex interactions. Setup asks
@@ -166,7 +169,7 @@ may reach the panel. The old `--interactions` is a legacy alias for Claude only;
 use the explicit setup command for new installations. The numbers relay and
 interaction relay are different privacy choices and neither is enabled by the
 plugin. Installing the Codex plugin does not enable the encrypted interaction
-relay.
+relay or the live agent status relay.
 
 ### Optional GitHub project pulse
 
@@ -396,26 +399,47 @@ The panel remembers up to six places. Arrive somewhere new and it needs the
 network once; every visit after that it joins by itself.
 
 <p align="center">
-  <img src="docs/img/vibepulse-wifi-searching.png" width="47%" alt="VibePulse explains that the saved phone hotspot is not visible and reminds the user that the panel needs 2.4 GHz Wi-Fi">
+  <img src="docs/img/vibepulse-wifi-searching.png" width="31%" alt="VibePulse explains that the saved phone hotspot is not visible and reminds the user that the panel needs 2.4 GHz Wi-Fi">
   &nbsp;
-  <img src="docs/img/vibepulse-wifi-setup.png" width="47%" alt="VibePulse Wi-Fi setup screen showing the temporary network, setup password, phone URL, Mac helper command, and countdown">
+  <img src="docs/img/vibepulse-wifi-setup.png" width="31%" alt="VibePulse Wi-Fi setup screen with a large phone-scannable QR code, temporary network, setup password, local address, and countdown">
+  &nbsp;
+  <img src="docs/img/vibepulse-wifi-signal.png" width="31%" alt="The shared launcher with a neutral three-bar Wi-Fi signal icon at the top right">
 </p>
-<p align="center"><em>The real shared-LVGL 480×480 frames: first the panel explains what failed, then it opens a ten-minute phone/Mac setup window.</em></p>
+<p align="center"><em>Real 480×480 frames from the shared LVGL firmware renderer: recovery, phone-first QR setup, and the global signal indicator.</em></p>
+
+The normal setup path needs only the panel and a phone:
+
+1. **Scan the QR** on the panel. It joins your phone to the temporary
+   `VibePulse-setup` network; it does not contain your destination Wi-Fi
+   password.
+2. The local setup page should open. If it does not, open
+   `http://192.168.4.1/` yourself. A browser label such as **Not Secure** is
+   expected here: this is a short-lived, device-local page with no internet
+   route, not a public website.
+3. Pick a **2.4 GHz** network, enter its password, and tap **Join** once.
+   The ESP32-S3 cannot see 5 GHz-only networks. On an iPhone hotspot, enable
+   *Maximize Compatibility*.
+4. Keep the phone nearby while the glass says JOINING. The new credentials
+   are remembered **only after the panel connects** successfully. If the
+   password is wrong or the network disappears, old saved networks remain
+   available and the panel tells you what to retry.
+
+On a Mac there is also an optional one-command shortcut:
 
 ```
-tools/wifi-here.sh                 # on the Mac. That is the whole thing.
+tools/wifi-here.sh
 ```
 
-The script reads the network your Mac is already on, takes that password
-out of your keychain (macOS asks you — that prompt is the consent), hands
-it to the panel over its own access point, and gives your WiFi back. About
-twenty seconds offline, nothing typed.
+It reads the network your Mac is already on, takes that password out of your
+keychain (macOS asks you — that prompt is the consent), hands it to the panel
+over its temporary access point, and gives the Mac's Wi-Fi back. The phone
+flow remains the universal path and needs no computer or command line.
 
-No Mac at hand? The panel raises **VibePulse-setup** and puts the password
-on the glass. Join it from your phone, the captive portal opens by itself,
-and you pick from what the *panel's* radio can see — which is the list that
-matters, since the ESP32-S3 cannot hear 5 GHz no matter how many bars your
-phone shows.
+The small neutral Wi-Fi symbol is global: zero bars plus a slash means the
+panel is disconnected; one to three bars describe only its connection to the
+local access point. It **does not mean internet** access, tokenserver reachability,
+or relay health. During setup the complete symbol means setup mode, not a
+successful destination join.
 
 The setup window opens on its own after 90 seconds without a network, or
 immediately on a 3-second KEY3 hold. Before that, at 60 seconds, the glass
@@ -447,13 +471,18 @@ numbers in a tiny mailbox on the internet — a ~150-line Cloudflare Worker
 on your own account — and the panel falls back to it whenever the LAN
 does not answer. Quota, burn rate, Max Tracker and the GitHub pulse
 follow you anywhere with WiFi. Agent activity stays local unless you separately
-opt in to the encrypted interaction relay; then only a bounded panel view and
-verdict cross its user-owned mailbox as fixed-size end-to-end ciphertext.
-Cloudflare never receives question, command, project, or verdict content in
-plaintext. Several machines can feed the numbers mailbox
+opt in to one or both encrypted activity features. The **Interaction relay**
+carries only bounded Needs You views and verdicts. The independent **Live
+agent status relay** carries the minimized Claude/Codex rows the panel already
+renders. Both use fixed-size, end-to-end encrypted ciphertext; Cloudflare
+never receives question, command, project basename, activity, or verdict
+content in plaintext. Cloudflare can still see connection IPs, timing and a
+random mailbox identifier. The computer must be awake and tokenserver must be
+running, but it may use a different ordinary internet connection from the
+panel. Several machines can feed the numbers mailbox
 (a Mac that sleeps, an always-on PC) and the freshest source wins per
-number. Numbers setup: [docs/relay.md](docs/relay.md). Encrypted decisions:
-[docs/interaction-relay.md](docs/interaction-relay.md).
+number. Numbers setup: [docs/relay.md](docs/relay.md). Encrypted decisions and
+live status: [docs/interaction-relay.md](docs/interaction-relay.md).
 
 ## No hardware? Run the simulator
 

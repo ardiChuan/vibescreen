@@ -181,15 +181,63 @@ static void test_setup_window_closes(void) {
         tg_wifi_setup_should_close(306 * s, 100 * s, 300 * s));
 }
 
+static void test_setup_phase_owns_key3_without_accidental_release(void) {
+  check("idle leaves KEY3 to apps",
+        !tg_wifi_setup_owns_input(TG_WIFI_PHASE_IDLE));
+  check("starting owns KEY3",
+        tg_wifi_setup_owns_input(TG_WIFI_PHASE_STARTING));
+  check("open owns KEY3",
+        tg_wifi_setup_owns_input(TG_WIFI_PHASE_OPEN));
+  check("joining owns KEY3",
+        tg_wifi_setup_owns_input(TG_WIFI_PHASE_JOINING));
+  check("joined owns KEY3",
+        tg_wifi_setup_owns_input(TG_WIFI_PHASE_JOINED));
+  check("failed owns KEY3 until dismissed",
+        tg_wifi_setup_owns_input(TG_WIFI_PHASE_FAILED));
+
+  check("starting ignores the triggering release",
+        !tg_wifi_setup_can_close(TG_WIFI_PHASE_STARTING));
+  check("idle cannot close",
+        !tg_wifi_setup_can_close(TG_WIFI_PHASE_IDLE));
+  check("open is dismissible",
+        tg_wifi_setup_can_close(TG_WIFI_PHASE_OPEN));
+  check("joining is dismissible",
+        tg_wifi_setup_can_close(TG_WIFI_PHASE_JOINING));
+  check("joined is dismissible",
+        tg_wifi_setup_can_close(TG_WIFI_PHASE_JOINED));
+  check("failed is dismissible",
+        tg_wifi_setup_can_close(TG_WIFI_PHASE_FAILED));
+}
+
+static void test_join_submissions_retry_and_explain_failures(void) {
+  check("new submission applies once", tg_wifi_join_should_apply(4, 3));
+  check("same submission is deduplicated",
+        !tg_wifi_join_should_apply(4, 4));
+  check("zero is not a submission", !tg_wifi_join_should_apply(0, 4));
+  check("later retry applies", tg_wifi_join_should_apply(5, 4));
+
+  check("reason 15 is a password retry",
+        tg_wifi_disconnect_status(15) == TG_WIFI_JOIN_RETRY_PASSWORD);
+  check("reason 204 is a password retry",
+        tg_wifi_disconnect_status(204) == TG_WIFI_JOIN_RETRY_PASSWORD);
+  check("network missing explains 2.4 GHz",
+        tg_wifi_disconnect_status(201) == TG_WIFI_JOIN_RETRY_NOT_FOUND);
+  check("no disconnect is still connecting",
+        tg_wifi_disconnect_status(0) == TG_WIFI_JOIN_CONNECTING);
+  check("other failures stay retryable",
+        tg_wifi_disconnect_status(8) == TG_WIFI_JOIN_RETRY_CONNECTION);
+}
+
 static void test_dma_gates_protect_the_flush(void) {
   const size_t flush = 12 * 480 * 2; /* 11 520 — panelflushens block */
-  const size_t open_floor = TG_WIFI_SETUP_DMA_OPEN_FACTOR * flush;
+  const size_t open_floor = TG_WIFI_SETUP_DMA_OPEN_FACTOR * flush +
+                            TG_WIFI_SETUP_DMA_OPEN_RESERVE_BYTES;
 
   check("plenty of DMA opens", tg_wifi_setup_dma_ok_to_open(200000, flush));
   check("exactly the open floor opens",
         tg_wifi_setup_dma_ok_to_open(open_floor, flush));
   check("below the open floor refuses",
-        !tg_wifi_setup_dma_ok_to_open(open_floor - flush, flush));
+        !tg_wifi_setup_dma_ok_to_open(open_floor - 1, flush));
 
   /* Kalibreringen mot verkligheten: v0.5.0:s friska baslinje på
    * torget-home-01 var 40960 byte (serielogg 2026-08-18). En grind som
@@ -198,6 +246,12 @@ static void test_dma_gates_protect_the_flush(void) {
    * faktorn över uppmätt verklighet. */
   check("the measured healthy baseline passes the open gate",
         tg_wifi_setup_dma_ok_to_open(40960, flush));
+
+  /* v0.7.0 med 256 KiB LVGL-pool, Wi-Fi-signal och reläklient har en lägre
+   * men stabil frisk baslinje: 31744 byte på riktig torget-home-01
+   * (2026-08-21). Grinden får inte återigen göra telefonsetup omöjlig. */
+  check("the current healthy panel baseline passes the open gate",
+        tg_wifi_setup_dma_ok_to_open(31744, flush));
 
   /* Fortsättningsgrinden efter APSTA-bytet: under x2 rivs fönstret hellre
    * än att httpd + DNS staplas ovanpå ett block som redan är i farozonen. */
@@ -212,6 +266,8 @@ static void test_dma_gates_protect_the_flush(void) {
         !tg_wifi_setup_dma_ok_to_open(200000, 0));
   check("an unset flush size refuses to continue",
         !tg_wifi_setup_dma_ok_to_continue(200000, 0));
+  check("an impossible flush cannot wrap the open floor",
+        !tg_wifi_setup_dma_ok_to_open(SIZE_MAX, SIZE_MAX / 2 + 1));
 }
 
 int main(void) {
@@ -225,6 +281,8 @@ int main(void) {
   test_setup_window_opens_only_when_it_can_help();
   test_search_screen_lets_the_boot_screen_finish();
   test_setup_window_closes();
+  test_setup_phase_owns_key3_without_accidental_release();
+  test_join_submissions_retry_and_explain_failures();
 
   if (failures == 0) {
     printf("OK: all WiFi slot/window policy tests pass\n");

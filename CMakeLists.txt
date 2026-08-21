@@ -71,6 +71,8 @@ project(torget)
 # produce that image instead of discovering the mismatch on the glass.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/torget_lvgl_memory_guard.cmake")
 torget_require_lvgl_pool("${CONFIG_LV_MEM_SIZE_KILOBYTES}")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/torget_lvgl_qrcode_guard.cmake")
+torget_require_lvgl_qrcode("${CONFIG_LV_USE_QRCODE}")
 
 # LVGL:s minnespool till PSRAM (frysfix 2026-08-16, se docs/lessons.md och
 # main/lv_psram_pool.c). LVGL:s inbyggda allokator lägger annars sin

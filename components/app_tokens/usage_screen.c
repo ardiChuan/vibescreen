@@ -270,8 +270,10 @@ static void create_live_header_widgets(lv_obj_t *tile, usage_provider provider,
   lv_obj_add_flag(halo, LV_OBJ_FLAG_HIDDEN);
 
   create_provider_identity(tile, provider);
+  /* End at x=408: x418..445 belongs to the one global Wi-Fi mark, with a
+   * hard ten-pixel black lane between text and radio status on every page. */
   lv_obj_t *context = label(tile, &plex_ui_14, COL_META,
-                            180, VP_PROVIDER_Y + 5, 278, 20);
+                            180, VP_PROVIDER_Y + 5, 228, 20);
   lv_obj_set_style_text_align(context, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_style_text_letter_space(context, 1, 0);
   create_hairline(tile, HEADER_LINE_Y);
@@ -293,12 +295,12 @@ static void create_analytics_header(lv_obj_t *tile, const char *title,
                             VP_SAFE_X, 23, 240, 30);
   lv_obj_set_style_text_letter_space(heading, 2, 0);
   lv_label_set_text(heading, title);
-  lv_obj_t *top = label(tile, &plex_ui_14, COL_META, 280, 21, 178, 18);
+  lv_obj_t *top = label(tile, &plex_ui_14, COL_META, 230, 21, 178, 18);
   lv_obj_set_style_text_align(top, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_style_text_letter_space(top, 1, 0);
   lv_label_set_text(top, top_right);
   lv_obj_t *bottom = label(tile, &plex_ui_12, COL_MUTED,
-                           280, 42, 178, 16);
+                           230, 42, 178, 16);
   lv_obj_set_style_text_align(bottom, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_style_text_letter_space(bottom, 2, 0);
   lv_label_set_text(bottom, bottom_right);
@@ -370,10 +372,10 @@ static void create_github_page(void) {
   lv_obj_set_style_text_letter_space(heading, 2, 0);
   lv_label_set_text(heading, "GITHUB");
   page->project = label(page->tile, &plex_ui_14, COL_META,
-                        180, 21, 278, 18);
+                        180, 21, 228, 18);
   lv_obj_set_style_text_align(page->project, LV_TEXT_ALIGN_RIGHT, 0);
   page->provenance = label(page->tile, &plex_ui_12, COL_MUTED,
-                           280, 42, 178, 16);
+                           230, 42, 178, 16);
   lv_obj_set_style_text_align(page->provenance, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_style_text_letter_space(page->provenance, 2, 0);
   create_hairline(page->tile, HEADER_LINE_Y);
@@ -1065,6 +1067,20 @@ void usage_screen_apply_agent(const tk_agent_snapshot *snapshot,
   for (int i = 0; i < 3; i++) refresh_header(&ui.quotas[i], now_us);
   for (int i = 0; i < 2; i++) refresh_tracker_header(&ui.trackers[i], now_us);
   tk_agent_monitor_apply(snapshot, now_us);
+}
+
+void usage_screen_apply_agent_status_relay(
+    const tk_agent_snapshot *snapshot, int64_t now_us) {
+  if (!snapshot) return;
+  ui.agent_snapshot.seq = snapshot->seq;
+  ui.agent_snapshot.claude = snapshot->claude;
+  ui.agent_snapshot.codex = snapshot->codex;
+  ui.agent_applied_at_us = now_us;
+  ui.last_now_us = now_us;
+  ui.has_agent_snapshot = true;
+  for (int i = 0; i < 3; i++) refresh_header(&ui.quotas[i], now_us);
+  for (int i = 0; i < 2; i++) refresh_tracker_header(&ui.trackers[i], now_us);
+  tk_agent_monitor_apply_status_relay(snapshot, now_us);
 }
 
 void usage_screen_tick(int64_t now_us) {

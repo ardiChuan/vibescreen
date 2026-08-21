@@ -72,6 +72,7 @@ add_executable(torget-sim
   ../components/app_tokens/agent_completion_policy.c
   ../components/app_tokens/needs_you_policy.c
   ../components/app_tokens/interaction_relay_policy.c
+  ../components/app_tokens/agent_status_source_policy.c
   ../components/app_tokens/needs_you_send_policy.c
   ../components/app_tokens/agent_net_policy.c
   ../components/app_tokens/agent_monitor.c
@@ -88,6 +89,8 @@ add_executable(torget-sim
   # OTA-ringen: ren LVGL utan ESP-beroenden — bänken bevisar dess raster.
   ../components/torget_ota/ota_ui.c
   # Wi-Fi-onboardingen: samma delade LVGL-lager som targetet visar.
+  ../components/torget_wifi/wifi_slots.c
+  ../components/torget_wifi/wifi_qr_payload.c
   ../components/torget_wifi/wifi_setup_ui.c
   ../third_party/cjson/cJSON.c
   ${SOLELKOLLEN_SRCS}

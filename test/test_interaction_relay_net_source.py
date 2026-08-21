@@ -21,6 +21,7 @@ class InteractionRelayNetSourceTests(unittest.TestCase):
         for value in (
             "/v1/mailboxes/%s/requests/next",
             "/v1/mailboxes/%s/requests/%s/verdict",
+            "/v1/mailboxes/%s/status",
             "TK_VIBEPULSE_INTERACTION_PANEL_TOKEN",
             '"Authorization"',
             '"Bearer %s"',
@@ -84,6 +85,26 @@ class InteractionRelayNetSourceTests(unittest.TestCase):
             "tk_ir_backoff_fail",
             "tk_ir_backoff_wifi_recovered",
             "tokens_interaction_relay_net_status",
+            "request_backoff",
+            "status_backoff",
+        ):
+            self.assertIn(value, self.source)
+        self.assertEqual(
+            self.source.count("service_verdict(&send_client);"), 2,
+            "a request poll must not add a second status-poll delay before a queued verdict",
+        )
+        self.assertIn("if (send_client.handle != NULL)", self.source)
+
+    def test_live_status_is_strict_fresh_and_pending_free(self) -> None:
+        for value in (
+            '#include "app_tokens.h"',
+            "tk_ir_decode_status(",
+            "tk_agent_status_parse_relay(",
+            "decoded_status.publication_id <= last_status_publication_id",
+            "item->expires_at_ms <= now_wall_ms",
+            "inner_expiry_ms <= now_wall_ms",
+            "tokens_apply_agent_status_relay(",
+            "tokens_clear_agent_status_relay(",
         ):
             self.assertIn(value, self.source)
 

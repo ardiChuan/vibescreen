@@ -81,6 +81,48 @@ assert "torget_ota_service_close_maintenance();\n      torget_wifi_setup_request
     "the LVGL task must not close the OTA window itself when switching"
 )
 
+# --- Immediate KEY3 ownership ---------------------------------------------
+# request_open is called by the LVGL task but all slow radio work belongs to
+# the setup guard. The request must atomically claim KEY3 and wake that task;
+# otherwise the release is seen as NEXT_APP during the old 500 ms polling gap.
+assert "TaskHandle_t s_guard_task" in setup_c, (
+    "the setup guard handle is required for immediate wakeup"
+)
+request_open = setup_c.split("void torget_wifi_setup_request_open(void)")[1]
+request_open = request_open.split("void torget_wifi_setup_request_close", 1)[0]
+guard_ready = request_open.find("if (!s_guard_task) return;")
+phase_claim = request_open.find("TG_WIFI_PHASE_STARTING")
+assert 0 <= guard_ready < phase_claim, (
+    "a missing guard task must fail without trapping KEY3 in STARTING"
+)
+assert "TG_WIFI_PHASE_STARTING" in request_open, (
+    "request_open must claim the STARTING phase synchronously"
+)
+assert "xTaskNotifyGive(s_guard_task)" in request_open, (
+    "request_open must wake the guard instead of waiting for its poll"
+)
+assert "ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500))" in setup_c, (
+    "the guard must combine immediate notification with the existing poll"
+)
+
+guard = setup_c.split("static void guard_task(void *arg)")[1]
+starting_render = guard.find("torget_wifi_ui_set(TG_WIFI_UI_STARTING")
+slow_open = guard.find("window_open();")
+assert 0 <= starting_render < slow_open, (
+    "STARTING must be rendered before scanning, APSTA and portal startup"
+)
+
+ownership_branch = main_c.find("if (torget_wifi_setup_owns_input())")
+ota_branch = main_c.find("else if (torget_ota_service_maintenance_open())")
+app_switch = main_c.find("torget_app_next();", ota_branch)
+panic = main_c.find("tk_needs_you_send_panic();", ota_branch)
+assert 0 <= ownership_branch < ota_branch < app_switch < panic, (
+    "setup input ownership must be checked before OTA, app switching and panic"
+)
+assert "torget_wifi_setup_is_open()" not in main_c, (
+    "main must not expose the STARTING gap by checking AP-open state only"
+)
+
 # The setup window may never become a firmware path.
 assert "esp_ota" not in setup_c and "ota_ops" not in setup_c, (
     "the WiFi setup window must never gain a firmware-writing surface"
@@ -103,11 +145,21 @@ assert "TG_WIFI_SSID" in main_c and "TG_WIFI2_SSID" in main_c
 # closed than freeze the glass.
 open_gate = setup_c.find("tg_wifi_setup_dma_ok_to_open")
 apsta = setup_c.find("esp_wifi_set_mode(WIFI_MODE_APSTA)")
-cont_gate = setup_c.find("tg_wifi_setup_dma_ok_to_continue")
+cont_gates = [
+    match.start()
+    for match in re.finditer(r"tg_wifi_setup_dma_ok_to_continue", setup_c)
+]
 httpd_start_at = setup_c.find("server_start();")
-assert 0 < open_gate < apsta < cont_gate < httpd_start_at, (
-    "window_open must gate on DMA before the APSTA switch and again before "
-    "the HTTP server"
+publish_open_at = setup_c.find("atomic_store(&s_open, true)")
+assert len(cont_gates) == 2, (
+    "window_open must check DMA after APSTA and after the portal tasks start"
+)
+assert (
+    0 < open_gate < apsta < cont_gates[0] < httpd_start_at
+    < cont_gates[1] < publish_open_at
+), (
+    "window_open must gate before APSTA, before HTTP/DNS, and once more "
+    "after their real allocation before publishing the setup window"
 )
 assert "flush_dma_bytes" in main_c, (
     "main.c must hand the flush's DMA floor to the setup hooks"
@@ -138,11 +190,91 @@ assert "TG_WIFI_SETUP_WINDOW_US   (600LL" in slots_h, (
     "the setup window must stay bounded at ten minutes"
 )
 
+# --- Trial first, remember only after IP ----------------------------------
+join_post = setup_c.split("static esp_err_t join_post(")[1]
+join_post = join_post.split("static esp_err_t catch_all_get", 1)[0]
+assert "tg_wifi_creds_remember" not in join_post, (
+    "POST /join must never write an unproven password to NVS"
+)
+assert "s_join_submission.seq" in join_post, (
+    "every POST must publish a fresh versioned in-memory submission"
+)
+assert "xSemaphoreTake(s_join_lock" in join_post, (
+    "SSID, password and submission sequence must be copied atomically"
+)
+assert "xTaskNotifyGive(s_guard_task)" in join_post, (
+    "a phone submission should wake the guard instead of waiting 500 ms"
+)
+
+guard = setup_c.split("static void guard_task(void *arg)")[1]
+trial_at = guard.find("s_hooks->try_credentials")
+have_ip_at = guard.find("if (!applied_now && have_ip)", trial_at)
+remember_at = guard.find("tg_wifi_creds_remember", trial_at)
+accepted_at = guard.find("s_hooks->credentials_accepted", remember_at)
+assert 0 <= trial_at < have_ip_at < remember_at < accepted_at, (
+    "the guard must trial credentials, observe IP, persist, then accept"
+)
+assert "tg_wifi_join_should_apply" in guard, (
+    "the guard must apply each submission sequence at most once"
+)
+assert "bool applied_now = false" in guard
+assert "if (!applied_now && have_ip)" in guard, (
+    "an IP sample taken before a new trial starts must not validate it"
+)
+assert "s_hooks->last_disconnect_reason" in guard, (
+    "retry status must come from the radio's numeric disconnect reason"
+)
+
+assert "bool (*try_credentials)(const char *ssid, const char *password)" \
+       in (root / "components/torget_wifi/wifi_setup.h").read_text(
+           encoding="utf-8"), (
+    "the setup adapter needs an explicit in-memory trial hook"
+)
+assert "hook_try_credentials" in main_c and "s_trial_active" in main_c, (
+    "main must keep trial credentials out of the remembered candidate list"
+)
+assert "last_disconnect_reason" in main_c, (
+    "the setup guard needs the exact disconnect reason, not display copy"
+)
+try_hook = main_c.split("static bool hook_try_credentials(")[1]
+try_hook = try_hook.split("static void hook_credentials_accepted", 1)[0]
+clear_at = try_hook.find("xEventGroupClearBits(s_net_events, WIFI_GOT_IP)")
+apply_at = try_hook.find("wifi_apply_current()")
+assert 0 <= clear_at < apply_at, (
+    "a trial must clear the old IP proof before applying new credentials"
+)
+assert "disconnect_err == ESP_OK" in try_hook, (
+    "only a disconnect that actually started may suppress its event"
+)
+
+status_get = setup_c.split("static esp_err_t status_get(")[1]
+status_get = status_get.split("static esp_err_t catch_all_get", 1)[0]
+assert '\\"connecting\\"' in status_get
+assert '\\"connected\\"' in status_get
+assert '\\"retry\\"' in status_get
+assert '\\"password\\"' in status_get
+assert '\\"not-found\\"' in status_get
+assert "s_join_submission.ssid" not in status_get
+assert "s_join_submission.pass" not in status_get
+assert '"/status"' in setup_c and "setInterval" in setup_c, (
+    "the joining page must poll an honest, secret-free status endpoint"
+)
+assert "2.4 GHz only" in setup_c and '<label for=\\"pass\\">' in setup_c, (
+    "the phone form must explain the radio limit and label the password"
+)
+assert "onsubmit=" in setup_c and ".disabled=true" in setup_c, (
+    "the phone form must block accidental duplicate submission"
+)
+
 # --- Open-source onboarding must be visible, not only described ----------
 # The README and release reuse exact simulator frames. Pin both checked-in
 # files to the panel's native size without adding an image-library dependency
 # to this cross-language wiring test.
-for image_name in ("vibepulse-wifi-searching.png", "vibepulse-wifi-setup.png"):
+for image_name in (
+    "vibepulse-wifi-searching.png",
+    "vibepulse-wifi-setup.png",
+    "vibepulse-wifi-signal.png",
+):
     image_path = root / "docs/img" / image_name
     assert image_path.is_file(), f"missing WiFi onboarding image: {image_name}"
     image_bytes = image_path.read_bytes()
@@ -157,6 +289,21 @@ for image_name in ("vibepulse-wifi-searching.png", "vibepulse-wifi-setup.png"):
     )
     assert f"img/{image_name}" in wifi_doc, (
         f"docs/wifi.md does not show WiFi onboarding image: {image_name}"
+    )
+
+for guide, name in ((readme, "README"), (wifi_doc, "WiFi guide")):
+    lower = " ".join(guide.lower().split())
+    for claim in (
+        "scan the qr",
+        "not secure",
+        "192.168.4.1",
+        "2.4 ghz",
+        "only after the panel connects",
+        "does not mean internet",
+    ):
+        assert claim in lower, f"{name} must explain {claim!r}"
+    assert "old saved networks remain available" in lower, (
+        f"{name} must explain failed joins preserve fallback networks"
     )
 
 print("OK: WiFi setup window, Mac script and consent model agree")

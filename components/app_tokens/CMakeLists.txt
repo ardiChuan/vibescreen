@@ -4,19 +4,21 @@ set(TK_APP_TOKEN_SRCS
        "agent_monitor_policy.c" "usage_live_policy.c" "agent_completion_policy.c"
        "needs_you_policy.c" "needs_you_send_policy.c"
        "interaction_relay_policy.c"
+       "agent_status_source_policy.c"
        "agent_monitor.c" "agent_assets.c"
        "github_status_parse.c" "project_star_popup_policy.c"
        "project_star_assets.c" "project_star_chime.c" "project_star_popup.c"
        "agent_net_policy.c" "net.c" "agent_net.c" "needs_you_net.c"
        "github_net.c"
        "max_tracker_parse.c" "max_tracker_presenter.c")
-if(CONFIG_TK_VIBEPULSE_INTERACTION_RELAY)
+if(CONFIG_TK_VIBEPULSE_INTERACTION_RELAY OR CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY)
   # Shape contracts (not values): URL=https origin, mailbox
   # vp_[A-Za-z0-9_-]{16}, token [A-Za-z0-9_-]{43}, key [A-Fa-f0-9]{64}.
   set(TK_IR_RECOVERY [=[Encrypted interaction relay is enabled but incomplete.
 Add URL, mailbox, panel token, and the 64-hex device key to secrets.h,
 or run: python3 tools/vibepulse_setup.py relay doctor
-To return to LAN-only: disable TK_VIBEPULSE_INTERACTION_RELAY in menuconfig.]=])
+To return to LAN-only: disable TK_VIBEPULSE_INTERACTION_RELAY and
+TK_VIBEPULSE_AGENT_STATUS_RELAY in menuconfig.]=])
   set(TK_SECRETS_PATH "${CMAKE_CURRENT_LIST_DIR}/../../secrets.h")
   if(NOT EXISTS "${TK_SECRETS_PATH}")
     message(FATAL_ERROR "${TK_IR_RECOVERY}")
@@ -71,7 +73,7 @@ idf_component_register(
 # ESP-IDF discovers PRIV_REQUIRES before Kconfig values exist. Add the optional
 # relay dependencies to the component target after configuration instead, so a
 # relay-off build does not acquire crypto/timer dependencies.
-if(CONFIG_TK_VIBEPULSE_INTERACTION_RELAY)
+if(CONFIG_TK_VIBEPULSE_INTERACTION_RELAY OR CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY)
   foreach(TK_IR_DEP IN ITEMS mbedtls esp_hw_support esp_timer)
     idf_component_get_property(TK_IR_DEP_LIB ${TK_IR_DEP} COMPONENT_LIB)
     target_link_libraries(${COMPONENT_LIB} PRIVATE ${TK_IR_DEP_LIB})

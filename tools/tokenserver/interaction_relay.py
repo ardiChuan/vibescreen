@@ -23,11 +23,13 @@ try:
     from .interaction_relay_crypto import (
         RelayRequest,
         RelayVerdict,
+        MAX_STATUS_BYTES,
         b64url_decode,
         decode_device_key,
         decode_verdict,
         derive_keys,
         encode_request,
+        encode_status,
         verify_verdict_mac,
     )
     from .interactions import RelayPublishJob, RelayResolution
@@ -35,11 +37,13 @@ except ImportError:  # pragma: no cover - direct script import convention
     from interaction_relay_crypto import (
         RelayRequest,
         RelayVerdict,
+        MAX_STATUS_BYTES,
         b64url_decode,
         decode_device_key,
         decode_verdict,
         derive_keys,
         encode_request,
+        encode_status,
         verify_verdict_mac,
     )
     from interactions import RelayPublishJob, RelayResolution
@@ -51,6 +55,8 @@ DELETE_CAPACITY = 8
 MIN_BACKOFF_S = 0.5
 MAX_BACKOFF_S = 5.0
 POLL_INTERVAL_S = 0.5
+STATUS_PUBLISH_INTERVAL_S = 2.0
+STATUS_EXPIRY_S = 15
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,14 @@ class _PublishState:
 class _DeleteState:
     request_id: str
     next_attempt: float = 0.0
+    failures: int = 0
+
+
+@dataclass
+class _StatusPublishState:
+    envelope: bytes
+    publication_id: int
+    next_attempt: float
     failures: int = 0
 
 
@@ -197,12 +211,16 @@ def _default_transport(method: str, url: str,
 
 
 class InteractionRelay:
-    """Single-threaded, fail-closed host adapter for relay mode."""
+    """Fail-closed host adapter with independent interaction/status workers."""
 
     def __init__(
             self, *, store, base_url: str, mailbox: str, mac_token: str,
             device_key_hex: str, transport=None,
+            publish_interactions: bool = True,
+            publish_agent_status: bool = False,
+            status_source=None,
             now: Callable[[], float] = time.monotonic,
+            wall: Callable[[], float] = time.time,
             random_bytes: Callable[[int], bytes] = secrets.token_bytes,
             jitter: Callable[[], float] = secrets.SystemRandom().random,
             sleeper: Callable[[float], None] = time.sleep,
@@ -220,12 +238,24 @@ class InteractionRelay:
                 not math.isfinite(read_timeout) or \
                 connect_timeout <= 0 or read_timeout <= 0:
             raise ValueError("invalid relay timeout")
+        if type(publish_interactions) is not bool or \
+                type(publish_agent_status) is not bool or \
+                not (publish_interactions or publish_agent_status):
+            raise ValueError("at least one relay feature must be enabled")
+        if publish_interactions and store is None:
+            raise ValueError("interaction relay requires a store")
+        if publish_agent_status and not callable(status_source):
+            raise ValueError("status relay requires a source")
         self._store = store
+        self._publish_interactions = publish_interactions
+        self._publish_agent_status = publish_agent_status
+        self._status_source = status_source
         self._mailbox = mailbox
         self._mac_token = mac_token
         self._keys = derive_keys(decode_device_key(device_key_hex), mailbox)
         self._transport = transport or _default_transport
         self._now = now
+        self._wall = wall
         self._random_bytes = random_bytes
         self._jitter = jitter
         self._sleeper = sleeper
@@ -237,9 +267,15 @@ class InteractionRelay:
         self._deletes: dict[str, _DeleteState] = {}
         self._next_poll = 0.0
         self._poll_failures = 0
+        self._status_state: Optional[_StatusPublishState] = None
+        self._next_status = 0.0
+        self._last_publication_id = 0
+        self._status_prepare_failures = 0
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        store.set_relay_listener(self)
+        self._status_thread: Optional[threading.Thread] = None
+        if self._publish_interactions:
+            store.set_relay_listener(self)
 
     @property
     def publish_queue_size(self) -> int:
@@ -250,7 +286,8 @@ class InteractionRelay:
         return self._thread
 
     def on_park(self, job: RelayPublishJob) -> None:
-        if not isinstance(job, RelayPublishJob):
+        if not self._publish_interactions or \
+                not isinstance(job, RelayPublishJob):
             return
         try:
             self._events.put_nowait(("park", job))
@@ -258,7 +295,8 @@ class InteractionRelay:
             self._audit_event("queue_full", "put_request", None)
 
     def on_remove(self, request_id: str, reason: str) -> None:
-        if not isinstance(request_id, str) or not isinstance(reason, str):
+        if not self._publish_interactions or \
+                not isinstance(request_id, str) or not isinstance(reason, str):
             return
         event = ("remove", (request_id, reason))
         try:
@@ -292,26 +330,46 @@ class InteractionRelay:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
+        target = (self._run_interactions if self._publish_interactions
+                  else self._run_status)
+        name = ("vibepulse-interaction-relay" if self._publish_interactions
+                else "vibepulse-agent-status-relay")
         self._thread = threading.Thread(
-            target=self._run, name="vibepulse-interaction-relay",
-            daemon=True)
+            target=target, name=name, daemon=True)
         self._thread.start()
+        if self._publish_interactions and self._publish_agent_status:
+            self._status_thread = threading.Thread(
+                target=self._run_status,
+                name="vibepulse-agent-status-relay", daemon=True)
+            self._status_thread.start()
 
     def stop(self) -> None:
-        self._store.set_relay_listener(None)
+        if self._publish_interactions:
+            self._store.set_relay_listener(None)
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=max(1.0, self._connect_timeout +
                                           self._read_timeout + 0.5))
+        if self._status_thread is not None:
+            self._status_thread.join(
+                timeout=max(1.0, self._connect_timeout +
+                            self._read_timeout + 0.5))
 
-    def _run(self) -> None:
+    def _run_interactions(self) -> None:
         while not self._stop.is_set():
             try:
-                self.run_once()
+                self._run_interactions_once()
             except Exception:
-                self._audit_event("cycle_failed", "worker", None)
-            # Event.wait keeps a test-injected no-op sleeper from creating a
-            # hot loop, and lets shutdown interrupt the idle wait promptly.
+                self._audit_event(
+                    "cycle_failed", "interaction_worker", None)
+            self._stop.wait(0.05)
+
+    def _run_status(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._run_status_once()
+            except Exception:
+                self._audit_event("cycle_failed", "status_worker", None)
             self._stop.wait(0.05)
 
     def _backoff(self, failures: int) -> float:
@@ -372,17 +430,92 @@ class InteractionRelay:
         self._deletes[request_id] = _DeleteState(
             request_id=request_id, next_attempt=now)
 
-    def run_once(self) -> None:
+    def _cycle_time(self) -> Optional[float]:
         now = self._now()
         if not isinstance(now, (int, float)) or isinstance(now, bool) or \
                 not math.isfinite(now):
+            return None
+        return float(now)
+
+    def _run_interactions_once(self) -> None:
+        now = self._cycle_time()
+        if now is None:
             return
-        self._drain_events(float(now))
-        self._process_deletes(float(now))
-        self._process_publishes(float(now))
-        if any(state.published for state in self._publishes.values()) and \
-                now >= self._next_poll:
-            self._poll(float(now))
+        self._drain_events(now)
+        self._process_deletes(now)
+        self._process_publishes(now)
+        if self._publish_interactions:
+            if any(state.published for state in self._publishes.values()) and \
+                    now >= self._next_poll:
+                self._poll(now)
+
+    def _run_status_once(self) -> None:
+        now = self._cycle_time()
+        if now is not None:
+            self._process_status(now)
+
+    def run_once(self) -> None:
+        """Run both enabled paths synchronously for deterministic tests."""
+        if self._publish_interactions:
+            self._run_interactions_once()
+        if self._publish_agent_status:
+            self._run_status_once()
+
+    def _prepare_status(self, now: float) -> None:
+        if self._status_state is not None or now < self._next_status:
+            return
+        try:
+            wall = self._wall()
+            if not isinstance(wall, (int, float)) or isinstance(wall, bool) or \
+                    not math.isfinite(wall) or wall <= 0:
+                raise ValueError("invalid wall clock")
+            snapshot = self._status_source()
+            if not isinstance(snapshot, dict):
+                raise ValueError("invalid status snapshot")
+            public = {key: value for key, value in snapshot.items()
+                      if key != "pending"}
+            status_bytes = _canonical_object(public)
+            if not status_bytes or len(status_bytes) > MAX_STATUS_BYTES:
+                raise ValueError("status snapshot is too large")
+            milliseconds = int(wall * 1000)
+            publication_id = max(self._last_publication_id + 1, milliseconds)
+            expires_at = int(wall) + STATUS_EXPIRY_S
+            if publication_id > 0xFFFFFFFFFFFFFFFF or \
+                    expires_at > 0xFFFFFFFF:
+                raise ValueError("status clock is out of range")
+            envelope = encode_status(
+                self._keys, self._mailbox, publication_id, expires_at,
+                status_bytes, nonce=self._random_bytes(12),
+                padding=self._random_bytes)
+            self._last_publication_id = publication_id
+            self._status_state = _StatusPublishState(
+                envelope=envelope, publication_id=publication_id,
+                next_attempt=now)
+            self._status_prepare_failures = 0
+        except Exception:
+            self._status_prepare_failures += 1
+            self._next_status = now + self._backoff(
+                self._status_prepare_failures)
+            self._audit_event("encode_failed", "put_status", None)
+
+    def _process_status(self, now: float) -> None:
+        self._prepare_status(now)
+        state = self._status_state
+        if state is None or now < state.next_attempt:
+            return
+        route = f"/v1/mailboxes/{quote(self._mailbox, safe='')}/status"
+        try:
+            response = self._request("PUT", route, state.envelope)
+            _validate_response(response, json_body=False)
+            if response.status != 201 or response.body:
+                raise ValueError("relay status publish rejected")
+            self._status_state = None
+            self._next_status = now + STATUS_PUBLISH_INTERVAL_S
+            self._audit_event("ok", "put_status", response.status)
+        except Exception:
+            state.failures += 1
+            state.next_attempt = now + self._backoff(state.failures)
+            self._audit_event("failed", "put_status", None)
 
     def _request(self, method: str, route: str,
                  body: bytes = b"") -> HttpResponse:

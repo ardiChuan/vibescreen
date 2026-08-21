@@ -17,4 +17,13 @@ config TK_VIBEPULSE_INTERACTION_RELAY
         verdicts. This is independent of the numbers relay and remains off
         in a fresh clone. Enabling it requires the four matching macros in
         secrets.h; the build fails with recovery instructions if incomplete.
+config TK_VIBEPULSE_AGENT_STATUS_RELAY
+    bool "Encrypted live Claude/Codex status relay"
+    default n
+    select MBEDTLS_HKDF_C
+    help
+        Poll the same user-owned Cloudflare mailbox for a minimized,
+        fixed-size, end-to-end encrypted live agent snapshot when direct LAN
+        status has been unavailable for five seconds. Direct LAN always wins.
+        This switch is independent and remains off in a fresh clone.
 endmenu
