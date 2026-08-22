@@ -90,6 +90,26 @@ class NumbersRelayJsWiringTests(unittest.TestCase):
             "tools/relay/package-lock.json",
         )
 
+    def test_host_gate_skips_javascript_suites(self) -> None:
+        host_gate_runs = self.step_runs(self.jobs["host-gate"])
+        run_sh_commands = [
+            command.strip()
+            for command in host_gate_runs
+            if "./test/run.sh" in command
+        ]
+
+        self.assertEqual(
+            run_sh_commands,
+            ["xvfb-run -a ./test/run.sh --skip-js"],
+        )
+        self.assertFalse(
+            any(
+                "node --test tools/relay/test.mjs" in command
+                or "npm test" in command
+                for command in host_gate_runs
+            )
+        )
+
     def test_tokenserver_matrix_does_not_run_numbers_relay_suites(self) -> None:
         tokenserver_job = self.jobs["tokenserver"]
 
