@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import unittest
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,10 +18,16 @@ def read(relative: str) -> str:
 class NumbersRelayJsWiringTests(unittest.TestCase):
     def setUp(self) -> None:
         self.runner = read("test/run.sh")
-        workflow = read(".github/workflows/ci.yml")
-        self.tokenserver_job = workflow.split("\n  tokenserver:", 1)[1].split(
-            "\n  firmware:", 1
-        )[0]
+        workflow = yaml.safe_load(read(".github/workflows/ci.yml"))
+        self.jobs = workflow["jobs"]
+
+    @staticmethod
+    def step_runs(job: dict) -> list[str]:
+        return [
+            step["run"]
+            for step in job["steps"]
+            if isinstance(step, dict) and "run" in step
+        ]
 
     def test_full_runner_runs_each_numbers_relay_suite_once(self) -> None:
         merge_command = "node --test tools/relay/test.mjs"
@@ -43,23 +51,61 @@ class NumbersRelayJsWiringTests(unittest.TestCase):
         self.assertIn(runtime_command, node_branch)
         self.assertIn('if [ "$SKIP_JS" = 1 ]; then', self.runner)
 
-    def test_ci_runs_each_numbers_relay_suite_once_with_pinned_install(self) -> None:
+    def test_ci_owns_relay_suites_in_one_non_matrix_job(self) -> None:
+        merge_command = "node --test tools/relay/test.mjs"
+        runtime_command = "(cd tools/relay && npm ci && npm test)"
+
+        self.assertIn("numbers-relay", self.jobs)
+        numbers_job = self.jobs["numbers-relay"]
+        self.assertEqual(numbers_job["runs-on"], "ubuntu-latest")
+        self.assertNotIn("strategy", numbers_job)
+
+        runs = self.step_runs(numbers_job)
+        self.assertEqual(runs.count(merge_command), 1)
+        self.assertEqual(runs.count(runtime_command), 1)
+
+        merge_owners = [
+            name
+            for name, job in self.jobs.items()
+            if merge_command in self.step_runs(job)
+        ]
+        runtime_owners = [
+            name
+            for name, job in self.jobs.items()
+            if runtime_command in self.step_runs(job)
+        ]
+        self.assertEqual(merge_owners, ["numbers-relay"])
+        self.assertEqual(runtime_owners, ["numbers-relay"])
+
+        setup_node = [
+            step
+            for step in numbers_job["steps"]
+            if step.get("uses") == "actions/setup-node@v4"
+        ]
+        self.assertEqual(len(setup_node), 1)
+        self.assertEqual(setup_node[0]["with"]["node-version"], 22)
+        self.assertEqual(setup_node[0]["with"]["cache"], "npm")
         self.assertEqual(
-            self.tokenserver_job.count("node --test tools/relay/test.mjs"), 1
+            setup_node[0]["with"]["cache-dependency-path"],
+            "tools/relay/package-lock.json",
         )
-        self.assertEqual(
-            self.tokenserver_job.count("working-directory: tools/relay"), 1
+
+    def test_tokenserver_matrix_does_not_run_numbers_relay_suites(self) -> None:
+        tokenserver_job = self.jobs["tokenserver"]
+
+        self.assertIn("matrix", tokenserver_job["strategy"])
+        self.assertFalse(
+            any(
+                step.get("uses") == "actions/setup-node@v4"
+                for step in tokenserver_job["steps"]
+            )
         )
-        self.assertEqual(
-            self.tokenserver_job.count("run: npm ci && npm test"), 1
+        self.assertFalse(
+            any(
+                "tools/relay" in run or "npm test" in run
+                for run in self.step_runs(tokenserver_job)
+            )
         )
-        self.assertEqual(
-            self.tokenserver_job.count("cache-dependency-path: "
-                                       "tools/relay/package-lock.json"),
-            1,
-        )
-        self.assertEqual(self.tokenserver_job.count("actions/setup-node@v4"), 1)
-        self.assertEqual(self.tokenserver_job.count("node-version: 22"), 1)
 
     def test_npm_runtime_suite_does_not_repeat_merge_suite(self) -> None:
         package = json.loads(read("tools/relay/package.json"))
