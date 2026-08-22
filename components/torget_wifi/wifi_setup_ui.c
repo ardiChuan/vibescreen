@@ -38,7 +38,7 @@ extern const lv_font_t plex_ui_21;
  * it in test_wifi_onboarding_design.py. Keep these raw integer lines simple:
  * the validator deliberately parses them instead of trusting comments. */
 #define WIFI_OPEN_WORD_Y        24
-#define WIFI_OPEN_INSTRUCTION_Y 82
+#define WIFI_OPEN_INSTRUCTION_Y 72
 #define WIFI_OPEN_QR_X          142
 #define WIFI_OPEN_QR_Y          108
 #define WIFI_OPEN_QR_SIZE       196

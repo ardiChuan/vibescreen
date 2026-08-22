@@ -45,6 +45,7 @@ class WifiOnboardingDesignTests(unittest.TestCase):
             },
         )
         opened = design["open"]
+        self.assertEqual(opened["instructionY"], 72)
         self.assertEqual(
             set(opened),
             {
