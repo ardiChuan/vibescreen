@@ -67,12 +67,17 @@ Within one transaction, the mailbox:
 1. validates whether the publisher is already registered;
 2. registers it only when fewer than `MAX_PUBLISHERS` (eight) exist;
 3. rejects a ninth publisher without changing any existing state;
-4. stores the endpoint document with its receipt timestamp; and
-5. commits both changes together before acknowledging success.
+4. increments a mailbox-owned monotonic receipt sequence;
+5. stores that sequence and the endpoint document; and
+6. commits the counter, registry, and document together before acknowledging
+   success.
 
 Concurrent first publications serialize through the same mailbox and cannot
 lose or displace peers. Storage errors fail the request; the existing
-tokenserver publisher retries later.
+tokenserver publisher retries later. The public Worker and direct RPC callers
+cannot supply `received_at`; extra RPC arguments have no authority over order.
+This prevents a delayed caller or wall-clock skew from making a later stored
+body look older than the body it replaces.
 
 ### GET from the panel
 
@@ -86,30 +91,76 @@ No request calls Workers KV `list()` or uses an eventually consistent dynamic
 index. Public URLs and the firmware response contract do not change, so the
 repair needs a Worker deployment and tokenserver restart, not firmware or OTA.
 
-## Storage, migration, and rollback
+Unexpected mailbox binding, RPC, or storage failures retain the existing 503
+wire response and emit one structured diagnostic containing only the operation
+(`publish` or `read`). Error text, URL secret, publisher, and body are never
+logged.
+
+## Storage, staged migration, and rollback
 
 The deployment adds a `NUMBERS_MAILBOX` Durable Object binding and a
 SQLite-backed `NumbersMailbox` export. The existing `VIBEPULSE` KV binding and
 data are retained temporarily for rollback but are not read or written by the
 new request path.
 
-The new mailbox begins empty. Immediately after deployment, restart each
-active tokenserver publisher so all three endpoint documents are republished.
-Do not claim recovery until the cloud endpoints match the local tokenserver.
+Cloudflare does not allow a Worker rollback to cross a Durable Object class
+lifecycle change. This applies to the current declarative `exports` flow as
+well as legacy migrations. Therefore rollout has two explicit deployments:
 
-Cloudflare version history remains the emergency rollback. Rolling back
-restores the old KV data and public contract, but also restores the exhausted
-list-operation failure. No destructive KV cleanup is part of this change.
+1. Create a private production JSON config with the real existing KV namespace
+   ID, `main: "bootstrap.js"`, the `NUMBERS_MAILBOX` binding, the SQLite
+   `NumbersMailbox` export, and `RELAY_SECRET` in `secrets.required`. Deploy it
+   through the guard. This provisions the class while the bootstrap continues
+   serving the old KV list/get/put request path. Capture this bootstrap version.
+2. Change only `main` to `worker.js`, re-run the guarded dry build, then deploy.
+   This activates the list-free Durable Object path without another class
+   lifecycle change.
+
+If stage 2 fails, rollback is allowed only to the captured bootstrap version,
+because it is already on the Durable Object side of the lifecycle boundary.
+Direct rollback to any pre-Durable-Object version is prohibited and must never
+be promised. The bootstrap restores the old public KV behavior (including its
+exhausted list-quota failure mode), and the existing KV data remains untouched.
+These constraints follow Cloudflare's current
+[Durable Object class exports](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/)
+and [Worker rollback](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)
+documentation.
+
+The new mailbox begins empty. Immediately after stage 2, restart each active
+tokenserver publisher so all three endpoint documents are republished. Do not
+claim recovery until the cloud endpoints match the local tokenserver. No
+destructive KV cleanup is part of this change.
+
+## Deployment safety
+
+The all-zero KV namespace exists only in explicitly named test configurations;
+their Worker names also end in `-test`. The default Wrangler config points to a
+missing sentinel entrypoint, so plain `wrangler deploy` from `tools/relay`
+cannot upload a Worker. Production deployment requires the checked wrapper, an
+explicit absolute private strict-JSON config outside the repository, the
+expected nonzero real KV ID, and the expected stage entrypoint. The wrapper
+rejects the wrong Worker name, entrypoint, KV binding/ID, Durable Object
+binding/export, legacy migrations, or missing required-secret declaration
+before starting Wrangler.
+
+CI uses a separate command that can only invoke pinned Wrangler with
+`--dry-run`. It compiles both test configurations (`bootstrap.js` and
+`worker.js`) and cannot select a live deploy mode. Required secret names use
+Cloudflare's current
+[declarative secrets configuration](https://developers.cloudflare.com/workers/wrangler/configuration/#secrets),
+never plaintext values.
 
 ## Budget
 
 At a 30-second panel cadence, three endpoints produce 8,640 mailbox requests
 per day. With the normal two publishers, each GET reads at most two document
-rows; publisher writes remain capped at 384 per day for one continuously
-changing publisher or 768 for two. This is far below the Durable Objects free
-allowances of 5 million row reads and 100,000 row writes per day. Eight active
-publishers remain within the read allowance, although the publisher write
-budget still makes one or two active publishers the supported normal case.
+rows. Every admitted publication updates one counter row and one document row,
+plus a one-time publisher row: 384 daily publications are 768 steady-state row
+writes for one publisher, or 1,536 for two. This is far below the Durable
+Objects free allowances of 5 million row reads and 100,000 row writes per day.
+Eight active publishers remain within the read allowance, although the
+publisher write budget still makes one or two active publishers the supported
+normal case.
 
 ## Verification
 
@@ -122,13 +173,21 @@ Regression tests must prove:
 - concurrent registration preserves every admitted publisher;
 - a ninth publisher is rejected without displacement;
 - registration and document storage commit atomically;
-- storage failures return an error and do not partially publish state;
+- storage failures return an error and roll back the receipt counter,
+  publisher, and document together;
+- neither the public Worker nor direct RPC callers can choose receipt order;
 - token pools merge by observation timestamps across publishers;
 - Max Tracker and GitHub retain newest-publication behavior;
 - missing and corrupt stored records fail safely;
 - the numbers-only privacy boundary and publisher daily-write ceiling remain
   green;
-- Wrangler validates the SQLite Durable Object binding/export configuration.
+- the rollback bootstrap exports the class while preserving the old KV public
+  contract;
+- mailbox 503 diagnostics are useful but reveal no secret, publisher, body, or
+  RPC error text;
+- the deployment guard rejects invalid private configs before child-process
+  execution;
+- pinned Wrangler dry-builds both staged entrypoints without remote mutation.
 
 Before deployment run focused Worker/mailbox tests, publisher tests, privacy
 tests, the full repository gate, and a Wrangler dry run. After deployment,

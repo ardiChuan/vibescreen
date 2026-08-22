@@ -10,8 +10,10 @@ preserving the numbers-only privacy boundary and existing firmware contract.
 **Architecture:** The public Worker performs the existing authentication and
 validation, then calls one deterministically named `NumbersMailbox` Durable
 Object through `NUMBERS_MAILBOX`. The SQLite-backed object transactionally owns
-the bounded publisher registry and endpoint documents. Existing KV data and
-binding remain untouched only as a rollback safety net.
+the bounded publisher registry, a monotonic receipt counter, and endpoint
+documents. A first-stage bootstrap exports the class while continuing the old
+KV path; the second stage switches to the list-free Worker. Existing KV data
+and binding remain untouched as the only rollback-compatible data path.
 
 **Tech stack:** Cloudflare Workers JavaScript, SQLite-backed Durable Objects,
 Node/Vitest Worker tests as appropriate, Python boundary tests, Wrangler 4.
@@ -19,6 +21,8 @@ Node/Vitest Worker tests as appropriate, Python boundary tests, Wrangler 4.
 ## File map
 
 - Modify `tools/relay/worker.js`: public boundary plus Durable Object class.
+- Add `tools/relay/bootstrap.js`: old KV request path plus the mailbox export.
+- Add `tools/relay/deploy.mjs`: production config guard and CI-only dry build.
 - Modify `tools/relay/test.mjs`: pure merge and public routing regressions.
 - Add only the minimum package/config/test files needed to run a real
   Cloudflare Durable Object test runtime and Wrangler dry build.
@@ -36,10 +40,15 @@ Node/Vitest Worker tests as appropriate, Python boundary tests, Wrangler 4.
   `NUMBERS_MAILBOX` binding, selects one deterministic mailbox, preserves all
   old auth/validation responses, and performs no KV request-path operation.
 - [ ] Implement `NumbersMailbox` with SQLite storage and synchronous
-  transactions. Keep all SQL bounded by the existing eight-publisher limit.
+  transactions. Its singleton monotonic receipt sequence, publisher registry,
+  and document write must commit or roll back together. Keep all SQL bounded
+  by the existing eight-publisher limit.
+- [ ] Remove caller-provided receipt time from the RPC. Public and direct RPC
+  callers must not control newest-document order.
 - [ ] Route validated requests through a Durable Object stub using RPC or the
   internal fetch interface. Always await the call and translate unexpected
-  mailbox errors to a non-success response without leaking details.
+  mailbox errors to a non-success response plus a sanitized operation-only
+  diagnostic without leaking details.
 - [ ] Preserve `mergeTokens()` and `newestBody()` semantics exactly.
 - [ ] Remove the KV publisher-index code introduced by commit `0e345c1`.
 - [ ] Run focused tests to GREEN and commit only implementation/test/config
@@ -77,26 +86,37 @@ Node/Vitest Worker tests as appropriate, Python boundary tests, Wrangler 4.
 - [ ] Run `tools.tokenserver.test_publisher` and
   `test/test_relay_boundary.py`.
 - [ ] Run `PYTHON_BIN="$PWD/.venv/bin/python" ./test/run.sh`.
-- [ ] Run a Wrangler dry deployment using the repository config/example and
-  confirm the SQLite class is provisionable.
+- [ ] Confirm plain `wrangler deploy --dry-run` fails on the committed sentinel
+  config and cannot select a live Worker.
+- [ ] Run the explicitly dry-only CI command and confirm pinned Wrangler builds
+  both `bootstrap.js` and `worker.js` test configs with `--dry-run`.
+- [ ] Exercise the production deployment guard with invalid private configs and
+  prove no child process starts before every identity/binding check passes.
 - [ ] Review `origin/main..HEAD` for exact scope; no secrets, `.wrangler`,
   generated firmware config, binaries, or panel partition changes.
 
 ## Task 5: Deploy and prove live recovery without OTA
 
-- [ ] Capture the current Worker version and exact live bindings without
-  printing the relay secret.
-- [ ] Build a private temporary Wrangler config outside git using the tested
-  source plus the existing KV namespace ID, `NUMBERS_MAILBOX` binding, and
-  SQLite `NumbersMailbox` export. Re-read it before deploy.
-- [ ] Deploy with preserved secrets/vars and inspect the new version bindings.
+- [ ] Capture the current Worker version, exact live bindings, and existing KV
+  namespace ID without printing the relay secret. This pre-DO version is an
+  audit reference, not a valid rollback target after lifecycle creation.
+- [ ] Build a private strict-JSON Wrangler config outside git with the real
+  existing KV ID, `main: "bootstrap.js"`, `NUMBERS_MAILBOX` binding, SQLite
+  `NumbersMailbox` export, and `RELAY_SECRET` in `secrets.required`.
+- [ ] Run the guarded bootstrap dry build with the same expected real KV ID and
+  expected main, then deploy through the guard. Verify the public path still
+  serves KV and capture the resulting bootstrap version ID.
+- [ ] Change only the private config main to `worker.js`, run the guard in dry
+  mode, then deploy the list-free path. Inspect bindings without secrets.
 - [ ] Restart the existing launchd tokenserver so it republishes all three
   documents into the empty mailbox. Do not change launch arguments.
 - [ ] Wait for local `usage_http_200 + ok` and non-stale Claude fields.
 - [ ] Compare only non-secret local/cloud number fields, then allow one panel
   polling interval and ask the user to confirm `STALE` clears.
-- [ ] If verification fails, roll back to the captured Worker version. Do not
-  touch firmware or OTA as part of relay rollback.
+- [ ] If stage 2 verification fails, roll back only to the captured bootstrap
+  version. Cloudflare prohibits rollbacks across a Durable Object class
+  lifecycle change, so never attempt or promise direct rollback to the pre-DO
+  version. Do not touch firmware or OTA as part of relay rollback.
 
 ## Task 6: Finish branch and return to the Wi-Fi icon
 
