@@ -21,10 +21,18 @@
     "qrX": 142,
     "qrY": 108,
     "qrSize": 196,
-    "ssidY": 316,
-    "passwordY": 350,
-    "addressY": 404,
+    "actionX": 74,
+    "actionY": 326,
+    "actionWidth": 332,
+    "actionHeight": 90,
     "footerY": 442
+  },
+  "manual": {
+    "instructionY": 94,
+    "ssidY": 142,
+    "passwordY": 204,
+    "addressY": 268,
+    "actionY": 326
   },
   "fonts": {
     "word": 52,

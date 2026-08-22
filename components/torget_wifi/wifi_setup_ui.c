@@ -42,10 +42,16 @@ extern const lv_font_t plex_ui_21;
 #define WIFI_OPEN_QR_X          142
 #define WIFI_OPEN_QR_Y          108
 #define WIFI_OPEN_QR_SIZE       196
-#define WIFI_OPEN_SSID_Y        316
-#define WIFI_OPEN_PASSWORD_Y    350
-#define WIFI_OPEN_ADDRESS_Y     404
+#define WIFI_OPEN_ACTION_X      74
+#define WIFI_OPEN_ACTION_Y      326
+#define WIFI_OPEN_ACTION_WIDTH  332
+#define WIFI_OPEN_ACTION_HEIGHT 90
 #define WIFI_OPEN_FOOTER_Y      442
+
+#define WIFI_MANUAL_INSTRUCTION_Y 94
+#define WIFI_MANUAL_SSID_Y        142
+#define WIFI_MANUAL_PASSWORD_Y    204
+#define WIFI_MANUAL_ADDRESS_Y     268
 
 static struct {
   lv_obj_t *overlay;
@@ -55,17 +61,27 @@ static struct {
   lv_obj_t *primary;   /* nätnamnet                                       */
   lv_obj_t *secondary; /* setupfönstrets lösenord (mono)                  */
   lv_obj_t *hint1;     /* "THEN OPEN 192.168.4.1"                         */
-  lv_obj_t *hint2;     /* "OR RUN tools/wifi-here.sh"                     */
   lv_obj_t *detail;    /* ärlig orsaksrad                                 */
   lv_obj_t *foot;      /* nedräkning + utgången                           */
+  lv_obj_t *action;    /* stor MANUAL SETUP / BACK TO QR-kontroll         */
+  lv_obj_t *action_label;
   tg_wifi_ui_state rendered_state;
   char rendered_primary[64];
   char rendered_secondary[32];
   char rendered_detail[64];
   char rendered_qr_payload[TG_WIFI_QR_PAYLOAD_CAP];
   bool qr_available;
+  bool manual_details;
   int rendered_seconds;
 } ui;
+
+static void render_open_view(void);
+
+static void action_clicked_cb(lv_event_t *event) {
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+  torget_wifi_ui_set_manual_details(!ui.manual_details);
+  lv_event_stop_bubbling(event);
+}
 
 static lv_obj_t *line(lv_obj_t *parent, const lv_font_t *font, lv_color_t color,
                       int y) {
@@ -91,9 +107,9 @@ void torget_wifi_ui_create(void) {
   lv_obj_set_pos(ui.overlay, 0, 0);
   lv_obj_set_style_bg_color(ui.overlay, lv_color_black(), 0);
   lv_obj_set_style_bg_opa(ui.overlay, LV_OPA_COVER, 0);
-  /* Slukar touch: fingret ska inte nå apparna bakom svart glas. Lagret
-   * bär medvetet INGEN knapp — allt som kan ändra nätet ska ske via
-   * accesspunkten, aldrig via en tapp som råkar landa fel. */
+  /* Slukar touch: fingret ska inte nå apparna bakom svart glas. Den enda
+   * kontrollen växlar QR/manual presentation; nätet ändras fortfarande
+   * enbart via telefonportalen. */
   lv_obj_add_flag(ui.overlay, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(ui.overlay, LV_OBJ_FLAG_HIDDEN);
 
@@ -110,14 +126,29 @@ void torget_wifi_ui_create(void) {
   ui.primary = line(ui.overlay, &plex_body_27, lv_color_white(), 170);
   ui.secondary = line(ui.overlay, &plex_mono_24, lv_color_white(), 214);
   ui.hint1 = line(ui.overlay, &plex_ui_21, COL_MUTED, 278);
-  ui.hint2 = line(ui.overlay, &plex_ui_21, COL_MUTED, 306);
   ui.detail = line(ui.overlay, &plex_ui_21, COL_MUTED, 214);
   ui.foot = line(ui.overlay, &plex_ui_21, COL_MUTED, 396);
 
   lv_obj_set_style_text_letter_space(ui.lead, 2, 0);
   lv_obj_set_style_text_letter_space(ui.hint1, 2, 0);
-  lv_obj_set_style_text_letter_space(ui.hint2, 2, 0);
   lv_obj_set_style_text_letter_space(ui.foot, 2, 0);
+
+  ui.action = lv_obj_create(ui.overlay);
+  lv_obj_remove_style_all(ui.action);
+  lv_obj_set_size(ui.action, WIFI_OPEN_ACTION_WIDTH, WIFI_OPEN_ACTION_HEIGHT);
+  lv_obj_set_pos(ui.action, WIFI_OPEN_ACTION_X, WIFI_OPEN_ACTION_Y);
+  lv_obj_set_style_radius(ui.action, 28, 0);
+  lv_obj_set_style_border_width(ui.action, 2, 0);
+  lv_obj_set_style_border_color(ui.action, COL_MUTED, 0);
+  lv_obj_add_flag(ui.action, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(ui.action, LV_OBJ_FLAG_HIDDEN);
+  ui.action_label = lv_label_create(ui.action);
+  lv_obj_set_style_text_font(ui.action_label, &plex_ui_21, 0);
+  lv_obj_set_style_text_color(ui.action_label, lv_color_white(), 0);
+  lv_obj_set_style_text_letter_space(ui.action_label, 2, 0);
+  lv_label_set_text(ui.action_label, "MANUAL SETUP");
+  lv_obj_center(ui.action_label);
+  lv_obj_add_event_cb(ui.action, action_clicked_cb, LV_EVENT_CLICKED, NULL);
 
   ui.rendered_state = TG_WIFI_UI_HIDDEN;
 }
@@ -172,6 +203,58 @@ static bool update_qr(const char *ssid, const char *password) {
   return true;
 }
 
+static void render_open_view(void) {
+  const bool qr_open = ui.qr_available && !ui.manual_details;
+  position(ui.word, WIFI_OPEN_WORD_Y);
+  position(ui.foot, WIFI_OPEN_FOOTER_Y);
+  lv_obj_set_pos(ui.action, WIFI_OPEN_ACTION_X, WIFI_OPEN_ACTION_Y);
+
+  if (qr_open && !ui.manual_details) {
+    position(ui.lead, WIFI_OPEN_INSTRUCTION_Y);
+    lv_label_set_text(ui.lead, "SCAN WITH YOUR PHONE");
+    lv_label_set_text(ui.primary, "");
+    lv_label_set_text(ui.secondary, "");
+    lv_label_set_text(ui.hint1, "");
+    lv_label_set_text(ui.action_label, "MANUAL SETUP");
+  } else {
+    char password_line[TG_WIFI_PASS_CAP + 16];
+    position(ui.lead, WIFI_MANUAL_INSTRUCTION_Y);
+    position(ui.primary, WIFI_MANUAL_SSID_Y);
+    position(ui.secondary, WIFI_MANUAL_PASSWORD_Y);
+    position(ui.hint1, WIFI_MANUAL_ADDRESS_Y);
+    lv_label_set_text(ui.lead, "MANUAL CONNECTION");
+    lv_label_set_text(ui.primary, ui.rendered_primary);
+    if (ui.rendered_secondary[0])
+      snprintf(password_line, sizeof password_line, "PASSWORD  %s",
+               ui.rendered_secondary);
+    else
+      snprintf(password_line, sizeof password_line, "OPEN NETWORK");
+    lv_label_set_text(ui.secondary, password_line);
+    lv_label_set_text(ui.hint1, "OPEN  192.168.4.1");
+    lv_label_set_text(ui.action_label, "BACK TO QR");
+  }
+
+  show(ui.qr, qr_open);
+  show(ui.primary, !qr_open);
+  show(ui.secondary, !qr_open);
+  show(ui.hint1, !qr_open);
+  show(ui.action, ui.qr_available);
+}
+
+void torget_wifi_ui_set_manual_details(bool visible) {
+  if (!ui.overlay || ui.rendered_state != TG_WIFI_UI_OPEN) return;
+  if (!ui.qr_available) visible = true;
+  if (visible == ui.manual_details) return;
+  if (!torget_ui_try_lock(200)) return;
+  ui.manual_details = visible;
+  render_open_view();
+  /* The simulator exports each state into a fresh framebuffer, and the
+   * physical transition should be complete even after a partial flush. This
+   * happens only on the user's manual/QR tap, never on the countdown tick. */
+  lv_obj_invalidate(ui.overlay);
+  torget_ui_unlock();
+}
+
 void torget_wifi_ui_set(tg_wifi_ui_state state, const char *primary,
                         const char *secondary, const char *detail,
                         int seconds_left) {
@@ -193,6 +276,8 @@ void torget_wifi_ui_set(tg_wifi_ui_state state, const char *primary,
     torget_ui_unlock();
     return;
   }
+  const bool entering_open = state == TG_WIFI_UI_OPEN &&
+                             ui.rendered_state != TG_WIFI_UI_OPEN;
   ui.rendered_state = state;
   store(ui.rendered_primary, sizeof ui.rendered_primary, primary);
   store(ui.rendered_secondary, sizeof ui.rendered_secondary, secondary);
@@ -205,8 +290,10 @@ void torget_wifi_ui_set(tg_wifi_ui_state state, const char *primary,
     memset(ui.rendered_secondary, 0, sizeof ui.rendered_secondary);
     memset(ui.rendered_qr_payload, 0, sizeof ui.rendered_qr_payload);
     ui.qr_available = false;
+    ui.manual_details = false;
     lv_label_set_text(ui.secondary, "");
     lv_canvas_fill_bg(ui.qr, lv_color_white(), LV_OPA_COVER);
+    lv_obj_add_flag(ui.action, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui.overlay, LV_OBJ_FLAG_HIDDEN);
     torget_wifi_status_set_mode(TG_WIFI_STATUS_NORMAL);
     torget_ui_unlock();
@@ -219,41 +306,24 @@ void torget_wifi_ui_set(tg_wifi_ui_state state, const char *primary,
 
   const bool open = (state == TG_WIFI_UI_OPEN);
   const bool qr_open = open && update_qr(primary, secondary);
-  char password_line[TG_WIFI_PASS_CAP + 16];
-  if (open && secondary && secondary[0])
-    snprintf(password_line, sizeof password_line, "PASSWORD  %s", secondary);
-  else
-    snprintf(password_line, sizeof password_line, "OPEN NETWORK");
-  lv_label_set_text(ui.secondary, open ? password_line : "");
-
-  if (qr_open) {
-    position(ui.word, WIFI_OPEN_WORD_Y);
-    position(ui.lead, WIFI_OPEN_INSTRUCTION_Y);
-    position(ui.primary, WIFI_OPEN_SSID_Y);
-    position(ui.secondary, WIFI_OPEN_PASSWORD_Y);
-    position(ui.hint1, WIFI_OPEN_ADDRESS_Y);
-    position(ui.foot, WIFI_OPEN_FOOTER_Y);
-    lv_label_set_text(ui.lead, "SCAN WITH YOUR PHONE");
-    lv_label_set_text(ui.hint1, "OPEN  192.168.4.1  IF NEEDED");
-    lv_label_set_text(ui.hint2, "");
+  if (open) {
+    if (entering_open) ui.manual_details = false;
+    if (!qr_open) ui.manual_details = true;
+    render_open_view();
   } else {
     position(ui.word, 52);
     position(ui.lead, 140);
     position(ui.primary, 170);
     position(ui.secondary, 214);
     position(ui.hint1, 278);
-    position(ui.hint2, 306);
     position(ui.foot, 396);
-    lv_label_set_text(ui.lead, open ? "JOIN THIS NETWORK" : "");
-    lv_label_set_text(ui.hint1, open ? "THEN OPEN  192.168.4.1" : "");
-    lv_label_set_text(ui.hint2, open ? "OR RUN  tools/wifi-here.sh" : "");
+    lv_label_set_text(ui.lead, "");
+    lv_label_set_text(ui.secondary, "");
+    lv_label_set_text(ui.hint1, "");
+    show(ui.action, false);
   }
 
   show(ui.lead, open);
-  show(ui.qr, qr_open);
-  show(ui.secondary, open);
-  show(ui.hint1, open);
-  show(ui.hint2, open && !qr_open);
   /* Orsaksraden och lösenordsraden delar y — bara ett av lägena har båda. */
   show(ui.detail, !open && detail && detail[0]);
 

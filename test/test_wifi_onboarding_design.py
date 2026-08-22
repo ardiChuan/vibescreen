@@ -21,7 +21,10 @@ class WifiOnboardingDesignTests(unittest.TestCase):
     def validate(self, design):
         self.assertEqual(
             set(design),
-            {"schemaVersion", "deviceCapability", "canvas", "wifi", "open", "fonts"},
+            {
+                "schemaVersion", "deviceCapability", "canvas", "wifi",
+                "open", "manual", "fonts",
+            },
         )
         self.assertEqual(design["schemaVersion"], 1)
         self.assertEqual(design["deviceCapability"], "display.amoled")
@@ -42,17 +45,41 @@ class WifiOnboardingDesignTests(unittest.TestCase):
             },
         )
         opened = design["open"]
+        self.assertEqual(
+            set(opened),
+            {
+                "wordY", "instructionY", "qrX", "qrY", "qrSize",
+                "actionX", "actionY", "actionWidth", "actionHeight",
+                "footerY",
+            },
+        )
         self.assertGreaterEqual(opened["qrSize"], 180)
         self.assertGreaterEqual(opened["qrX"], 8)
         self.assertGreaterEqual(opened["qrY"], 8)
         self.assertLessEqual(opened["qrX"] + opened["qrSize"], 472)
-        self.assertLessEqual(opened["qrY"] + opened["qrSize"], opened["ssidY"] - 8)
+        self.assertLessEqual(opened["qrY"] + opened["qrSize"], opened["actionY"] - 8)
+        self.assertGreaterEqual(opened["actionHeight"], 90)
+        self.assertGreaterEqual(opened["actionX"], 8)
+        self.assertLessEqual(
+            opened["actionX"] + opened["actionWidth"], 472,
+        )
         ys = [
             opened["wordY"], opened["instructionY"], opened["qrY"],
-            opened["ssidY"], opened["passwordY"], opened["addressY"],
-            opened["footerY"],
+            opened["actionY"], opened["footerY"],
         ]
         self.assertEqual(ys, sorted(ys))
+        manual = design["manual"]
+        self.assertEqual(
+            set(manual),
+            {
+                "instructionY", "ssidY", "passwordY", "addressY",
+                "actionY",
+            },
+        )
+        self.assertGreaterEqual(opened["actionHeight"], 90)
+        self.assertLessEqual(
+            manual["actionY"] + opened["actionHeight"], opened["footerY"] - 8,
+        )
         self.assertLess(opened["footerY"] + design["fonts"]["footer"], 480)
         for name, size in design["fonts"].items():
             self.assertIs(type(size), int, name)
@@ -67,7 +94,8 @@ class WifiOnboardingDesignTests(unittest.TestCase):
             (("canvas", "width"), 479),
             (("open", "qrSize"), 179),
             (("open", "qrX"), 300),
-            (("open", "ssidY"), 290),
+            (("open", "actionY"), 290),
+            (("open", "actionHeight"), 89),
             (("open", "footerY"), 470),
             (("fonts", "footer"), 13),
         ):
@@ -95,9 +123,10 @@ class WifiOnboardingDesignTests(unittest.TestCase):
             "QR_X": opened["qrX"],
             "QR_Y": opened["qrY"],
             "QR_SIZE": opened["qrSize"],
-            "SSID_Y": opened["ssidY"],
-            "PASSWORD_Y": opened["passwordY"],
-            "ADDRESS_Y": opened["addressY"],
+            "ACTION_X": opened["actionX"],
+            "ACTION_Y": opened["actionY"],
+            "ACTION_WIDTH": opened["actionWidth"],
+            "ACTION_HEIGHT": opened["actionHeight"],
             "FOOTER_Y": opened["footerY"],
         }
         self.assertEqual(macros, expected)
@@ -110,6 +139,21 @@ class WifiOnboardingDesignTests(unittest.TestCase):
         self.assertIn("memset(ui.rendered_qr_payload", hidden)
         self.assertIn("memset(ui.rendered_secondary", hidden)
         self.assertIn('lv_label_set_text(ui.secondary, "")', hidden)
+        self.assertIn('lv_label_set_text(ui.action_label, "MANUAL SETUP")', source)
+        self.assertIn('lv_label_set_text(ui.action_label, "BACK TO QR")', source)
+        self.assertIn("LV_EVENT_CLICKED", source)
+        self.assertIn("torget_wifi_ui_set_manual_details", source)
+        manual_toggle = source.split(
+            "void torget_wifi_ui_set_manual_details(bool visible)", 1
+        )[1].split("void torget_wifi_ui_set(", 1)[0]
+        self.assertIn("lv_obj_invalidate(ui.overlay)", manual_toggle)
+        qr_render = source.split("if (qr_open && !ui.manual_details)", 1)[1]
+        qr_render = qr_render.split("} else {", 1)[0]
+        for secret_copy in (
+            "PASSWORD", "192.168.4.1", "ui.rendered_primary",
+            "ui.rendered_secondary",
+        ):
+            self.assertNotIn(secret_copy, qr_render)
         wifi = self.design["wifi"]
         self.assertIn(
             f"lv_obj_set_pos(tg.wifi_group, {wifi['x']}, {wifi['y']})",

@@ -41,8 +41,13 @@ static const char *TAG = "wifi-setup";
 static struct {
   char ssid[SCAN_MAX][TG_WIFI_SSID_CAP];
   int8_t rssi[SCAN_MAX];
+  wifi_auth_mode_t authmode[SCAN_MAX];
   int n;
 } s_scan;
+
+static bool authmode_requires_password(wifi_auth_mode_t authmode) {
+  return authmode != WIFI_AUTH_OPEN && authmode != WIFI_AUTH_OWE;
+}
 
 static const tg_wifi_setup_hooks *s_hooks;
 static httpd_handle_t s_server;
@@ -131,6 +136,7 @@ static void scan_networks(void) {
     if (dupe) continue;
     snprintf(s_scan.ssid[s_scan.n], TG_WIFI_SSID_CAP, "%s", ssid);
     s_scan.rssi[s_scan.n] = ap[i].rssi;
+    s_scan.authmode[s_scan.n] = ap[i].authmode;
     s_scan.n++;
   }
 
@@ -145,14 +151,17 @@ static void scan_networks(void) {
     char ssid[TG_WIFI_SSID_CAP];
     memcpy(ssid, s_scan.ssid[i], TG_WIFI_SSID_CAP);
     int8_t rssi = s_scan.rssi[i];
+    wifi_auth_mode_t authmode = s_scan.authmode[i];
     int j = i - 1;
     while (j >= 0 && s_scan.rssi[j] < rssi) {
       memmove(s_scan.ssid[j + 1], s_scan.ssid[j], TG_WIFI_SSID_CAP);
       s_scan.rssi[j + 1] = s_scan.rssi[j];
+      s_scan.authmode[j + 1] = s_scan.authmode[j];
       j--;
     }
     memcpy(s_scan.ssid[j + 1], ssid, TG_WIFI_SSID_CAP);
     s_scan.rssi[j + 1] = rssi;
+    s_scan.authmode[j + 1] = authmode;
   }
   ESP_LOGI(TAG, "setupfönstret ser %d nät", s_scan.n);
 }
@@ -183,10 +192,29 @@ static const char PAGE_HEAD[] =
 
 static const char PAGE_TAIL[] =
     "</select>"
-    "<label for=\"pass\">Password</label>"
+    "<div id=\"pass-wrap\"><label id=\"pass-label\" for=\"pass\">"
+    "Wi-Fi password</label>"
     "<input id=\"pass\" name=\"pass\" type=\"password\" autocapitalize=\"off\" "
-    "autocorrect=\"off\" placeholder=\"Password (leave blank if open)\">"
-    "<button type=\"submit\">Join</button></form></body></html>";
+    "autocorrect=\"off\" minlength=\"8\" maxlength=\"63\" "
+    "placeholder=\"Enter Wi-Fi password\"></div>"
+    "<p id=\"open-note\" hidden>No password required</p>"
+    "<button id=\"join\" type=\"submit\">Join</button></form><script>"
+    "const ssid=document.getElementById('ssid'),pass=document.getElementById('pass'),"
+    "passWrap=document.getElementById('pass-wrap'),"
+    "passLabel=document.getElementById('pass-label'),"
+    "openNote=document.getElementById('open-note'),"
+    "join=document.getElementById('join');"
+    "function syncPassword(){const option=ssid.options[ssid.selectedIndex],"
+    "hasNetwork=!!option&&!option.disabled;join.disabled=!hasNetwork;"
+    "if(!hasNetwork){passWrap.hidden=true;openNote.hidden=true;"
+    "pass.required=false;pass.disabled=true;pass.value='';return;}"
+    "const secured=option.dataset.secured==='1';"
+    "passWrap.hidden = !secured;openNote.hidden=secured;"
+    "pass.required = secured;pass.disabled=!secured;"
+    "passLabel.textContent=secured?'Password for '+option.text:'Wi-Fi password';"
+    "if(!secured)pass.value='';}"
+    "ssid.addEventListener('change',syncPassword);syncPassword();"
+    "</script></body></html>";
 
 static const char JOIN_PAGE[] =
     "<!doctype html><html><head><meta charset=\"utf-8\">"
@@ -217,14 +245,21 @@ static esp_err_t page_get(httpd_req_t *req) {
   httpd_resp_send_chunk(req, PAGE_HEAD, HTTPD_RESP_USE_STRLEN);
 
   char escaped[TG_WIFI_SSID_CAP * 6 + 1];
-  char option[sizeof escaped + 64];
+  char option[sizeof escaped * 2 + 96];
   for (int i = 0; i < s_scan.n; i++) {
     tg_wifi_html_escape(s_scan.ssid[i], escaped, sizeof escaped);
-    int len = snprintf(option, sizeof option, "<option>%s</option>", escaped);
+    int len = snprintf(option, sizeof option,
+                       "<option value=\"%s\" data-secured=\"%d\">%s</option>",
+                       escaped,
+                       authmode_requires_password(s_scan.authmode[i]) ? 1 : 0,
+                       escaped);
     if (len > 0) httpd_resp_send_chunk(req, option, (ssize_t)len);
   }
   if (s_scan.n == 0)
-    httpd_resp_send_chunk(req, "<option></option>", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(
+        req,
+        "<option disabled selected>No 2.4 GHz networks found</option>",
+        HTTPD_RESP_USE_STRLEN);
 
   httpd_resp_send_chunk(req, PAGE_TAIL, HTTPD_RESP_USE_STRLEN);
   httpd_resp_send_chunk(req, NULL, 0);
@@ -254,6 +289,24 @@ static esp_err_t join_post(httpd_req_t *req) {
   }
   /* Lösenordet får saknas helt — det är ett öppet nät, inte ett fel. */
   if (!tg_wifi_form_field(body, "pass", pass, sizeof pass)) pass[0] = '\0';
+
+  int scan_index = -1;
+  for (int i = 0; i < s_scan.n; i++) {
+    if (strcmp(s_scan.ssid[i], ssid) == 0) {
+      scan_index = i;
+      break;
+    }
+  }
+  if (scan_index < 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "network not scanned");
+    return ESP_FAIL;
+  }
+  bool secured = authmode_requires_password(s_scan.authmode[scan_index]);
+  if (secured && pass[0] == '\0') {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "password required");
+    return ESP_FAIL;
+  }
+  if (!secured) pass[0] = '\0';
 
   if (!tg_wifi_ssid_valid(ssid) || !tg_wifi_pass_valid(pass)) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid credentials");

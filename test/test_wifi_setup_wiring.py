@@ -259,8 +259,43 @@ assert "s_join_submission.pass" not in status_get
 assert '"/status"' in setup_c and "setInterval" in setup_c, (
     "the joining page must poll an honest, secret-free status endpoint"
 )
-assert "2.4 GHz only" in setup_c and '<label for=\\"pass\\">' in setup_c, (
+assert "2.4 GHz only" in setup_c and 'for=\\"pass\\"' in setup_c, (
     "the phone form must explain the radio limit and label the password"
+)
+assert "data-secured" in setup_c, (
+    "every scanned option must tell the phone whether a password is required"
+)
+assert "Password for " in setup_c and "No password required" in setup_c, (
+    "the phone form must name the selected network and explain open networks"
+)
+assert "pass.required = secured" in setup_c and "passWrap.hidden = !secured" in setup_c, (
+    "the phone must require passwords only for secured selections"
+)
+assert "hasNetwork" in setup_c and "join.disabled=!hasNetwork" in setup_c, (
+    "an empty scan must hide password guidance and disable Join"
+)
+assert '<option disabled selected>No 2.4 GHz networks found</option>' in setup_c, (
+    "an empty scan must produce a disabled, explanatory selection"
+)
+assert 'placeholder=\\"Enter Wi-Fi password\\"' in setup_c, (
+    "the form must not tell secured-network users to leave the password blank"
+)
+assert "Password (leave blank if open)" not in setup_c
+assert "s_scan.authmode" in setup_c, (
+    "the scan must retain authentication truth through HTML generation and POST"
+)
+join_auth = join_post.split("tg_wifi_ssid_valid", 1)[0]
+assert "WIFI_AUTH_OPEN" in setup_c and "WIFI_AUTH_OWE" in setup_c, (
+    "open and Enhanced Open networks must both be treated as password-free"
+)
+assert "authmode_requires_password" in join_auth, (
+    "the POST must use the same authentication classifier as the form"
+)
+assert "pass[0] == '\\0'" in join_auth, (
+    "POST /join must reject an empty password for a secured scanned network"
+)
+assert "pass[0] = '\\0'" in join_auth, (
+    "POST /join must discard a forged password for an open scanned network"
 )
 assert "onsubmit=" in setup_c and ".disabled=true" in setup_c, (
     "the phone form must block accidental duplicate submission"
@@ -304,6 +339,12 @@ for guide, name in ((readme, "README"), (wifi_doc, "WiFi guide")):
         assert claim in lower, f"{name} must explain {claim!r}"
     assert "old saved networks remain available" in lower, (
         f"{name} must explain failed joins preserve fallback networks"
+    )
+    assert "manual setup" in lower, (
+        f"{name} must explain where temporary credentials moved"
+    )
+    assert "password field" in lower and "open network" in lower, (
+        f"{name} must explain the secure/open phone form behavior"
     )
 
 print("OK: WiFi setup window, Mac script and consent model agree")
