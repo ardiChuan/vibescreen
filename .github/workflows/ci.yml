@@ -85,6 +85,11 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/relay/package-lock.json
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -103,6 +108,10 @@ jobs:
       - name: Run relay mailbox merge tests
         shell: bash
         run: node --test tools/relay/test.mjs
+      - name: Run relay Durable Object tests
+        shell: bash
+        working-directory: tools/relay
+        run: npm ci && npm test
 
   firmware:
     name: ESP32-S3 firmware build

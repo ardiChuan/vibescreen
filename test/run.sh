@@ -277,6 +277,7 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 "$PYTHON_BIN" test_ota_sender_gates.py
 "$PYTHON_BIN" test_wifi_setup_wiring.py
 "$PYTHON_BIN" test_relay_boundary.py
+"$PYTHON_BIN" test_numbers_relay_js_wiring.py
 "$PYTHON_BIN" test_interaction_relay_boundary.py
 "$PYTHON_BIN" test_interaction_relay_docs.py
 "$PYTHON_BIN" test_interaction_relay_build.py
@@ -315,6 +316,7 @@ if [ "$SKIP_JS" = 1 ]; then
   echo "OBS: --skip-js — relayernas JS-tester körs i CI:s egna jobb"
 elif command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
   node --test tools/relay/test.mjs
+  (cd tools/relay && npm ci && npm test)
   (cd tools/interaction-relay && npm ci && npm test && npm run typecheck)
 elif [ -n "${CI:-}" ]; then
   echo "ERROR: CI requires Node.js 22 + npm for both relay security services" >&2
