@@ -75,11 +75,20 @@ npm run deploy -- \
   --expected-main bootstrap.js
 ```
 
-The wrapper invokes pinned Wrangler with `--strict --keep-vars`. After resolving
-the real external config path, it serializes only the validated fields to a
-mode-0600 canonical snapshot outside the repository, uses the validated
-absolute entrypoint, and removes the snapshot after Wrangler exits on success,
-failure, or interruption. Wrangler never receives the mutable source path.
+The wrapper invokes pinned Wrangler with `--strict --keep-vars`. The `--config`
+argument itself must be an absolute canonical path; relative paths and paths
+spelled with `..` are rejected before filesystem or symlink resolution. After
+resolving the real external config path, the wrapper serializes only the
+validated fields to a mode-0600 canonical snapshot outside the repository and
+uses the validated absolute entrypoint. Wrangler never receives the mutable
+source path, and the wrapper removes the snapshot after Wrangler exits on
+success or failure.
+
+Handled `SIGINT` and `SIGTERM` are forwarded to Wrangler. The wrapper waits a
+bounded time for the child, force-stops a child that does not exit, removes the
+snapshot, and exits with status 130 or 143. An abrupt `SIGKILL` cannot run
+cleanup; inspect the private system temporary directory before retrying after
+such a crash.
 
 The first deployment provisions the SQLite class while `bootstrap.js` keeps
 serving the old KV path. Confirm that public behavior, then capture that exact

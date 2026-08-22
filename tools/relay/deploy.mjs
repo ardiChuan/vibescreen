@@ -3,7 +3,7 @@
 import {
   chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync,
 } from "node:fs";
-import { spawnSync as nodeSpawnSync } from "node:child_process";
+import { spawn as nodeSpawn } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -14,6 +14,8 @@ const REPOSITORY_ROOT = resolve(RELAY_DIR, "..", "..");
 const WORKER_NAME = "vibepulse-relay";
 const COMPATIBILITY_DATE = "2026-08-22";
 const COMPATIBILITY_FLAGS = ["nodejs_compat"];
+const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
+const DEFAULT_SIGNAL_GRACE_MS = 5_000;
 const ZERO_KV_ID = "0".repeat(32);
 const REAL_KV_ID_PATTERN = /^[0-9a-f]{32}$/;
 const STAGE_MAINS = new Set(["bootstrap.js", "worker.js"]);
@@ -44,20 +46,139 @@ function hasExactKeys(value, expectedKeys) {
     actual.every((key, index) => key === expected[index]);
 }
 
-function invokeWrangler(args, { spawnSync = nodeSpawnSync } = {}) {
-  const result = spawnSync(pinnedWrangler(), args, {
-    cwd: RELAY_DIR,
-    stdio: "inherit",
+function childExit(child) {
+  return new Promise((resolveExit, reject) => {
+    child.once("error", () => reject(guardError("Wrangler could not start")));
+    child.once("exit", (status, signal) => resolveExit({ status, signal }));
   });
-  if (result.error) throw guardError("Wrangler could not start");
-  if (result.status !== 0)
-    throw guardError(`Wrangler exited with status ${String(result.status)}`);
+}
+
+function waitForExitWithin(exitPromise, timeoutMs) {
+  return new Promise((resolveWait, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      resolveWait(undefined);
+    }, timeoutMs);
+    exitPromise.then((result) => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      resolveWait(result);
+    }, (error) => {
+      if (settled) return;
+      clearTimeout(timer);
+      settled = true;
+      reject(error);
+    });
+  });
+}
+
+function installSignalRelay() {
+  let activeChild;
+  let receivedSignal;
+  let resolveSignal;
+  const signalPromise = new Promise((resolveReceived) => {
+    resolveSignal = resolveReceived;
+  });
+  const forward = (signal) => {
+    if (receivedSignal === undefined) {
+      receivedSignal = signal;
+      resolveSignal(signal);
+    }
+    if (activeChild && activeChild.exitCode === null &&
+        activeChild.signalCode === null) {
+      try {
+        activeChild.kill(signal);
+      } catch {
+        // The exit observer below remains authoritative if the child raced us.
+      }
+    }
+  };
+  const onSigint = () => forward("SIGINT");
+  const onSigterm = () => forward("SIGTERM");
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+  return {
+    attach(child) {
+      activeChild = child;
+      if (receivedSignal !== undefined) forward(receivedSignal);
+    },
+    detach(child) {
+      if (activeChild === child) activeChild = undefined;
+    },
+    dispose() {
+      process.removeListener("SIGINT", onSigint);
+      process.removeListener("SIGTERM", onSigterm);
+    },
+    get signal() { return receivedSignal; },
+    signalPromise,
+  };
+}
+
+function signalResult(signal) {
+  return { signal, exitCode: SIGNAL_EXIT_CODES[signal] };
+}
+
+async function invokeWrangler(args, dependencies = {}, signalRelay) {
+  const {
+    spawn = nodeSpawn,
+    signalGraceMs = DEFAULT_SIGNAL_GRACE_MS,
+    signalKillGraceMs = DEFAULT_SIGNAL_GRACE_MS,
+  } = dependencies;
+  let child;
+  try {
+    child = spawn(pinnedWrangler(), args, {
+      cwd: RELAY_DIR,
+      stdio: "inherit",
+    });
+  } catch {
+    throw guardError("Wrangler could not start");
+  }
+  const exitPromise = childExit(child);
+  signalRelay.attach(child);
+  try {
+    const first = await Promise.race([
+      exitPromise.then((result) => ({ kind: "exit", result })),
+      signalRelay.signalPromise.then((signal) => ({ kind: "signal", signal })),
+    ]);
+    const receivedSignal = signalRelay.signal;
+    if (first.kind === "signal" || receivedSignal !== undefined) {
+      const signal = receivedSignal ?? first.signal;
+      let exit = first.kind === "exit" ? first.result
+                                      : await waitForExitWithin(
+                                        exitPromise, signalGraceMs,
+                                      );
+      if (exit === undefined) {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // The bounded exit wait below produces the deployment error.
+        }
+        exit = await waitForExitWithin(exitPromise, signalKillGraceMs);
+      }
+      if (exit === undefined)
+        throw guardError("Wrangler did not exit after termination");
+      return signalResult(signal);
+    }
+    if (first.result.status !== 0) {
+      if (first.result.signal)
+        throw guardError(`Wrangler exited from ${first.result.signal}`);
+      throw guardError(
+        `Wrangler exited with status ${String(first.result.status)}`,
+      );
+    }
+    return {};
+  } finally {
+    signalRelay.detach(child);
+  }
 }
 
 export function validateProductionConfig(config, {
   configPath, expectedKvId, expectedMain,
 }) {
   if (typeof configPath !== "string" || !isAbsolute(configPath) ||
+      resolve(configPath) !== configPath ||
       isWithinRepository(resolve(configPath)) ||
       !configPath.endsWith(".json"))
     throw guardError("production config must be an absolute private .json file");
@@ -142,14 +263,15 @@ export function validateProductionConfig(config, {
   };
 }
 
-export function runProductionDeployment(options, dependencies = {}) {
+export async function runProductionDeployment(options, dependencies = {}) {
   const {
     mode, configPath, expectedKvId, expectedMain,
   } = options;
   if (mode !== "dry-run" && mode !== "deploy")
     throw guardError("mode must be dry-run or deploy");
-  if (typeof configPath !== "string")
-    throw guardError("--config is required");
+  if (typeof configPath !== "string" || !isAbsolute(configPath) ||
+      resolve(configPath) !== configPath)
+    throw guardError("--config must be an absolute canonical path");
 
   let realConfigPath;
   let config;
@@ -175,10 +297,14 @@ export function runProductionDeployment(options, dependencies = {}) {
     throw guardError("validated stage entrypoint is missing");
   }
 
-  const snapshotDirectory = mkdtempSync(
-    join(tmpdir(), "vibepulse-relay-deploy-"),
-  );
+  const signalRelay = installSignalRelay();
+  let invocationResult;
+  let invocationError;
+  let snapshotDirectory;
   try {
+    snapshotDirectory = mkdtempSync(
+      join(tmpdir(), "vibepulse-relay-deploy-"),
+    );
     if (isWithinRepository(realpathSync(snapshotDirectory)))
       throw guardError("private snapshot directory must be outside repository");
     chmodSync(snapshotDirectory, 0o700);
@@ -194,19 +320,45 @@ export function runProductionDeployment(options, dependencies = {}) {
       "--strict", "--keep-vars",
     ];
     if (mode === "dry-run") args.push("--dry-run");
-    invokeWrangler(args, dependencies);
+    invocationResult = await invokeWrangler(args, dependencies, signalRelay);
+  } catch (error) {
+    invocationError = error;
   } finally {
-    rmSync(snapshotDirectory, { recursive: true, force: true });
+    try {
+      if (snapshotDirectory !== undefined)
+        rmSync(snapshotDirectory, { recursive: true, force: true });
+    } finally {
+      signalRelay.dispose();
+    }
   }
+  if (signalRelay.signal !== undefined)
+    return signalResult(signalRelay.signal);
+  if (invocationError !== undefined) throw invocationError;
+  return invocationResult;
 }
 
-export function runCiDryBuild(dependencies = {}) {
-  for (const configPath of TEST_CONFIGS)
-    invokeWrangler(
-      ["deploy", "--config", configPath,
-        "--strict", "--keep-vars", "--dry-run"],
-      dependencies,
-    );
+export async function runCiDryBuild(dependencies = {}) {
+  const signalRelay = installSignalRelay();
+  let invocationError;
+  try {
+    for (const configPath of TEST_CONFIGS) {
+      if (signalRelay.signal !== undefined) break;
+      await invokeWrangler(
+        ["deploy", "--config", configPath,
+          "--strict", "--keep-vars", "--dry-run"],
+        dependencies,
+        signalRelay,
+      );
+    }
+  } catch (error) {
+    invocationError = error;
+  } finally {
+    signalRelay.dispose();
+  }
+  if (signalRelay.signal !== undefined)
+    return signalResult(signalRelay.signal);
+  if (invocationError !== undefined) throw invocationError;
+  return {};
 }
 
 function parseProductionArgs(mode, args) {
@@ -227,21 +379,21 @@ function parseProductionArgs(mode, args) {
   };
 }
 
-export function runCli(args, dependencies = {}) {
+export async function runCli(args, dependencies = {}) {
   const [mode, ...rest] = args;
   if (mode === "ci-dry") {
     if (rest.length !== 0) throw guardError("ci-dry accepts no arguments");
-    runCiDryBuild(dependencies);
-    return;
+    return runCiDryBuild(dependencies);
   }
-  runProductionDeployment(parseProductionArgs(mode, rest), dependencies);
+  return runProductionDeployment(parseProductionArgs(mode, rest), dependencies);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href
                                     : "";
 if (import.meta.url === invokedPath) {
   try {
-    runCli(process.argv.slice(2));
+    const result = await runCli(process.argv.slice(2));
+    if (result?.exitCode !== undefined) process.exitCode = result.exitCode;
   } catch (error) {
     console.error(error instanceof Error ? error.message : "deploy guard: failed");
     process.exitCode = 1;

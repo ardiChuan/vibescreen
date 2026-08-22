@@ -1,18 +1,72 @@
 import assert from "node:assert/strict";
+import { spawn as nativeSpawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import {
-  existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync,
-  writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
+  statSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  basename, dirname, isAbsolute, join, relative, resolve,
+} from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 
 const RELAY_DIR = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(RELAY_DIR, "..", "..");
 const REAL_KV_ID = "a".repeat(32);
 const ZERO_KV_ID = "0".repeat(32);
+
+function fakeChild(status = 0) {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = () => true;
+  queueMicrotask(() => {
+    child.exitCode = status;
+    child.emit("exit", status, null);
+  });
+  return child;
+}
+
+async function rejectsGuard(operation) {
+  await assert.rejects(Promise.resolve().then(operation), /deploy guard:/);
+}
+
+async function waitFor(check, message, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await delay(20);
+  }
+  throw new Error(message);
+}
+
+function waitForChildExit(child, timeoutMs, message) {
+  return new Promise((resolveExit, reject) => {
+    const timer = setTimeout(() => {
+      child.removeListener("exit", onExit);
+      reject(new Error(message));
+    }, timeoutMs);
+    const onExit = (code, signal) => {
+      clearTimeout(timer);
+      resolveExit({ code, signal });
+    };
+    child.once("exit", onExit);
+  });
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
 
 function productionConfig({
   main = "worker.js", kvId = REAL_KV_ID, name = "vibepulse-relay",
@@ -57,14 +111,44 @@ function options(configPath, overrides = {}) {
   };
 }
 
+test("source config arguments are canonical absolute paths before resolution",
+     async (t) => {
+  const { runCli, runProductionDeployment } = await import("./deploy.mjs");
+  const configPath = privateConfig(t);
+  const traversalDirectory = join(dirname(configPath), "unused");
+  mkdirSync(traversalDirectory);
+  const relativePath = relative(process.cwd(), configPath);
+  const dotdotPath = `${traversalDirectory}/../${basename(configPath)}`;
+  let childCalls = 0;
+  const dependencies = {
+    spawn() {
+      childCalls += 1;
+      return fakeChild();
+    },
+  };
+
+  for (const sourcePath of [relativePath, dotdotPath]) {
+    await rejectsGuard(() => runProductionDeployment(
+      options(sourcePath), dependencies,
+    ));
+    await rejectsGuard(() => runCli([
+      "dry-run",
+      "--config", sourcePath,
+      "--expected-kv-id", REAL_KV_ID,
+      "--expected-main", "worker.js",
+    ], dependencies));
+  }
+  assert.equal(childCalls, 0);
+});
+
 test("invalid production configs never reach a child process", async (t) => {
   const { runProductionDeployment, validateProductionConfig } =
     await import("./deploy.mjs");
   let childCalls = 0;
   const dependencies = {
-    spawnSync() {
+    spawn() {
       childCalls += 1;
-      return { status: 0 };
+      return fakeChild();
     },
   };
 
@@ -172,9 +256,8 @@ test("invalid production configs never reach a child process", async (t) => {
   ];
 
   for (const invalidOptions of invalid)
-    assert.throws(
+    await rejectsGuard(
       () => runProductionDeployment(invalidOptions, dependencies),
-      /deploy guard:/,
     );
   assert.throws(() => validateProductionConfig(productionConfig(), {
     configPath: resolve(RELAY_DIR, "..", "private.json"),
@@ -190,7 +273,7 @@ test("valid private configs invoke pinned Wrangler with private canonical snapsh
   const calls = [];
   let originalPath;
   const dependencies = {
-    spawnSync(command, args, spawnOptions) {
+    spawn(command, args, spawnOptions) {
       const snapshotPath = args[args.indexOf("--config") + 1];
       writeFileSync(originalPath, JSON.stringify({ hijacked: true }), "utf8");
       const snapshotBytes = readFileSync(snapshotPath, "utf8");
@@ -198,7 +281,7 @@ test("valid private configs invoke pinned Wrangler with private canonical snapsh
       calls.push({
         command, args, spawnOptions, snapshotPath, snapshotBytes, snapshotMode,
       });
-      return { status: 0 };
+      return fakeChild();
     },
   };
   const bootstrapPath = privateConfig(
@@ -214,13 +297,15 @@ test("valid private configs invoke pinned Wrangler with private canonical snapsh
   const reorderedPath = privateConfig(t, reordered);
 
   originalPath = bootstrapPath;
-  runProductionDeployment(options(bootstrapPath, {
+  await runProductionDeployment(options(bootstrapPath, {
     expectedMain: "bootstrap.js",
   }), dependencies);
   originalPath = workerPath;
-  runProductionDeployment(options(workerPath, { mode: "deploy" }), dependencies);
+  await runProductionDeployment(
+    options(workerPath, { mode: "deploy" }), dependencies,
+  );
   originalPath = reorderedPath;
-  runProductionDeployment(options(reorderedPath), dependencies);
+  await runProductionDeployment(options(reorderedPath), dependencies);
 
   assert.equal(calls.length, 3);
   assert.match(calls[0].command, /node_modules[/\\]\.bin[/\\]wrangler/);
@@ -254,23 +339,114 @@ test("valid private configs invoke pinned Wrangler with private canonical snapsh
   }
 });
 
-test("private snapshots are removed after Wrangler failure or interrupt",
+test("private snapshots are removed after Wrangler failure",
      async (t) => {
   const { runProductionDeployment } = await import("./deploy.mjs");
-  for (const result of [
-    { status: 17 },
-    { status: null, signal: "SIGINT" },
-  ]) {
-    let snapshotPath;
-    assert.throws(() => runProductionDeployment(options(privateConfig(t)), {
-      spawnSync(_command, args) {
+  let snapshotPath;
+  await rejectsGuard(() => runProductionDeployment(
+    options(privateConfig(t)),
+    {
+      spawn(_command, args) {
         snapshotPath = args[args.indexOf("--config") + 1];
         assert.equal(existsSync(snapshotPath), true);
-        return result;
+        return fakeChild(17);
       },
-    }), /deploy guard:/);
-    assert.equal(existsSync(snapshotPath), false);
-    assert.equal(existsSync(dirname(snapshotPath)), false);
+    },
+  ));
+  assert.equal(existsSync(snapshotPath), false);
+  assert.equal(existsSync(dirname(snapshotPath)), false);
+});
+
+test("real SIGINT and SIGTERM forward, clean snapshots, and leave no child",
+     { skip: process.platform === "win32" }, async (t) => {
+  const deployUrl = pathToFileURL(join(RELAY_DIR, "deploy.mjs")).href;
+  for (const [signal, exitCode] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+    await t.test(signal, async (t) => {
+      const directory = mkdtempSync(join(tmpdir(), "vibepulse-signal-test-"));
+      t.after(() => rmSync(directory, { recursive: true, force: true }));
+      const snapshotRoot = join(directory, "snapshots");
+      mkdirSync(snapshotRoot, { mode: 0o700 });
+      const childPath = join(directory, "blocking-child.mjs");
+      const runnerPath = join(directory, "guard-runner.mjs");
+      const childPidPath = join(directory, "child.pid");
+      const signalPath = join(directory, "child.signal");
+      const snapshotPathMarker = join(directory, "snapshot.path");
+      const configPath = join(directory, "production.json");
+      writeFileSync(configPath, JSON.stringify(productionConfig()), "utf8");
+      writeFileSync(childPath, `
+        import { writeFileSync } from "node:fs";
+        const [pidPath, signalPath] = process.argv.slice(2);
+        writeFileSync(pidPath, String(process.pid));
+        for (const signal of ["SIGINT", "SIGTERM"])
+          process.on(signal, () => writeFileSync(signalPath, signal));
+        setInterval(() => {}, 1_000);
+      `, "utf8");
+      writeFileSync(runnerPath, `
+        import { spawn as nativeSpawn } from "node:child_process";
+        import { writeFileSync } from "node:fs";
+        import { runProductionDeployment } from ${JSON.stringify(deployUrl)};
+        const [configPath, childPath, pidPath, signalPath, snapshotPathMarker] =
+          process.argv.slice(2);
+        const result = await runProductionDeployment({
+          mode: "dry-run",
+          configPath,
+          expectedKvId: ${JSON.stringify(REAL_KV_ID)},
+          expectedMain: "worker.js",
+        }, {
+          signalGraceMs: 100,
+          signalKillGraceMs: 2_000,
+          spawn(_command, args, options) {
+            const snapshotPath = args[args.indexOf("--config") + 1];
+            writeFileSync(snapshotPathMarker, snapshotPath);
+            return nativeSpawn(process.execPath,
+              [childPath, pidPath, signalPath],
+              { ...options, stdio: "ignore" });
+          },
+        });
+        if (result?.exitCode !== undefined) process.exitCode = result.exitCode;
+      `, "utf8");
+
+      const wrapper = nativeSpawn(process.execPath, [
+        runnerPath, configPath, childPath, childPidPath, signalPath,
+        snapshotPathMarker,
+      ], {
+        env: { ...process.env, TMPDIR: snapshotRoot },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stderr = "";
+      wrapper.stderr.setEncoding("utf8");
+      wrapper.stderr.on("data", (chunk) => { stderr += chunk; });
+      let childPid;
+      t.after(() => {
+        if (wrapper.exitCode === null && wrapper.signalCode === null)
+          wrapper.kill("SIGKILL");
+        if (childPid && processExists(childPid)) process.kill(childPid, "SIGKILL");
+      });
+
+      await waitFor(() => existsSync(childPidPath),
+                    `${signal} fixture child did not start`);
+      childPid = Number(readFileSync(childPidPath, "utf8"));
+      assert.equal(processExists(childPid), true);
+      assert.equal(existsSync(snapshotPathMarker), true);
+      const snapshotPath = readFileSync(snapshotPathMarker, "utf8");
+      assert.equal(snapshotPath.startsWith(`${snapshotRoot}/`), true);
+      assert.equal(existsSync(snapshotPath), true);
+      const exitPromise = waitForChildExit(
+        wrapper, 5_000, `${signal} wrapper hung`,
+      );
+      wrapper.kill(signal);
+
+      const exit = await exitPromise;
+      assert.deepEqual(exit, { code: exitCode, signal: null }, stderr);
+      await waitFor(() => existsSync(signalPath),
+                    `${signal} was not forwarded to child`);
+      assert.equal(readFileSync(signalPath, "utf8"), signal);
+      assert.deepEqual(readdirSync(snapshotRoot), []);
+      assert.equal(existsSync(snapshotPath), false);
+      assert.equal(existsSync(dirname(snapshotPath)), false);
+      await waitFor(() => !processExists(childPid),
+                    `${signal} left child ${String(childPid)} running`);
+    });
   }
 });
 
@@ -278,10 +454,10 @@ test("CI dry build compiles both staged entrypoints without a deploy mode",
      async () => {
   const { runCiDryBuild } = await import("./deploy.mjs");
   const calls = [];
-  runCiDryBuild({
-    spawnSync(command, args) {
+  await runCiDryBuild({
+    spawn(command, args) {
       calls.push({ command, args });
-      return { status: 0 };
+      return fakeChild();
     },
   });
 

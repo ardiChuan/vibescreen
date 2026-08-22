@@ -140,6 +140,11 @@ class NumbersRelayDocumentationTests(unittest.TestCase):
             "pinned Wrangler with `--strict --keep-vars`",
             "mode-0600 canonical snapshot outside the repository",
             "removes the snapshot after Wrangler exits",
+            "The `--config` argument itself must be an absolute canonical "
+            "path",
+            "Handled `SIGINT` and `SIGTERM` are forwarded to Wrangler",
+            "exits with status 130 or 143",
+            "`SIGKILL` cannot run cleanup",
         ):
             self.assertIn(exact, readme_words, exact)
 
