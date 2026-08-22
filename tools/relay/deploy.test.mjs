@@ -357,6 +357,69 @@ test("private snapshots are removed after Wrangler failure",
   assert.equal(existsSync(dirname(snapshotPath)), false);
 });
 
+test("a child that never confirms exit rejects after bounded termination",
+     async (t) => {
+  const { runCiDryBuild, runProductionDeployment } =
+    await import("./deploy.mjs");
+
+  await t.test("production deployment", async (t) => {
+    const kills = [];
+    let snapshotPath;
+    const signalListeners = {
+      SIGINT: process.listenerCount("SIGINT"),
+      SIGTERM: process.listenerCount("SIGTERM"),
+    };
+    const child = new EventEmitter();
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = (signal) => {
+      kills.push(signal);
+      return true;
+    };
+
+    await assert.rejects(runProductionDeployment(
+      options(privateConfig(t)),
+      {
+        signalGraceMs: 1,
+        signalKillGraceMs: 1,
+        spawn(_command, args) {
+          snapshotPath = args[args.indexOf("--config") + 1];
+          queueMicrotask(() => process.emit("SIGTERM"));
+          return child;
+        },
+      },
+    ), /deploy guard: Wrangler did not exit after termination/);
+
+    assert.deepEqual(kills, ["SIGTERM", "SIGKILL"]);
+    assert.equal(existsSync(snapshotPath), false);
+    assert.equal(existsSync(dirname(snapshotPath)), false);
+    assert.equal(process.listenerCount("SIGINT"), signalListeners.SIGINT);
+    assert.equal(process.listenerCount("SIGTERM"), signalListeners.SIGTERM);
+  });
+
+  await t.test("CI dry build", async () => {
+    const kills = [];
+    const child = new EventEmitter();
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = (signal) => {
+      kills.push(signal);
+      return true;
+    };
+
+    await assert.rejects(runCiDryBuild({
+      signalGraceMs: 1,
+      signalKillGraceMs: 1,
+      spawn() {
+        queueMicrotask(() => process.emit("SIGINT"));
+        return child;
+      },
+    }), /deploy guard: Wrangler did not exit after termination/);
+
+    assert.deepEqual(kills, ["SIGINT", "SIGKILL"]);
+  });
+});
+
 test("real SIGINT and SIGTERM forward, clean snapshots, and leave no child",
      { skip: process.platform === "win32" }, async (t) => {
   const deployUrl = pathToFileURL(join(RELAY_DIR, "deploy.mjs")).href;

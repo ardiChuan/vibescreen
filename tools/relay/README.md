@@ -85,10 +85,12 @@ source path, and the wrapper removes the snapshot after Wrangler exits on
 success or failure.
 
 Handled `SIGINT` and `SIGTERM` are forwarded to Wrangler. The wrapper waits a
-bounded time for the child, force-stops a child that does not exit, removes the
-snapshot, and exits with status 130 or 143. An abrupt `SIGKILL` cannot run
-cleanup; inspect the private system temporary directory before retrying after
-such a crash.
+bounded time for the child and force-stops a child that does not exit. Status
+130 or 143 is reported only after Wrangler confirms exit. If the child still
+does not report exit after forced termination, the wrapper removes the snapshot
+but fails with a deploy-guard error; it does not claim the child was reaped. An
+abrupt `SIGKILL` cannot run cleanup; inspect the private system temporary
+directory before retrying after such a crash.
 
 The first deployment provisions the SQLite class while `bootstrap.js` keeps
 serving the old KV path. Confirm that public behavior, then capture that exact

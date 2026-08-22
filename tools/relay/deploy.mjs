@@ -331,9 +331,9 @@ export async function runProductionDeployment(options, dependencies = {}) {
       signalRelay.dispose();
     }
   }
+  if (invocationError !== undefined) throw invocationError;
   if (signalRelay.signal !== undefined)
     return signalResult(signalRelay.signal);
-  if (invocationError !== undefined) throw invocationError;
   return invocationResult;
 }
 
@@ -355,9 +355,9 @@ export async function runCiDryBuild(dependencies = {}) {
   } finally {
     signalRelay.dispose();
   }
+  if (invocationError !== undefined) throw invocationError;
   if (signalRelay.signal !== undefined)
     return signalResult(signalRelay.signal);
-  if (invocationError !== undefined) throw invocationError;
   return {};
 }
 

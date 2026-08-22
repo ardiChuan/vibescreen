@@ -143,7 +143,11 @@ class NumbersRelayDocumentationTests(unittest.TestCase):
             "The `--config` argument itself must be an absolute canonical "
             "path",
             "Handled `SIGINT` and `SIGTERM` are forwarded to Wrangler",
-            "exits with status 130 or 143",
+            "Status 130 or 143 is reported only after Wrangler confirms "
+            "exit.",
+            "If the child still does not report exit after forced "
+            "termination, the wrapper removes the snapshot but fails with "
+            "a deploy-guard error; it does not claim the child was reaped.",
             "`SIGKILL` cannot run cleanup",
         ):
             self.assertIn(exact, readme_words, exact)
