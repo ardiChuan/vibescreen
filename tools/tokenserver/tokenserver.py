@@ -118,6 +118,7 @@ else:  # direktkörning: python3 tools/tokenserver/tokenserver.py
 
 RECOMPUTE_EVERY_S = 30
 LIMITS_EVERY_S = 240  # rate-limit-proben: 15 anrop/h — kontots bucket delas
+AUTH_RECOVERY_EVERY_S = 15.0  # lokal tokenkontroll; ingen upstream vid väntan
                       # med Claude Code självt, och kvoten rör sig långsamt;
                       # panelens 30 s-pollar får ändå cachat svar direkt
 HTTP_MAX_WORKERS = 32
@@ -1112,6 +1113,14 @@ def _probe_interval_s():
     En död token fick tidigare hamra API:t varannan minut i timmar — det
     mönstret utlöste en 429-straffruta. Lyckad probe återställer takten.
     """
+    if _probe_status.startswith((
+            "no_claude_oauth_token",
+            "token_expired_",
+            "token_dead_awaiting_refresh")):
+        # De här lägena stannar i _probe_limits_locked innan urlopen. En kort
+        # kontroll läser bara om den lokala nyckelringen/credentials-filen och
+        # upptäcker snabbt när den officiella Claude-klienten bytt token.
+        return AUTH_RECOVERY_EVERY_S
     return LIMITS_EVERY_S * (2 ** min(_probe_failure_streak, 2))
 
 

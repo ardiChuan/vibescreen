@@ -656,12 +656,61 @@ class ClaudeLimitHeaderTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_probe_backoff_interval_grows_with_failures(self):
-        with mock.patch.object(tokenserver, "_probe_failure_streak", 0):
-            self.assertEqual(tokenserver._probe_interval_s(), 240)
-        with mock.patch.object(tokenserver, "_probe_failure_streak", 1):
-            self.assertEqual(tokenserver._probe_interval_s(), 480)
-        with mock.patch.object(tokenserver, "_probe_failure_streak", 5):
-            self.assertEqual(tokenserver._probe_interval_s(), 960)
+        with mock.patch.object(tokenserver, "_probe_status",
+                               "usage_request_failed: TimeoutError"):
+            with mock.patch.object(tokenserver, "_probe_failure_streak", 0):
+                self.assertEqual(tokenserver._probe_interval_s(), 240)
+            with mock.patch.object(tokenserver, "_probe_failure_streak", 1):
+                self.assertEqual(tokenserver._probe_interval_s(), 480)
+            with mock.patch.object(tokenserver, "_probe_failure_streak", 5):
+                self.assertEqual(tokenserver._probe_interval_s(), 960)
+
+    def test_local_auth_wait_states_retry_quickly(self):
+        for status in ("no_claude_oauth_token",
+                       "token_expired_18:15",
+                       "token_dead_awaiting_refresh"):
+            with self.subTest(status=status), \
+                    mock.patch.object(tokenserver, "_probe_status", status), \
+                    mock.patch.object(tokenserver, "_probe_failure_streak", 5):
+                self.assertEqual(tokenserver._probe_interval_s(), 15.0)
+
+    def test_expired_token_recheck_makes_no_upstream_request(self):
+        expired_ms = (time.time() - 60) * 1000
+        with mock.patch.object(tokenserver, "_read_oauth_candidates",
+                               return_value=[("expired", expired_ms)]), \
+                mock.patch.object(tokenserver, "_dead_tokens", {}), \
+                mock.patch.object(tokenserver.urllib.request, "urlopen",
+                                  side_effect=AssertionError(
+                                      "expired token reached the network")):
+            found = tokenserver._probe_limits_locked()
+
+        self.assertIsNone(found)
+        self.assertTrue(tokenserver._probe_status.startswith("token_expired_"))
+
+    def test_renewed_token_is_used_on_next_local_recheck(self):
+        expired_ms = (time.time() - 60) * 1000
+        candidates = [[("old", expired_ms)], [("renewed", None)]]
+        calls = []
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(request.get_header("Authorization"))
+            return _FakeUsageResponse({"limits": [{
+                "kind": "weekly_all",
+                "percent": 7,
+                "resets_at": "2100-01-02T00:00:00+00:00",
+            }]})
+
+        with mock.patch.object(tokenserver, "_read_oauth_candidates",
+                               side_effect=candidates), \
+                mock.patch.object(tokenserver, "_dead_tokens", {}), \
+                mock.patch.object(tokenserver.urllib.request, "urlopen",
+                                  side_effect=fake_urlopen):
+            first = tokenserver._probe_limits_locked()
+            second = tokenserver._probe_limits_locked()
+
+        self.assertIsNone(first)
+        self.assertEqual(second["weekPct"], 7.0)
+        self.assertEqual(calls, ["Bearer renewed"])
 
     def test_probe_respects_persisted_cooldown_across_restart(self):
         """Straffrutan får inte glömmas av en omstart: en framtida cooldown
