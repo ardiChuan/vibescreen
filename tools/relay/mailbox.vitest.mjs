@@ -146,9 +146,17 @@ describe("NumbersMailbox SQLite coordination", () => {
       `);
     });
 
-    await expect(stub.publish(
-      "/api/tokens", "mac", JSON.stringify({ weekPct: 73 }), 100,
-    )).rejects.toThrow();
+    const failed = await runInDurableObject(stub, async (instance) => {
+      try {
+        await instance.publish(
+          "/api/tokens", "mac", JSON.stringify({ weekPct: 73 }), 100,
+        );
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    expect(failed).toBe(true);
     const state = await storedState(stub);
     expect(state.publishers).toEqual([]);
     expect(state.documents).toEqual([]);
@@ -194,6 +202,25 @@ describe("NumbersMailbox SQLite coordination", () => {
 });
 
 describe("public numbers Worker routing and wire contract", () => {
+  for (const [endpoint, body] of [
+    ["/api/tokens", { v: 2, weekPct: 73, weekObservedAt: 100 }],
+    ["/api/max-tracker", { streak: 4, total: 12 }],
+    ["/api/github", { stars: 99, issues: 3 }],
+  ]) {
+    it(`round-trips the first real publication for ${endpoint}`, async () => {
+      const posted = await relayRequest(env, endpoint, {
+        method: "POST", publisher: "mac", body,
+      });
+      expect(posted.status).toBe(200);
+      expect(await posted.text()).toBe("ok");
+
+      const fetched = await relayRequest(env, endpoint);
+      expect(fetched.status).toBe(200);
+      expect(await fetched.json()).toEqual(body);
+      expect(fetched.headers.get("Content-Type")).toBe("application/json");
+    });
+  }
+
   it("routes every valid request to one deterministic mailbox without KV",
      async () => {
     const { calls, requestEnv } = fakeEnv({
@@ -297,8 +324,9 @@ describe("public numbers Worker routing and wire contract", () => {
       broken.requestEnv, "/api/tokens",
     );
     expect(brokenResponse.status).toBe(503);
-    expect(await brokenResponse.text()).toBe("relay unavailable");
-    expect(await brokenResponse.text()).not.toContain("binding detail");
+    const brokenBody = await brokenResponse.text();
+    expect(brokenBody).toBe("relay unavailable");
+    expect(brokenBody).not.toContain("binding detail");
   });
 
   it("turns storage RPC errors into a non-leaking non-success response",
