@@ -65,3 +65,58 @@ the browser and firmware enforce the same rule.
   Python environment.
 - [ ] Run a fresh ESP-IDF target build, review the scoped diff, and stop before
   flashing until the user explicitly authorizes it.
+
+### Task 5: Raise the QR instruction line
+
+**Files:**
+- Modify: `test/test_wifi_onboarding_design.py`
+- Modify: `design/vibepulse/wifi-onboarding-design.json`
+- Modify: `components/torget_wifi/wifi_setup_ui.c`
+
+- [ ] **Step 1: Pin the approved coordinate in the design test**
+
+Add this assertion beside the existing open-view geometry checks:
+
+```python
+self.assertEqual(opened["instructionY"], 72)
+```
+
+- [ ] **Step 2: Run the test and verify RED**
+
+Run:
+
+```bash
+./.venv/bin/python test/test_wifi_onboarding_design.py -v
+```
+
+Expected: `test_contract_is_safe_and_exact_size` fails because the checked-in
+value is still 82.
+
+- [ ] **Step 3: Move only the instruction token**
+
+Change `open.instructionY` to 72 in the design JSON and
+`WIFI_OPEN_INSTRUCTION_Y` to 72 in the LVGL source. Do not move the title, QR,
+button, or footer.
+
+- [ ] **Step 4: Verify GREEN and inspect the exact raster**
+
+Run:
+
+```bash
+./.venv/bin/python test/test_wifi_onboarding_design.py -v
+cmake --build sim/build -j4
+./.venv/bin/python test/test_vibepulse_visual_landmarks.py \
+  VibePulseVisualLandmarkTests.test_wifi_onboarding_states -v
+```
+
+Expected: all commands pass. Generate the 480 x 480 static QA capture and
+inspect the complete `torget-wifi-setup-open.bmp` at 1:1 before committing.
+
+- [ ] **Step 5: Commit the scoped adjustment**
+
+```bash
+git add test/test_wifi_onboarding_design.py \
+  design/vibepulse/wifi-onboarding-design.json \
+  components/torget_wifi/wifi_setup_ui.c
+git commit -m "fix: raise Wi-Fi setup instruction"
+```
