@@ -54,6 +54,7 @@ class NumbersRelayJsWiringTests(unittest.TestCase):
     def test_ci_owns_relay_suites_in_one_non_matrix_job(self) -> None:
         merge_command = "node --test tools/relay/test.mjs"
         runtime_command = "(cd tools/relay && npm ci && npm test)"
+        dry_build_command = "(cd tools/relay && npm run build:dry)"
 
         self.assertIn("numbers-relay", self.jobs)
         numbers_job = self.jobs["numbers-relay"]
@@ -63,6 +64,7 @@ class NumbersRelayJsWiringTests(unittest.TestCase):
         runs = self.step_runs(numbers_job)
         self.assertEqual(runs.count(merge_command), 1)
         self.assertEqual(runs.count(runtime_command), 1)
+        self.assertEqual(runs.count(dry_build_command), 1)
 
         merge_owners = [
             name
@@ -132,12 +134,19 @@ class NumbersRelayJsWiringTests(unittest.TestCase):
 
         self.assertEqual(
             package["scripts"]["test"],
-            "vitest run --config vitest.config.mjs",
+            "vitest run --config vitest.config.mjs && "
+            "node --test deploy.test.mjs",
         )
         self.assertEqual(
             package["scripts"]["test:merge"],
             "node --test test.mjs",
         )
+        self.assertEqual(package["scripts"]["build:dry"],
+                         "node deploy.mjs ci-dry")
+        self.assertEqual(package["scripts"]["deploy:dry"],
+                         "node deploy.mjs dry-run")
+        self.assertEqual(package["scripts"]["deploy"],
+                         "node deploy.mjs deploy")
 
 
 if __name__ == "__main__":

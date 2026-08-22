@@ -1,12 +1,14 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
-import worker from "./worker.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import worker, { NumbersMailbox } from "./worker.js";
 import rawConfig from "./wrangler.jsonc?raw";
 
 const SECRET = "s".repeat(64);
 const MAILBOX_NAME = "numbers-mailbox-v1";
 let mailboxSequence = 0;
+
+afterEach(() => vi.restoreAllMocks());
 
 function mailbox() {
   mailboxSequence += 1;
@@ -82,7 +84,7 @@ describe("NumbersMailbox SQLite coordination", () => {
     const results = await Promise.all(publishers.map((publisher, index) =>
       stub.publish(
         "/api/tokens", publisher,
-        JSON.stringify({ publisher, value: index }), 100 + index,
+        JSON.stringify({ publisher, value: index }),
       )));
 
     expect(results).toEqual(Array(8).fill("stored"));
@@ -95,17 +97,17 @@ describe("NumbersMailbox SQLite coordination", () => {
      async () => {
     const stub = mailbox();
     const firstEight = Array.from({ length: 8 }, (_, index) => `p${index}`);
-    for (const [index, publisher] of firstEight.entries()) {
+    for (const publisher of firstEight) {
       await expect(stub.publish(
-        "/api/tokens", publisher, JSON.stringify({ publisher }), 100 + index,
+        "/api/tokens", publisher, JSON.stringify({ publisher }),
       )).resolves.toBe("stored");
     }
 
     await expect(stub.publish(
-      "/api/tokens", "p8", JSON.stringify({ publisher: "p8" }), 200,
+      "/api/tokens", "p8", JSON.stringify({ publisher: "p8" }),
     )).resolves.toBe("full");
     await expect(stub.publish(
-      "/api/github", "p0", JSON.stringify({ stars: 99 }), 201,
+      "/api/github", "p0", JSON.stringify({ stars: 99 }),
     )).resolves.toBe("stored");
 
     const state = await storedState(stub);
@@ -120,7 +122,7 @@ describe("NumbersMailbox SQLite coordination", () => {
      async () => {
     const stub = mailbox();
     await expect(stub.publish(
-      "/api/tokens", "mac", JSON.stringify({ weekPct: 73 }), 100,
+      "/api/tokens", "mac", JSON.stringify({ weekPct: 73 }),
     )).resolves.toBe("stored");
 
     const state = await storedState(stub);
@@ -128,7 +130,7 @@ describe("NumbersMailbox SQLite coordination", () => {
     expect(state.documents).toEqual([expect.objectContaining({
       endpoint: "/api/tokens",
       publisher: "mac",
-      received_at: 100,
+      received_at: 1,
       body_json: JSON.stringify({ weekPct: 73 }),
     })]);
   });
@@ -149,7 +151,7 @@ describe("NumbersMailbox SQLite coordination", () => {
     const failed = await runInDurableObject(stub, async (instance) => {
       try {
         await instance.publish(
-          "/api/tokens", "mac", JSON.stringify({ weekPct: 73 }), 100,
+          "/api/tokens", "mac", JSON.stringify({ weekPct: 73 }),
         );
         return false;
       } catch {
@@ -160,12 +162,26 @@ describe("NumbersMailbox SQLite coordination", () => {
     const state = await storedState(stub);
     expect(state.publishers).toEqual([]);
     expect(state.documents).toEqual([]);
+    await runInDurableObject(stub, async (_instance, objectState) => {
+      expect(objectState.storage.sql.exec(`
+        SELECT receipt_sequence FROM mailbox_state WHERE singleton = 1
+      `).one().receipt_sequence).toBe(0);
+      objectState.storage.sql.exec("DROP TRIGGER fail_document_insert");
+    });
+    await expect(stub.publish(
+      "/api/tokens", "pc", JSON.stringify({ weekPct: 74 }),
+    )).resolves.toBe("stored");
+    await expect(stub.getDocs("/api/tokens")).resolves.toEqual([{
+      receivedAt: 1,
+      publisher: "pc",
+      body: { weekPct: 74 },
+    }]);
   });
 
   it("skips a corrupt row without hiding a healthy publisher", async () => {
     const stub = mailbox();
     await stub.publish(
-      "/api/github", "healthy", JSON.stringify({ stars: 99 }), 100,
+      "/api/github", "healthy", JSON.stringify({ stars: 99 }),
     );
     await runInDurableObject(stub, async (_instance, state) => {
       state.storage.sql.exec(
@@ -178,7 +194,7 @@ describe("NumbersMailbox SQLite coordination", () => {
     });
 
     await expect(stub.getDocs("/api/github")).resolves.toEqual([{
-      receivedAt: 100,
+      receivedAt: 1,
       publisher: "healthy",
       body: { stars: 99 },
     }]);
@@ -198,6 +214,41 @@ describe("NumbersMailbox SQLite coordination", () => {
     });
 
     await expect(stub.getDocs("/api/github")).resolves.toEqual([]);
+  });
+
+  it("owns receipt ordering even when direct RPC callers add timestamps",
+     async () => {
+    const stub = mailbox();
+    await stub.publish(
+      "/api/github", "mac", JSON.stringify({ source: "first" }),
+      Number.MAX_SAFE_INTEGER,
+    );
+    await stub.publish(
+      "/api/github", "pc", JSON.stringify({ source: "second" }), -1,
+    );
+
+    const docs = await stub.getDocs("/api/github");
+    expect(docs.map((doc) => doc.receivedAt).sort()).toEqual([1, 2]);
+    expect(docs.find((doc) => doc.publisher === "pc").body).toEqual({
+      source: "second",
+    });
+  });
+
+  it("keeps the later same-publisher body regardless of extra RPC input",
+     async () => {
+    const stub = mailbox();
+    await stub.publish(
+      "/api/max-tracker", "mac", JSON.stringify({ value: "old" }), 999999,
+    );
+    await stub.publish(
+      "/api/max-tracker", "mac", JSON.stringify({ value: "new" }), 0,
+    );
+
+    await expect(stub.getDocs("/api/max-tracker")).resolves.toEqual([{
+      receivedAt: 2,
+      publisher: "mac",
+      body: { value: "new" },
+    }]);
   });
 });
 
@@ -299,6 +350,7 @@ describe("public numbers Worker routing and wire contract", () => {
     expect(calls.publish[0][0]).toBe("/api/tokens");
     expect(calls.publish[0][1]).toBe(expected);
     expect(JSON.parse(calls.publish[0][2])).toEqual({ weekPct: 73 });
+    expect(calls.publish[0]).toHaveLength(3);
     expect(calls.kv).toEqual([]);
   });
 
@@ -331,14 +383,31 @@ describe("public numbers Worker routing and wire contract", () => {
 
   it("turns storage RPC errors into a non-leaking non-success response",
      async () => {
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sensitivePublisher = "private-mac";
+    const sensitiveBody = "body-must-not-leak";
     const { requestEnv } = fakeEnv({
-      rpcError: new Error("forced document failure"),
+      rpcError: new Error(
+        `${SECRET}:${sensitivePublisher}:${sensitiveBody}`,
+      ),
     });
     const response = await relayRequest(requestEnv, "/api/tokens", {
-      method: "POST", publisher: "mac", body: { weekPct: 73 },
+      method: "POST", publisher: sensitivePublisher,
+      body: { note: sensitiveBody, weekPct: 73 },
     });
     expect(response.status).toBe(503);
     expect(await response.text()).toBe("relay unavailable");
+    expect(diagnostic).toHaveBeenCalledTimes(1);
+    const logged = String(diagnostic.mock.calls[0][0]);
+    expect(JSON.parse(logged)).toEqual({
+      level: "error",
+      event: "numbers_mailbox_failure",
+      operation: "publish",
+    });
+    expect(logged).not.toContain(SECRET);
+    expect(logged).not.toContain(sensitivePublisher);
+    expect(logged).not.toContain(sensitiveBody);
+    diagnostic.mockRestore();
   });
 
   it("preserves per-pool token merging across real mailbox publishers",
@@ -348,12 +417,12 @@ describe("public numbers Worker routing and wire contract", () => {
       v: 2,
       weekPct: 70, weekObservedAt: 150,
       codexWeekPct: 41, codexWeekObservedAt: 190,
-    }), 200);
+    }));
     await stub.publish("/api/tokens", "pc", JSON.stringify({
       v: 2,
       weekPct: 73, weekObservedAt: 205,
       codexWeekPct: 39, codexWeekObservedAt: 100,
-    }), 210);
+    }));
 
     const response = await relayRequest(env, "/api/tokens");
     expect(response.status).toBe(200);
@@ -371,10 +440,10 @@ describe("public numbers Worker routing and wire contract", () => {
        async () => {
       const stub = mailbox();
       await stub.publish(
-        endpoint, "mac", JSON.stringify({ source: "mac", value: 1 }), 100,
+        endpoint, "mac", JSON.stringify({ source: "mac", value: 1 }),
       );
       await stub.publish(
-        endpoint, "pc", JSON.stringify({ source: "pc", value: 2 }), 200,
+        endpoint, "pc", JSON.stringify({ source: "pc", value: 2 }),
       );
       const requestEnv = {
         RELAY_SECRET: SECRET,
@@ -411,6 +480,37 @@ describe("public numbers Worker routing and wire contract", () => {
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "no data yet" });
     expect(response.headers.get("Content-Type")).toBe("application/json");
+  });
+});
+
+describe("rollback-compatible KV bootstrap", () => {
+  it("exports the mailbox class while preserving the old public KV contract",
+     async () => {
+    const bootstrap = await import("./bootstrap.js");
+    expect(bootstrap.NumbersMailbox).toBe(NumbersMailbox);
+
+    const publisher = "bootstrap-mac";
+    const body = { stars: 99, issues: 3 };
+    const url = `https://relay.test/u/${SECRET}/api/github`;
+    const posted = await bootstrap.default.fetch(new Request(url, {
+      method: "POST",
+      headers: { "X-VibePulse-Publisher": publisher },
+      body: JSON.stringify(body),
+    }), env);
+    expect(posted.status).toBe(200);
+    expect(await posted.text()).toBe("ok");
+
+    const stored = JSON.parse(
+      await env.VIBEPULSE.get(`/api/github:${publisher}`),
+    );
+    expect(stored.publisher).toBe(publisher);
+    expect(stored.body).toEqual(body);
+    expect(stored.receivedAt).toEqual(expect.any(Number));
+
+    const fetched = await bootstrap.default.fetch(new Request(url), env);
+    expect(fetched.status).toBe(200);
+    expect(await fetched.json()).toEqual(body);
+    expect(fetched.headers.get("Content-Type")).toBe("application/json");
   });
 });
 
