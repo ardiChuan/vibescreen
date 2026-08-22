@@ -97,8 +97,9 @@ class NumbersRelayDocumentationTests(unittest.TestCase):
             "9,408", "8,640 document rows", "17,280 document rows",
             "288 token publications", "48 Max Tracker publications",
             "48 GitHub publications", "384 publications",
-            "768 publications", "769 row writes", "1,538 row writes",
-            "768 steady-state row writes", "1,536 steady-state row writes",
+            "768 publications", "primary-key index rows",
+            "under 1,600 billed row writes", "under 3,100 billed row writes",
+            "100,000-row daily free limit",
             "mailbox starts empty", "restart each active tokenserver",
             "all three endpoints", "usage_http_200 + ok",
             "one panel polling interval", "STALE",
@@ -124,10 +125,33 @@ class NumbersRelayDocumentationTests(unittest.TestCase):
             "traffic is not bounded by those healthy-success totals.",
             "return at most 8,640 document rows per day for one publisher "
             "or 17,280 document rows for two.",
-            "One publisher therefore makes 768 steady-state row writes per "
-            "day; two make 1,536 steady-state row writes.",
-            "first full-rate day is 769 row writes for one publisher or "
-            "1,538 row writes for two.",
+            "These are conservative upper bounds, not exact billed-row "
+            "counts.",
+        ):
+            self.assertIn(exact, self.relay_words, exact)
+        self.assertNotIn("exact daily successful-request and row budget",
+                         self.relay_words.lower())
+
+    def test_guard_flags_snapshot_and_corrupt_state_recovery_are_scoped(
+        self,
+    ) -> None:
+        readme_words = " ".join(self.readme.split())
+        for exact in (
+            "pinned Wrangler with `--strict --keep-vars`",
+            "mode-0600 canonical snapshot outside the repository",
+            "removes the snapshot after Wrangler exits",
+        ):
+            self.assertIn(exact, readme_words, exact)
+
+        for exact in (
+            "[Durable Objects Data Studio](https://developers.cloudflare.com/"
+            "durable-objects/observability/data-studio/)",
+            "Workers Platform Admin", "`numbers-mailbox-v1`",
+            "A corrupt document normally self-heals on that publisher's "
+            "next valid publication.",
+            "repair only the confirmed corrupt row",
+            "reviewed fresh mailbox-name rollout",
+            "Do not delete the entire Durable Object or all mailbox rows.",
         ):
             self.assertIn(exact, self.relay_words, exact)
 

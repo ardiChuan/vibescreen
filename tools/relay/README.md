@@ -56,6 +56,8 @@ a new namespace because the bootstrap rollback path needs the existing data.
 The binding is deliberately local: do not add `script_name` or `environment`.
 `NumbersMailbox` must be the only lifecycle export. Keep `RELAY_SECRET` in the
 Worker secret store; `secrets.required` declares its name but never its value.
+The guard rejects every additional top-level field, binding, route, environment,
+variable, flag, secret declaration, or nested object key.
 The staged rollout is documented in the
 [coordinated-mailbox design](../../docs/superpowers/specs/2026-08-22-vibepulse-numbers-relay-list-free-design.md): bootstrap first, then the active Worker.
 
@@ -72,6 +74,12 @@ npm run deploy -- \
   --expected-kv-id <existing-real-kv-id> \
   --expected-main bootstrap.js
 ```
+
+The wrapper invokes pinned Wrangler with `--strict --keep-vars`. After resolving
+the real external config path, it serializes only the validated fields to a
+mode-0600 canonical snapshot outside the repository, uses the validated
+absolute entrypoint, and removes the snapshot after Wrangler exits on success,
+failure, or interruption. Wrangler never receives the mutable source path.
 
 The first deployment provisions the SQLite class while `bootstrap.js` keeps
 serving the old KV path. Confirm that public behavior, then capture that exact
@@ -129,12 +137,13 @@ panel GETs and 8,640 mailbox RPCs. On the healthy-success path, each publisher
 is capped at 288 admitted token, 48 Max Tracker, and 48 GitHub publications per
 day: 384 total for one publisher or 768 for two.
 
-Each admitted publication writes one monotonic counter row and one document
-row. That is 768 steady-state row writes per day for one publisher or 1,536
-steady-state row writes for two. Registration adds one row once per publisher,
-so the first full-rate day after mailbox initialization is 769 row writes for
-one publisher or 1,538 row writes for two. The fixed eight-publisher limit
-bounds every read.
+Each admitted publication changes one monotonic counter row and one document
+row. Billed SQLite writes also include index maintenance. Conservatively allow
+up to four billed rows per publication, plus up to two for a publisher's first
+registration, so the scheduled maximum remains under 1,600 billed row writes
+per day for one publisher or under 3,100 for two. These are deliberately rounded
+upper bounds, not exact SQLite billing arithmetic, and remain far below the
+100,000-row daily free limit. The fixed eight-publisher limit bounds every read.
 
 A failed POST is not admitted and does not advance the publisher's send time,
 so it can retry on the next 30-second check. The successful-publication and row

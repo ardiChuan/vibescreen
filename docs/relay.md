@@ -85,7 +85,7 @@ The honest limits remain:
 - A computer must be awake and its tokenserver must be running to publish.
 - Agent activity remains local unless its separate encrypted relay is enabled.
 
-## Exact daily successful-request and row budget
+## Daily successful-request and conservative row budget
 
 The panel polls each of three endpoints every 30 seconds. One day therefore has
 2,880 poll cycles and 8,640 panel GETs. Every GET is one public Worker request
@@ -114,13 +114,24 @@ document rows per day for one publisher or 17,280 document rows for two. Eight
 publishers is the hard upper bound, so neither storage nor reads can grow with
 untrusted publisher names.
 
-Every admitted publication writes exactly two application rows: one update to
-the monotonic counter and one document upsert. One publisher therefore makes
-768 steady-state row writes per day; two make 1,536 steady-state row writes.
-The registry adds one row once for each new publisher. Excluding the one-time
-mailbox/schema initialization, the first full-rate day is 769 row writes for
-one publisher or 1,538 row writes for two. These are Durable Object SQLite row
-writes, not KV writes; the active path spends no KV operation quota.
+Every admitted publication changes two application-table rows: the monotonic
+counter and one document. Cloudflare's
+[SQLite billing rules](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)
+also count index maintenance as billed row writes. For a conservative ceiling,
+allow a data row and its primary-key index row for each change: up to four
+billed row writes per publication, plus up to two when a publisher is first
+registered. These are conservative upper bounds, not exact billed-row counts.
+The actual SQLite primary-key index rows updated depend on the statement and
+table layout.
+
+At the scheduled maximum, that budget remains under 1,600 billed row writes per
+day for one publisher and under 3,100 billed row writes for two, including
+their first registrations. Both are far below the SQLite Durable Object
+100,000-row daily free limit (see Cloudflare's
+[current pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)).
+Schema initialization and internal metadata are small one-time costs, not part
+of those daily publication estimates. These are SQLite operations, not KV
+writes; the active path spends no KV operation quota.
 
 ## Setup and the two-stage lifecycle
 
@@ -161,6 +172,29 @@ After activating `worker.js` and restarting publishers:
 4. If the mailbox returns 503, use the Worker's sanitized `publish` or `read`
    diagnostic. It intentionally contains no secret, publisher, body, or RPC
    error text.
+
+### Repairing corrupt mailbox state
+
+A corrupt document normally self-heals on that publisher's next valid
+publication. Reads already isolate malformed document JSON, so restart the
+affected tokenserver and check the three endpoints before touching storage.
+
+If a bad row continues to block publications, use Cloudflare's official
+[Durable Objects Data Studio](https://developers.cloudflare.com/durable-objects/observability/data-studio/).
+It requires the Workers Platform Admin role. In the Cloudflare dashboard, open
+the `NumbersMailbox` Durable Object namespace, start Data Studio, and identify
+the single object by its unique name, `numbers-mailbox-v1`. Inspect the
+`publishers`, `documents`, and `mailbox_state` tables, repair only the confirmed
+corrupt row, then restart the affected tokenserver so valid values are
+republished. Data Studio operates on the remote object, consumes normal usage,
+and audit-logs its queries, so keep the change narrow and reviewed.
+
+Do not delete the entire Durable Object or all mailbox rows. If scoped repair
+is unsafe or the damage cannot be identified, use a reviewed fresh mailbox-name
+rollout instead: change the deterministic mailbox name in reviewed code, deploy
+the `worker.js` change through the guarded dry run and deployment, and restart
+publishers to fill the new empty object. Preserve the old object until the
+replacement is verified.
 
 No firmware or OTA change is required for this storage repair. The public URLs
 and response bodies remain unchanged.
