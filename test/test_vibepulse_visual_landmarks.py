@@ -1226,7 +1226,7 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         self.assertGreater(
             self._count(image, (24, 358, 232, 452), self.NY_RED), 0)
 
-    def test_global_wifi_icon_is_neutral_consistent_and_distinct(self):
+    def test_global_wifi_icon_is_neutral_consistent_and_two_state(self):
         box = (426, 28, 446, 46)
         signatures = []
         for bars in range(4):
@@ -1253,7 +1253,14 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                     crops.append(crop.tobytes())
             self.assertTrue(all(crop == crops[0] for crop in crops))
             signatures.append(crops[0])
-        self.assertEqual(len(set(signatures)), 4)
+        self.assertNotEqual(
+            signatures[0], signatures[3],
+            "offline must be visibly different from connected",
+        )
+        self.assertEqual(
+            signatures[1:], [signatures[3]] * 3,
+            "every connected signal level must use the same full-size fan",
+        )
 
     def test_global_wifi_icon_is_one_connected_fan_not_a_floating_dot(self):
         """Physical AMOLED review found the old concentric arcs at y=38..49

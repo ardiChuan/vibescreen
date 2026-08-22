@@ -12,7 +12,7 @@
     "height": 18,
     "scope": "page-drift-shell",
     "color": "#9298A2",
-    "states": ["offline", "weak", "medium", "strong"],
+    "states": ["offline", "connected"],
     "hiddenDuringBoot": true
   },
   "open": {

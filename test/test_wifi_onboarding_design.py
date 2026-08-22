@@ -37,7 +37,7 @@ class WifiOnboardingDesignTests(unittest.TestCase):
                 "height": 18,
                 "scope": "page-drift-shell",
                 "color": "#9298A2",
-                "states": ["offline", "weak", "medium", "strong"],
+                "states": ["offline", "connected"],
                 "hiddenDuringBoot": True,
             },
         )
@@ -124,6 +124,12 @@ class WifiOnboardingDesignTests(unittest.TestCase):
         self.assertIn("lv_image_create(tg.wifi_group)", platform)
         self.assertNotIn("LV_SYMBOL_WIFI", platform)
         self.assertIn("TG_WIFI_STATUS_SETUP", platform)
+        self.assertIn(
+            "connected ? &tg_img_wifi_strong : &tg_img_wifi_offline",
+            platform,
+        )
+        self.assertNotIn("&tg_img_wifi_weak", platform)
+        self.assertNotIn("&tg_img_wifi_medium", platform)
 
     def test_repository_runner_wires_contract(self):
         runner = (ROOT / "test/run.sh").read_text(encoding="utf-8")

@@ -42,10 +42,11 @@ uint8_t torget_wifi_signal_bars(void);
 
 /* One neutral Wi-Fi status mark shared by every ordinary app page. It lives
  * in the translated page shell; opaque setup/OTA takeovers cover it instead
- * of letting it float above them. NORMAL follows real 0..3 association
- * strength, SETUP selects the complete mark for the phone flow, and HIDDEN is
- * reserved for the one-time boot screen. These UI calls require the caller
- * to hold the LVGL lock, matching the rest of the platform UI API. */
+ * of letting it float above them. NORMAL renders 0 as the slashed offline fan
+ * and any nonzero association strength as the complete connected fan. SETUP
+ * selects the connected mark for the phone flow, and HIDDEN is reserved for
+ * the one-time boot screen. These UI calls require the caller to hold the
+ * LVGL lock, matching the rest of the platform UI API. */
 typedef enum {
   TG_WIFI_STATUS_NORMAL = 0,
   TG_WIFI_STATUS_SETUP,
