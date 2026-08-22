@@ -36,6 +36,8 @@
 const ENDPOINTS = ["/api/tokens", "/api/max-tracker", "/api/github"];
 const MAX_BODY_BYTES = 64 * 1024; // largest honest payload is ~8 kB
 const MAX_PUBLISHERS = 8;
+const PUBLISHER_INDEX_KEY = "__vibepulse_publishers_v1";
+const PUBLISHER_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
 /*
  * Sammanslagningen för /api/tokens, som ren funktion så testerna kan hålla
@@ -94,11 +96,41 @@ function parsePath(url, secret) {
   return ENDPOINTS.includes(endpoint) ? endpoint : null;
 }
 
+function parsePublisherIndex(raw) {
+  if (!raw) return [];
+  try {
+    const publishers = JSON.parse(raw);
+    if (!Array.isArray(publishers) || publishers.length > MAX_PUBLISHERS)
+      return [];
+    const unique = new Set();
+    for (const publisher of publishers) {
+      if (typeof publisher !== "string" ||
+          !PUBLISHER_PATTERN.test(publisher) || unique.has(publisher))
+        return [];
+      unique.add(publisher);
+    }
+    return publishers;
+  } catch {
+    return [];
+  }
+}
+
+async function ensurePublisher(env, publisher) {
+  const publishers = parsePublisherIndex(
+      await env.VIBEPULSE.get(PUBLISHER_INDEX_KEY));
+  if (publishers.includes(publisher)) return true;
+  if (publishers.length >= MAX_PUBLISHERS) return false;
+  await env.VIBEPULSE.put(PUBLISHER_INDEX_KEY,
+                          JSON.stringify([...publishers, publisher]));
+  return true;
+}
+
 async function readDocs(env, endpoint) {
-  const listed = await env.VIBEPULSE.list({ prefix: `${endpoint}:` });
+  const publishers = parsePublisherIndex(
+      await env.VIBEPULSE.get(PUBLISHER_INDEX_KEY));
   const docs = [];
-  for (const key of listed.keys.slice(0, MAX_PUBLISHERS)) {
-    const raw = await env.VIBEPULSE.get(key.name);
+  for (const publisher of publishers) {
+    const raw = await env.VIBEPULSE.get(`${endpoint}:${publisher}`);
     if (!raw) continue;
     try {
       docs.push(JSON.parse(raw));
@@ -133,6 +165,8 @@ export default {
       } catch {
         return new Response("not json", { status: 400 });
       }
+      if (!await ensurePublisher(env, publisher))
+        return new Response("too many publishers", { status: 409 });
       const doc = JSON.stringify({ receivedAt: Date.now() / 1000,
                                    publisher, body });
       await env.VIBEPULSE.put(`${endpoint}:${publisher}`, doc);
