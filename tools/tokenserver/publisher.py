@@ -45,9 +45,11 @@ log = logging.getLogger("tokenserver")
 CHECK_EVERY_S = 30.0
 HEARTBEAT_EVERY_S = 300.0
 
-# KV's free allowance is account-wide: 1,000 writes/day.  At these absolute
-# ceilings one publisher can make at most 384 writes/day (288 quota updates,
-# 48 Max Tracker updates and 48 GitHub updates); two make at most 768.
+# KV's free allowance is account-wide: 1,000 writes/day.  At these steady-state
+# ceilings one publisher makes at most 384 writes/day (288 quota updates,
+# 48 Max Tracker updates and 48 GitHub updates); two make at most 768. A
+# stale-to-fresh quota recovery may add one corrective write per resolved stale
+# episode so the glass does not retain an obsolete startup/auth snapshot.
 # The local 30-second check remains responsive without being allowed to turn
 # volatile presentation timestamps into cloud writes.
 MIN_SEND_INTERVAL_S = {
@@ -70,6 +72,16 @@ def payload_fingerprint(payload) -> str:
     """
     body = json.dumps(payload, sort_keys=True).encode()
     return hashlib.sha256(body).hexdigest()
+
+
+def stale_fields(payload) -> frozenset[str]:
+    """Return only explicit top-level stale flags from a numbers payload."""
+    if not isinstance(payload, dict):
+        return frozenset()
+    return frozenset(
+        key for key, value in payload.items()
+        if key.endswith("Stale") and value is True
+    )
 
 
 def should_send(last_fingerprint, last_sent_at, fingerprint, now,
@@ -106,7 +118,7 @@ class Publisher:
         self.producers = producers
         self.post = post if post is not None else self._http_post
         self.clock = clock
-        # per path: (fingerprint, sent_at)
+        # per path: (fingerprint, sent_at, stale fields in successful payload)
         self._state = {}
         self._stop = threading.Event()
         self._thread = None
@@ -144,15 +156,22 @@ class Publisher:
                 log.exception("publicering: %s-producenten föll", path)
                 continue
             fingerprint = payload_fingerprint(payload)
-            last_fingerprint, sent_at = self._state.get(path, (None, 0.0))
+            current_stale = stale_fields(payload)
+            last_fingerprint, sent_at, last_stale = self._state.get(
+                path, (None, 0.0, frozenset()))
             now = self.clock()
             min_interval = MIN_SEND_INTERVAL_S.get(path, HEARTBEAT_EVERY_S)
-            if not should_send(last_fingerprint, sent_at, fingerprint, now,
-                               min_interval):
+            recovered = (
+                path == "/api/tokens" and
+                any(payload.get(field) is False for field in last_stale)
+            )
+            if (not recovered and
+                    not should_send(last_fingerprint, sent_at, fingerprint,
+                                    now, min_interval)):
                 continue
             body = json.dumps(payload, sort_keys=True).encode()
             if self.post(self.relay_url + path, body):
-                self._state[path] = (fingerprint, now)
+                self._state[path] = (fingerprint, now, current_stale)
                 sends += 1
             else:
                 # State untouched: next tick retries.  Log once per failure

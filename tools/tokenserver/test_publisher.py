@@ -115,6 +115,46 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(p.publish_once(), 1)
         self.assertEqual(len(sent), 3)
 
+    def test_tokens_stale_to_fresh_bypasses_the_ceiling_once(self):
+        value = {"claudeWeekStale": True, "claudeWeekPct": 6}
+        p, sent, clock = self._publisher({
+            "/api/tokens": lambda: dict(value),
+        })
+
+        self.assertEqual(p.publish_once(), 1)
+        value.update(claudeWeekStale=False, claudeWeekPct=7)
+        clock["now"] += 30
+        self.assertEqual(p.publish_once(), 1)
+        clock["now"] += 30
+        self.assertEqual(p.publish_once(), 0)
+        self.assertEqual(len(sent), 2)
+
+    def test_failed_tokens_recovery_retries_next_tick(self):
+        value = {"claudeWeekStale": True}
+        p, sent, clock = self._publisher({
+            "/api/tokens": lambda: dict(value),
+        }, results=[True, False, True])
+
+        self.assertEqual(p.publish_once(), 1)
+        value["claudeWeekStale"] = False
+        clock["now"] += 30
+        self.assertEqual(p.publish_once(), 0)
+        clock["now"] += 30
+        self.assertEqual(p.publish_once(), 1)
+        self.assertEqual(len(sent), 3)
+
+    def test_non_token_stale_change_still_waits_for_its_ceiling(self):
+        value = {"sourceStale": True}
+        p, sent, clock = self._publisher({
+            "/api/github": lambda: dict(value),
+        })
+
+        self.assertEqual(p.publish_once(), 1)
+        value["sourceStale"] = False
+        clock["now"] += 30
+        self.assertEqual(p.publish_once(), 0)
+        self.assertEqual(len(sent), 1)
+
     def test_a_broken_producer_does_not_stop_the_others(self):
         def broken():
             raise RuntimeError("boom")
