@@ -15,6 +15,10 @@ The primary 480 x 480 setup state contains only:
 - one outlined `MANUAL SETUP` touch target;
 - the remaining time and `KEY3 CLOSES` footer.
 
+`SCAN WITH YOUR PHONE` starts at y=72. This is 10 px above the first
+implementation: it restores visual breathing room above the QR while leaving
+the `WIFI SETUP` title and 196 x 196 QR geometry unchanged.
+
 The temporary SSID, temporary password, and `192.168.4.1` move to the manual
 details view. `MANUAL SETUP` opens that view and `BACK TO QR` returns to the
 primary view. If QR generation fails, the manual view appears automatically.
