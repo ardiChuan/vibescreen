@@ -90,6 +90,9 @@ assert "wifi_active_clip" not in platform_ui
 assert "lv_arc_create" not in platform_ui
 assert "lv_obj_set_style_transform" not in platform_ui
 assert "lv_line_create(tg.wifi_group)" not in platform_ui
+assert "connected ? &tg_img_wifi_strong : &tg_img_wifi_offline" in platform_ui
+assert "&tg_img_wifi_weak" not in platform_ui
+assert "&tg_img_wifi_medium" not in platform_ui
 assert "TG_WIFI_STATUS_NORMAL" in platform_header
 assert "TG_WIFI_STATUS_SETUP" in platform_header
 assert "TG_WIFI_STATUS_HIDDEN" in platform_header
@@ -98,7 +101,7 @@ assert "void torget_wifi_status_foreground(void);" in platform_header
 assert "uint8_t torget_wifi_signal_bars(void);" in platform_header
 assert "Never implies relay health" in platform_header
 
-# Setup can still force the strong state while it owns the glass, but because
+# Setup can still force the connected state while it owns the glass, but because
 # both setup and OTA are opaque top-layer overlays there is no reparenting or
 # duplicate Wi-Fi object.  Boot keeps the ordinary page mark hidden until the
 # one-time handoff.

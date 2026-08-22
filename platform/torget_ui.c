@@ -29,7 +29,7 @@ static struct {
   lv_obj_t *wifi_image;
   tg_wifi_status_mode wifi_mode;
   tg_wifi_status_mode wifi_rendered_mode;
-  uint8_t wifi_rendered_bars;
+  bool wifi_rendered_connected;
   bool wifi_rendered_valid;
 } tg;
 
@@ -49,29 +49,27 @@ static lv_obj_t *bare(lv_obj_t *parent) {
 
 static void wifi_status_render(void) {
   if (!tg.wifi_group) return;
-  uint8_t bars = tg.wifi_mode == TG_WIFI_STATUS_SETUP
-                     ? 3 : torget_wifi_signal_bars();
-  if (bars > 3) bars = 3;
+  bool connected = tg.wifi_mode == TG_WIFI_STATUS_SETUP ||
+                   torget_wifi_signal_bars() > 0;
   if (tg.wifi_rendered_valid && tg.wifi_rendered_mode == tg.wifi_mode &&
-      tg.wifi_rendered_bars == bars)
+      tg.wifi_rendered_connected == connected)
     return;
 
   tg.wifi_rendered_valid = true;
   tg.wifi_rendered_mode = tg.wifi_mode;
-  tg.wifi_rendered_bars = bars;
+  tg.wifi_rendered_connected = connected;
   if (tg.wifi_mode == TG_WIFI_STATUS_HIDDEN) {
     lv_obj_add_flag(tg.wifi_group, LV_OBJ_FLAG_HIDDEN);
     return;
   }
 
   lv_obj_remove_flag(tg.wifi_group, LV_OBJ_FLAG_HIDDEN);
-  static const lv_image_dsc_t *states[4] = {
-      &tg_img_wifi_offline,
-      &tg_img_wifi_weak,
-      &tg_img_wifi_medium,
-      &tg_img_wifi_strong,
-  };
-  lv_image_set_src(tg.wifi_image, states[bars]);
+  /* On the 2.16-inch AMOLED the weak/medium silhouettes read as a broken or
+   * undersized icon.  Signal strength remains available to networking, but
+   * the header has one familiar full fan for connected and one equally large
+   * slashed fan for offline. */
+  lv_image_set_src(tg.wifi_image,
+                   connected ? &tg_img_wifi_strong : &tg_img_wifi_offline);
 }
 
 static void wifi_status_timer(lv_timer_t *timer) {
