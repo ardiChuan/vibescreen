@@ -275,6 +275,10 @@ EXPECTED.update(
     for surface in WIFI_GLOBAL_SURFACES
     for bars in range(4)
 )
+EXPECTED.update(
+    f"torget-wifi-drift-{tag}.bmp"
+    for tag in ("0", "1", "2", "3", "return")
+)
 
 
 class VibePulseVisualLandmarkTests(unittest.TestCase):
@@ -1208,10 +1212,10 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
             sum(1 for pixel in card_gap.get_flattened_data()
                 if max(pixel) > 90), 400)
 
-        # Eyebrow ends at x=408 and Wi-Fi begins at x=418: the approved ten
-        # pixel safety gap must remain pure black on the eyebrow row.
-        for x in range(408, 418):
-            for y in range(38, 66):
+        # Eyebrow ends at x=408 and Wi-Fi begins at x=426: the quiet header
+        # gap must remain pure black around the native page-owned mark.
+        for x in range(408, 426):
+            for y in range(28, 46):
                 self.assertEqual(image.getpixel((x, y)), (0, 0, 0))
 
     def test_codex_permission_uses_same_large_controls(self):
@@ -1223,35 +1227,33 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
             self._count(image, (24, 358, 232, 452), self.NY_RED), 0)
 
     def test_global_wifi_icon_is_neutral_consistent_and_distinct(self):
-        box = (418, 38, 446, 66)
+        box = (426, 28, 446, 46)
         signatures = []
         for bars in range(4):
-            counts = []
+            crops = []
             for surface in WIFI_GLOBAL_SURFACES:
                 image = self.image(f"torget-wifi-global-{surface}-{bars}.bmp")
                 with self.subTest(surface=surface, bars=bars):
                     self.assertEqual(self._count(image, box, self.NY_CODEX), 0)
                     self.assertEqual(self._count(image, box, self.NY_CLAUDE), 0)
-                    for x in range(408, 418):
-                        for y in range(21, 58):
+                    self.assertEqual(self._count(image, box, self.NY_WHITE), 0)
+                    for x in range(408, 426):
+                        for y in range(28, 46):
                             self.assertEqual(image.getpixel((x, y)), (0, 0, 0))
-                    counts.append((
-                        self._count(image, box, self.NY_WHITE),
-                        self._count(image, box, self.NY_MUTED),
-                    ))
-                    if bars < 3:
-                        self.assertGreater(
-                            counts[-1][1], 10,
-                            "the complete inactive silhouette must remain "
-                            "visible on the physical AMOLED",
-                        )
-            self.assertTrue(all(count == counts[0] for count in counts))
-            signatures.append(counts[0])
+                    crop = image.crop(box)
+                    self.assertGreater(
+                        sum(pixel == self.NY_MUTED
+                            for pixel in crop.get_flattened_data()),
+                        8,
+                    )
+                    self.assertEqual(
+                        set(crop.get_flattened_data()),
+                        {(0, 0, 0), self.NY_MUTED},
+                    )
+                    crops.append(crop.tobytes())
+            self.assertTrue(all(crop == crops[0] for crop in crops))
+            signatures.append(crops[0])
         self.assertEqual(len(set(signatures)), 4)
-        self.assertGreater(signatures[0][0], 0)  # disconnected slash
-        self.assertGreater(signatures[0][1], 0)  # complete faint silhouette
-        for signature in signatures[1:]:
-            self.assertGreater(signature[0], 0)
 
     def test_global_wifi_icon_is_one_connected_fan_not_a_floating_dot(self):
         """Physical AMOLED review found the old concentric arcs at y=38..49
@@ -1261,10 +1263,10 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         enough to the next one to form a single silhouette."""
         image = self.image("torget-wifi-global-claude-3.bmp")
         ink_rows = []
-        for y in range(38, 66):
+        for y in range(28, 46):
             ink_rows.append(any(
-                image.getpixel((x, y)) in (self.NY_WHITE, self.NY_MUTED)
-                for x in range(418, 446)
+                image.getpixel((x, y)) == self.NY_MUTED
+                for x in range(426, 446)
             ))
 
         first = ink_rows.index(True)
@@ -1276,22 +1278,81 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
             longest_gap, 2,
             "the Wi-Fi dot must visually belong to the three signal arcs",
         )
+        self.assertGreaterEqual(first + 28, 28)
+        self.assertLessEqual(last + 28, 45)
+
+    def test_global_wifi_icon_preserves_amoled_safe_negative_space(self):
+        """The physical AMOLED blooms bright rounded strokes into adjacent
+        one-pixel gaps.  A familiar Wi-Fi mark therefore needs independently
+        separated lobes, not merely a plausible total pixel count."""
+        image = self.image("torget-wifi-global-claude-3.bmp")
+        remaining = {
+            (x, y)
+            for y in range(28, 46)
+            for x in range(426, 446)
+            if image.getpixel((x, y)) == self.NY_MUTED
+        }
+        component_sizes = []
+        while remaining:
+            stack = [remaining.pop()]
+            size = 0
+            while stack:
+                x, y = stack.pop()
+                size += 1
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        if dx == 0 and dy == 0:
+                            continue
+                        neighbour = (x + dx, y + dy)
+                        if neighbour in remaining:
+                            remaining.remove(neighbour)
+                            stack.append(neighbour)
+            component_sizes.append(size)
+
         self.assertGreaterEqual(
-            first + 38, 43,
-            "the fan must radiate from the lower dot, not hug the box top",
+            sum(size >= 8 for size in component_sizes),
+            3,
+            "AMOLED-safe Wi-Fi lobes must remain separated by real black space",
         )
 
-    def test_wifi_status_is_hidden_on_boot_and_foreground_on_overlays(self):
-        box = (418, 38, 446, 66)
-        for name in ("boot-cold", "boot-wifi", "boot-time"):
+    def test_wifi_header_mark_follows_every_burn_in_drift_step(self):
+        expected = {
+            "0": (427, 29, 444, 44),
+            "1": (429, 30, 446, 45),
+            "2": (430, 28, 447, 43),
+            "3": (428, 27, 445, 42),
+            "return": (427, 29, 444, 44),
+        }
+        for tag, bounds in expected.items():
+            image = self.image(f"torget-wifi-drift-{tag}.bmp")
+            pixels = [
+                (x, y)
+                for y in range(20, 52)
+                for x in range(420, 452)
+                if image.getpixel((x, y)) == self.NY_MUTED
+            ]
+            with self.subTest(tag=tag):
+                self.assertTrue(pixels)
+                self.assertEqual(
+                    (
+                        min(x for x, _ in pixels),
+                        min(y for _, y in pixels),
+                        max(x for x, _ in pixels),
+                        max(y for _, y in pixels),
+                    ),
+                    bounds,
+                )
+
+    def test_wifi_status_is_hidden_on_boot_and_covered_by_takeovers(self):
+        box = (426, 28, 446, 46)
+        for name in (
+            "boot-cold", "boot-wifi", "boot-time",
+            "ota-ring-open", "wifi-setup-qr",
+        ):
             with self.subTest(name=name):
                 self.assertEqual(
                     self.image(f"torget-{name}.bmp").crop(box).getbbox(), None
                 )
-        for name in ("ota-ring-open", "wifi-setup-qr"):
-            with self.subTest(name=name):
-                image = self.image(f"torget-{name}.bmp")
-                self.assertGreater(self._count(image, box, self.NY_WHITE), 0)
 
     def test_every_semantic_field_must_physically_fit_before_approval(self):
         fields = ("title", "subtitle", "description", "command", "tool")

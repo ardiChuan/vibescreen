@@ -230,12 +230,23 @@ static void create_claude_icon(lv_obj_t *parent, int x, int y) {
   lv_obj_remove_flag(image, LV_OBJ_FLAG_CLICKABLE);
 }
 
-static void create_hairline(lv_obj_t *parent, int y) {
+static void create_hairline_span(lv_obj_t *parent, int y, int width) {
   lv_obj_t *line = bare(parent);
   lv_obj_set_pos(line, VP_SAFE_X, y);
-  lv_obj_set_size(line, VP_CONTENT_W, 1);
+  lv_obj_set_size(line, width, 1);
   lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(line, COL_HAIRLINE, 0);
+}
+
+static void create_hairline(lv_obj_t *parent, int y) {
+  create_hairline_span(parent, y, VP_CONTENT_W);
+}
+
+static void create_header_hairline(lv_obj_t *parent) {
+  /* The platform-owned Wi-Fi mark starts at x=418.  Stop the page chrome at
+   * x=408 so its fixed ten-pixel black breathing lane is real on every view,
+   * including the header divider itself. */
+  create_hairline_span(parent, HEADER_LINE_Y, 408 - VP_SAFE_X);
 }
 
 static void create_provider_identity(lv_obj_t *tile,
@@ -270,13 +281,13 @@ static void create_live_header_widgets(lv_obj_t *tile, usage_provider provider,
   lv_obj_add_flag(halo, LV_OBJ_FLAG_HIDDEN);
 
   create_provider_identity(tile, provider);
-  /* End at x=408: x418..445 belongs to the one global Wi-Fi mark, with a
-   * hard ten-pixel black lane between text and radio status on every page. */
+  /* End at x=408: x426..445 belongs to the page-owned Wi-Fi mark, with a
+   * hard eighteen-pixel black lane between text and radio status. */
   lv_obj_t *context = label(tile, &plex_ui_14, COL_META,
                             180, VP_PROVIDER_Y + 5, 228, 20);
   lv_obj_set_style_text_align(context, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_style_text_letter_space(context, 1, 0);
-  create_hairline(tile, HEADER_LINE_Y);
+  create_header_hairline(tile);
 
   *halo_out = halo;
   *context_out = context;
@@ -304,7 +315,7 @@ static void create_analytics_header(lv_obj_t *tile, const char *title,
   lv_obj_set_style_text_align(bottom, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_style_text_letter_space(bottom, 2, 0);
   lv_label_set_text(bottom, bottom_right);
-  create_hairline(tile, HEADER_LINE_Y);
+  create_header_hairline(tile);
 }
 
 /* Centred from the dot geometry rather than a hard-coded origin: the row
@@ -378,7 +389,7 @@ static void create_github_page(void) {
                            230, 42, 178, 16);
   lv_obj_set_style_text_align(page->provenance, LV_TEXT_ALIGN_RIGHT, 0);
   lv_obj_set_style_text_letter_space(page->provenance, 2, 0);
-  create_hairline(page->tile, HEADER_LINE_Y);
+  create_header_hairline(page->tile);
 
   lv_obj_t *stars_label = label(page->tile, &plex_ui_21, COL_STAR,
                                 VP_SAFE_X, 88, VP_CONTENT_W, 30);

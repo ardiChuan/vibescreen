@@ -2,8 +2,8 @@
 # same ./test/run.sh a maintainer runs at the bench — C binaries, wiring
 # tests, the Mbed TLS crypto vectors (against the exact IDF-pinned sources)
 # and the SDL landmark captures under xvfb (OBS-24). Only the JS suites are
-# skipped inside run.sh (--skip-js): the npm-cached interaction-relay job
-# runs the Worker suite, and the tokenserver job runs the relay mailbox one.
+# skipped inside run.sh (--skip-js): the npm-cached interaction-relay and
+# numbers-relay jobs run their Worker suites independently.
 name: CI
 
 on:
@@ -76,6 +76,23 @@ jobs:
         working-directory: tools/interaction-relay
         run: npm ci && npm test && npm run typecheck
 
+  numbers-relay:
+    name: Numbers relay Worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/relay/package-lock.json
+      - name: Run relay mailbox merge tests
+        run: node --test tools/relay/test.mjs
+      - name: Run relay Durable Object tests
+        run: (cd tools/relay && npm ci && npm test)
+      - name: Dry-build both relay deployment stages
+        run: (cd tools/relay && npm run build:dry)
+
   tokenserver:
     name: Tokenserver tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -100,9 +117,6 @@ jobs:
           # now one list exists and run.sh guards its completeness.
           python -m unittest \
             $(tr -d '\r' < test/tokenserver-suite.txt | grep -v '^#') -v
-      - name: Run relay mailbox merge tests
-        shell: bash
-        run: node --test tools/relay/test.mjs
 
   firmware:
     name: ESP32-S3 firmware build

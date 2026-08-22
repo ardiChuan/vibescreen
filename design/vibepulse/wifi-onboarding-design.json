@@ -6,15 +6,13 @@
     "height": 480
   },
   "wifi": {
-    "x": 418,
-    "y": 38,
-    "size": 28,
-    "scope": "global-top-layer",
-    "activeColor": "#FFFFFF",
-    "inactiveColor": "#9298A2",
-    "normalBars": [0, 1, 2, 3],
-    "setupBars": 3,
-    "disconnectedSlash": true,
+    "x": 426,
+    "y": 28,
+    "width": 20,
+    "height": 18,
+    "scope": "page-drift-shell",
+    "color": "#9298A2",
+    "states": ["offline", "weak", "medium", "strong"],
     "hiddenDuringBoot": true
   },
   "open": {

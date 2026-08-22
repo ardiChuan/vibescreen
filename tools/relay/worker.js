@@ -1,5 +1,6 @@
 /*
- * VibePulse-brevlådan: en Cloudflare Worker + KV som håller tjänstens
+ * VibePulse-brevlådan: en Cloudflare Worker + Durable Object som håller
+ * tjänstens
  * senaste siffror så panelen kan hämta dem från vilket nät som helst.
  *
  * Rollen är medvetet dum: den kan ingenting, vet ingenting och har inga
@@ -30,60 +31,125 @@
  *                      det den senast publicerande som syns.
  *   /api/github      — nyast vinner. Båda frågar samma publika API.
  *
- * Deploy: se README.md i den här katalogen. KV-bindningen heter VIBEPULSE.
+ * Deploy: se README.md i den här katalogen. Den gamla KV-bindningen behålls
+ * bara för rollback; alla nya anrop går till NUMBERS_MAILBOX.
  */
+
+import { DurableObject } from "cloudflare:workers";
+import { mergeTokens, newestBody } from "./merge.js";
+
+export { mergeTokens, newestBody };
 
 const ENDPOINTS = ["/api/tokens", "/api/max-tracker", "/api/github"];
 const MAX_BODY_BYTES = 64 * 1024; // largest honest payload is ~8 kB
 const MAX_PUBLISHERS = 8;
+const PUBLISHER_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+const MAILBOX_NAME = "numbers-mailbox-v1";
 
-/*
- * Sammanslagningen för /api/tokens, som ren funktion så testerna kan hålla
- * den stilla (node --test i test.mjs — ingen Cloudflare behövs).
- *
- * Regeln: basen är det nyast MOTTAGNA dokumentet (fält utan stämpel följer
- * det). Sedan får varje observationsstämplad fältgrupp — prefixet framför
- * "ObservedAt", t.ex. week/model/codexWeek — sina fält från det dokument
- * vars stämpel för JUST den gruppen är färskast. En grupp ett dokument
- * saknar lämnas orörd: att en maskin aldrig sett Codex betyder inte att
- * Codex-siffran ska försvinna.
- */
-export function mergeTokens(docs) {
-  const alive = docs.filter((d) => d && typeof d.body === "object" &&
-                                   d.body !== null);
-  if (alive.length === 0) return null;
-  alive.sort((a, b) => (b.receivedAt || 0) - (a.receivedAt || 0));
-  const merged = { ...alive[0].body };
-
-  const groups = new Set();
-  for (const doc of alive)
-    for (const key of Object.keys(doc.body))
-      if (key.endsWith("ObservedAt")) groups.add(key.slice(0, -10));
-
-  for (const group of groups) {
-    const stamp = group + "ObservedAt";
-    let winner = null;
-    for (const doc of alive) {
-      const at = doc.body[stamp];
-      if (typeof at !== "number") continue;
-      if (winner === null || at > winner.body[stamp]) winner = doc;
-    }
-    if (winner === null) continue;
-    for (const key of Object.keys(winner.body))
-      if (key === stamp || (key.startsWith(group) &&
-                            !key.endsWith("ObservedAt")))
-        merged[key] = winner.body[key];
+export class NumbersMailbox extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    ctx.blockConcurrencyWhile(async () => {
+      ctx.storage.transactionSync(() => {
+        ctx.storage.sql.exec(`
+          CREATE TABLE IF NOT EXISTS publishers (
+            publisher TEXT PRIMARY KEY
+              CHECK (length(publisher) BETWEEN 1 AND 64)
+          );
+          CREATE TABLE IF NOT EXISTS documents (
+            endpoint TEXT NOT NULL,
+            publisher TEXT NOT NULL,
+            received_at REAL NOT NULL,
+            body_json TEXT NOT NULL,
+            PRIMARY KEY (endpoint, publisher),
+            FOREIGN KEY (publisher) REFERENCES publishers(publisher)
+          );
+          CREATE TABLE IF NOT EXISTS mailbox_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            receipt_sequence INTEGER NOT NULL CHECK (receipt_sequence >= 0)
+          );
+        `);
+        // If this code follows an earlier mailbox build, continue above its
+        // largest receipt value so an upgrade cannot make new rows look old.
+        ctx.storage.sql.exec(`
+          INSERT OR IGNORE INTO mailbox_state (singleton, receipt_sequence)
+          SELECT 1, COALESCE(CAST(MAX(received_at) AS INTEGER), 0)
+          FROM documents
+        `);
+      });
+    });
   }
-  return merged;
-}
 
-/* Nyast mottagna dokument, för endpoints utan sammanslagning. */
-export function newestBody(docs) {
-  const alive = docs.filter((d) => d && typeof d.body === "object" &&
-                                   d.body !== null);
-  if (alive.length === 0) return null;
-  alive.sort((a, b) => (b.receivedAt || 0) - (a.receivedAt || 0));
-  return alive[0].body;
+  async publish(endpoint, publisher, bodyJson) {
+    assertEndpoint(endpoint);
+    if (typeof publisher !== "string" ||
+        !PUBLISHER_PATTERN.test(publisher))
+      throw new RangeError("invalid publisher");
+    if (typeof bodyJson !== "string" || bodyJson.length > MAX_BODY_BYTES)
+      throw new RangeError("invalid body");
+    JSON.parse(bodyJson);
+
+    return this.ctx.storage.transactionSync(() => {
+      const registered = this.ctx.storage.sql.exec(`
+        SELECT 1 AS present FROM publishers WHERE publisher = ? LIMIT 1
+      `, publisher).toArray()[0] !== undefined;
+      if (!registered) {
+        const count = this.ctx.storage.sql.exec(
+          "SELECT COUNT(*) AS count FROM publishers",
+        ).one().count;
+        if (count >= MAX_PUBLISHERS) return "full";
+        this.ctx.storage.sql.exec(
+          "INSERT INTO publishers (publisher) VALUES (?)", publisher,
+        );
+      }
+
+      const receivedAt = this.ctx.storage.sql.exec(`
+        UPDATE mailbox_state
+        SET receipt_sequence = receipt_sequence + 1
+        WHERE singleton = 1
+        RETURNING receipt_sequence
+      `).one().receipt_sequence;
+
+      this.ctx.storage.sql.exec(`
+        INSERT INTO documents (endpoint, publisher, received_at, body_json)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(endpoint, publisher) DO UPDATE SET
+          received_at = excluded.received_at,
+          body_json = excluded.body_json
+      `, endpoint, publisher, receivedAt, bodyJson);
+      return "stored";
+    });
+  }
+
+  async getDocs(endpoint) {
+    assertEndpoint(endpoint);
+    const rows = this.ctx.storage.sql.exec(`
+      SELECT publisher, received_at, body_json
+      FROM documents
+      WHERE endpoint = ?
+      ORDER BY publisher
+      LIMIT ?
+    `, endpoint, MAX_PUBLISHERS).toArray();
+    const docs = [];
+    for (const row of rows) {
+      if (typeof row.publisher !== "string" ||
+          !PUBLISHER_PATTERN.test(row.publisher) ||
+          typeof row.received_at !== "number" ||
+          !Number.isFinite(row.received_at) ||
+          typeof row.body_json !== "string")
+        continue;
+      try {
+        docs.push({
+          receivedAt: row.received_at,
+          publisher: row.publisher,
+          body: JSON.parse(row.body_json),
+        });
+      } catch {
+        /* ett korrupt dokument tystar inte de andra */
+      }
+    }
+    return docs;
+  }
 }
 
 function parsePath(url, secret) {
@@ -94,19 +160,25 @@ function parsePath(url, secret) {
   return ENDPOINTS.includes(endpoint) ? endpoint : null;
 }
 
-async function readDocs(env, endpoint) {
-  const listed = await env.VIBEPULSE.list({ prefix: `${endpoint}:` });
-  const docs = [];
-  for (const key of listed.keys.slice(0, MAX_PUBLISHERS)) {
-    const raw = await env.VIBEPULSE.get(key.name);
-    if (!raw) continue;
-    try {
-      docs.push(JSON.parse(raw));
-    } catch {
-      /* ett korrupt dokument tystar inte de andra */
-    }
-  }
-  return docs;
+function assertEndpoint(endpoint) {
+  if (!ENDPOINTS.includes(endpoint)) throw new RangeError("invalid endpoint");
+}
+
+function mailbox(env) {
+  if (!env.NUMBERS_MAILBOX ||
+      typeof env.NUMBERS_MAILBOX.getByName !== "function")
+    throw new Error("mailbox unavailable");
+  return env.NUMBERS_MAILBOX.getByName(MAILBOX_NAME);
+}
+
+function logMailboxFailure(operation) {
+  // Never attach the thrown error: RPC errors can contain request-derived
+  // strings. The operation is enough to distinguish write/read failures.
+  console.error(JSON.stringify({
+    level: "error",
+    event: "numbers_mailbox_failure",
+    operation,
+  }));
 }
 
 export default {
@@ -127,20 +199,35 @@ export default {
       const raw = await request.text();
       if (raw.length > MAX_BODY_BYTES)
         return new Response("too large", { status: 413 });
-      let body;
       try {
-        body = JSON.parse(raw);
+        JSON.parse(raw);
       } catch {
         return new Response("not json", { status: 400 });
       }
-      const doc = JSON.stringify({ receivedAt: Date.now() / 1000,
-                                   publisher, body });
-      await env.VIBEPULSE.put(`${endpoint}:${publisher}`, doc);
+      let result;
+      try {
+        result = await mailbox(env).publish(endpoint, publisher, raw);
+      } catch {
+        logMailboxFailure("publish");
+        return new Response("relay unavailable", { status: 503 });
+      }
+      if (result === "full")
+        return new Response("too many publishers", { status: 409 });
+      if (result !== "stored") {
+        logMailboxFailure("publish");
+        return new Response("relay unavailable", { status: 503 });
+      }
       return new Response("ok", { status: 200 });
     }
 
     if (request.method === "GET") {
-      const docs = await readDocs(env, endpoint);
+      let docs;
+      try {
+        docs = await mailbox(env).getDocs(endpoint);
+      } catch {
+        logMailboxFailure("read");
+        return new Response("relay unavailable", { status: 503 });
+      }
       const merged = endpoint === "/api/tokens" ? mergeTokens(docs)
                                                 : newestBody(docs);
       if (merged === null)

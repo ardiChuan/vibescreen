@@ -3,12 +3,12 @@
  * Cloudflare behövs): färskast vinner PER POOL för /api/tokens, nyast
  * dokument för resten, och döda/korrupta dokument tystar aldrig de andra.
  *
- * Körs av test/run.sh när node finns; CI:s tokenserver-jobb kör den via
+ * Körs av test/run.sh när node finns; CI:s numbers-relay-jobb kör den via
  * "node --test tools/relay/".
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeTokens, newestBody } from "./worker.js";
+import { mergeTokens, newestBody } from "./merge.js";
 
 test("en ensam avsändare passerar orörd", () => {
   const doc = { receivedAt: 100, publisher: "mac",

@@ -18,6 +18,12 @@ target_main = (root / "main/main.c").read_text(encoding="utf-8")
 sim_main = (root / "sim/main.c").read_text(encoding="utf-8")
 platform_header = (root / "platform/torget.h").read_text(encoding="utf-8")
 platform_ui = (root / "platform/torget_ui.c").read_text(encoding="utf-8")
+wifi_assets_header = root / "platform/wifi_status_assets.h"
+wifi_assets_source = root / "platform/wifi_status_assets.c"
+font_generator = (root / "platform/fonts/fetch-and-convert.sh").read_text(
+    encoding="utf-8"
+)
+obsolete_wifi_font = root / "platform/fonts/torget_wifi_22.c"
 boot_screen = (root / "platform/boot_screen.c").read_text(encoding="utf-8")
 wifi_setup_ui = (root / "components/torget_wifi/wifi_setup_ui.c").read_text(
     encoding="utf-8"
@@ -61,19 +67,29 @@ assert '"ALLOW ONCE"' in agent_monitor
 assert "COL_CODEX" in agent_monitor
 
 # The approved header leaves a hard lane for the radio indicator: the
-# provider/project eyebrow is ellipsized at x=148,w=260.  The Wi-Fi group is
-# one provider-neutral top-layer object shared by every app and overlay, not a
-# second provider-colored copy inside Needs You.  It reports Wi-Fi only,
+# provider/project eyebrow is ellipsized at x=148,w=260.  The Wi-Fi mark is a
+# native final-size image inside the translated page shell, so it moves with
+# the same burn-in drift as every page instead of floating above the screen.
+# Full-screen setup/OTA overlays naturally cover it.  It reports Wi-Fi only,
 # never relay health.
 assert "148, 46, 260" in agent_monitor
 assert "lv_label_set_long_mode(v->h_eyebrow, LV_LABEL_LONG_DOT)" in agent_monitor
 assert "wifi_group" not in agent_monitor
 assert "wifi_bars" not in agent_monitor
-assert "lv_obj_set_pos(tg.wifi_group, 418, 38)" in platform_ui
-assert "lv_obj_set_size(tg.wifi_group, 28, 28)" in platform_ui
-assert platform_ui.count("wifi_arc_create(") == 4  # helper + three calls
-assert "lv_line_create(tg.wifi_group)" in platform_ui
-assert "lv_layer_top()" in platform_ui
+assert wifi_assets_header.exists(), "missing native Wi-Fi status asset header"
+assert wifi_assets_source.exists(), "missing native Wi-Fi status asset source"
+assert "tg.wifi_group = bare(tg.shift);" in platform_ui
+assert "lv_obj_set_pos(tg.wifi_group, 426, 28)" in platform_ui
+assert "lv_obj_set_size(tg.wifi_group, 20, 18)" in platform_ui
+assert platform_ui.count("lv_image_create(tg.wifi_group)") == 1
+assert "LV_SYMBOL_WIFI" not in platform_ui
+assert "torget_wifi_22" not in platform_ui
+assert not obsolete_wifi_font.exists()
+assert "0xF1EB" not in font_generator
+assert "wifi_active_clip" not in platform_ui
+assert "lv_arc_create" not in platform_ui
+assert "lv_obj_set_style_transform" not in platform_ui
+assert "lv_line_create(tg.wifi_group)" not in platform_ui
 assert "TG_WIFI_STATUS_NORMAL" in platform_header
 assert "TG_WIFI_STATUS_SETUP" in platform_header
 assert "TG_WIFI_STATUS_HIDDEN" in platform_header
@@ -82,9 +98,10 @@ assert "void torget_wifi_status_foreground(void);" in platform_header
 assert "uint8_t torget_wifi_signal_bars(void);" in platform_header
 assert "Never implies relay health" in platform_header
 
-# Full-screen overlays move themselves first, then deliberately lift the one
-# shared indicator.  Setup forces the complete symbol; ordinary OTA uses live
-# signal strength.  Boot keeps it hidden until the one-time handoff.
+# Setup can still force the strong state while it owns the glass, but because
+# both setup and OTA are opaque top-layer overlays there is no reparenting or
+# duplicate Wi-Fi object.  Boot keeps the ordinary page mark hidden until the
+# one-time handoff.
 wifi_foreground = wifi_setup_ui.index("lv_obj_move_foreground(ui.overlay)")
 assert wifi_setup_ui.index("torget_wifi_status_foreground()", wifi_foreground) > wifi_foreground
 ota_foreground = ota_ui.index("lv_obj_move_foreground(ui.overlay)")

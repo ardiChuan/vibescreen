@@ -382,3 +382,48 @@ capped at one write per five minutes and Max Tracker/GitHub at one per thirty
 minutes; a regression simulates two continuously changing publishers for a
 full day and requires at most 768 writes. **Watch for:** adding an endpoint or
 shortening a ceiling without recomputing the account-wide two-publisher bound.
+
+## 2026-08-22 · KV list requests have their own quota
+
+**What happened:** after publisher writes were capped, the numbers Worker still
+returned error 1101; Cloudflare identified quota code 10048. **Root cause:**
+every panel GET called KV `list()`, so three endpoints at a 30-second cadence
+spent 8,640 list operations per day. The KV list-request quota is independent
+of KV read and write quotas; healthy `get()`/`put()` arithmetic said nothing
+about it. **The rule:** budget every metered operation independently, including
+discovery calls hidden inside reads. **Guards:** the active Worker contains no
+KV operation and real-runtime tests make 100 repeated GETs without touching KV.
+**Watch for:** replacing one explicit list with another discovery primitive and
+counting only the document reads it leads to.
+
+## 2026-08-22 · An eventually consistent index is not coordination
+
+**What happened:** the first list-free design proposed one KV publisher-index
+record so GET could fetch known keys directly. **Root cause:** KV is eventually
+consistent, and registering a publisher is a read-modify-write operation. Two
+concurrent first publishers can read the same old array, each write a different
+replacement, and cause a lost update or displace a valid publisher. **The
+rule:** a dynamic registry with capacity and atomic document storage needs one
+strongly consistent owner, not an index convention. **Guards:** one
+`NumbersMailbox` Durable Object serializes registration, counter, and document
+storage in one SQLite transaction; real-runtime tests race eight publishers and
+strictly reject the ninth. **Watch for:** any shared KV JSON record updated by
+multiple writers, even when its maximum size is small.
+
+## 2026-08-21 · One simulator pixel is not AMOLED-safe spacing
+
+**What happened:** the shared Wi-Fi indicator passed pixel-count and placement
+tests and looked plausible in the SDL simulator, but three bright rounded arcs
+had only about one black pixel between their strokes. The physical AMOLED's
+antialiasing and bloom merged them into one cloud-shaped blob. Its page header
+divider also continued beneath the global slot, making the top-layer object
+feel pasted over the screen. **The rule:** small bright status marks need
+deliberate multi-pixel negative space at final native size, and shared chrome
+needs a reserved lane in every underlying page—not merely a high z-order.
+**Guards:** four muted 20×18 native assets render separated signal bands; the
+raster test counts real connected components, while every app capture keeps
+the eighteen-pixel lane to its left black. The one image is owned by the same
+translated page shell as the header, so burn-in drift cannot make it appear
+pasted above a page or takeover. **Watch for:** approving tiny rounded shapes
+from enlarged simulator previews or testing only bounding boxes and total lit
+pixels.

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "lvgl.h"
+#include "wifi_status_assets.h"
 
 /*
  * Plattformens delade UI: drift-lagret, appväxlingen och launchern som läser
@@ -17,7 +18,6 @@
 extern const lv_font_t plex_text_16;
 
 #define COL_LABEL lv_color_hex(0x8994A5)
-#define COL_WIFI_MUTED lv_color_hex(0x9298A2)
 
 static struct {
   lv_obj_t *shift;                 /* driftlådan — allt bor i den */
@@ -26,10 +26,7 @@ static struct {
   int active;                      /* index i registret, -1 = launchern uppe */
   int shift_step;
   lv_obj_t *wifi_group;
-  lv_obj_t *wifi_arc[3];           /* outer-to-inner */
-  lv_obj_t *wifi_dot;
-  lv_obj_t *wifi_slash;
-  lv_point_precise_t wifi_slash_points[2];
+  lv_obj_t *wifi_image;
   tg_wifi_status_mode wifi_mode;
   tg_wifi_status_mode wifi_rendered_mode;
   uint8_t wifi_rendered_bars;
@@ -50,19 +47,6 @@ static lv_obj_t *bare(lv_obj_t *parent) {
 
 /* ------------------------------------------------------- delad Wi-Fi-status */
 
-static lv_obj_t *wifi_arc_create(int size, int x_offset, int y_offset) {
-  lv_obj_t *arc = lv_arc_create(tg.wifi_group);
-  lv_obj_remove_style_all(arc);
-  lv_obj_set_size(arc, size, size);
-  lv_obj_set_pos(arc, x_offset, y_offset);
-  lv_arc_set_rotation(arc, 225);
-  lv_arc_set_bg_angles(arc, 0, 90);
-  lv_obj_set_style_arc_width(arc, 3, LV_PART_MAIN);
-  lv_obj_set_style_arc_rounded(arc, true, LV_PART_MAIN);
-  lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
-  return arc;
-}
-
 static void wifi_status_render(void) {
   if (!tg.wifi_group) return;
   uint8_t bars = tg.wifi_mode == TG_WIFI_STATUS_SETUP
@@ -81,18 +65,13 @@ static void wifi_status_render(void) {
   }
 
   lv_obj_remove_flag(tg.wifi_group, LV_OBJ_FLAG_HIDDEN);
-  for (int i = 0; i < 3; i++) {
-    bool active = (uint8_t)(3 - i) <= bars;
-    lv_obj_set_style_arc_color(tg.wifi_arc[i],
-                               active ? lv_color_white() : COL_WIFI_MUTED,
-                               LV_PART_MAIN);
-  }
-  lv_obj_set_style_bg_color(tg.wifi_dot,
-                             bars > 0 ? lv_color_white() : COL_WIFI_MUTED, 0);
-  if (bars == 0)
-    lv_obj_remove_flag(tg.wifi_slash, LV_OBJ_FLAG_HIDDEN);
-  else
-    lv_obj_add_flag(tg.wifi_slash, LV_OBJ_FLAG_HIDDEN);
+  static const lv_image_dsc_t *states[4] = {
+      &tg_img_wifi_offline,
+      &tg_img_wifi_weak,
+      &tg_img_wifi_medium,
+      &tg_img_wifi_strong,
+  };
+  lv_image_set_src(tg.wifi_image, states[bars]);
 }
 
 static void wifi_status_timer(lv_timer_t *timer) {
@@ -102,30 +81,17 @@ static void wifi_status_timer(lv_timer_t *timer) {
 
 static void wifi_status_create(void) {
   tg.wifi_mode = TG_WIFI_STATUS_HIDDEN;
-  tg.wifi_group = bare(lv_layer_top());
-  lv_obj_set_pos(tg.wifi_group, 418, 38);
-  lv_obj_set_size(tg.wifi_group, 28, 28);
-  /* Every arc radiates from local (14,22), directly above the dot.  Keeping
-   * one lower origin makes the 28 px mark read as a single familiar Wi-Fi
-   * fan on the physical AMOLED instead of three arcs floating over a dot. */
-  tg.wifi_arc[0] = wifi_arc_create(28, 0, 8);
-  tg.wifi_arc[1] = wifi_arc_create(20, 4, 12);
-  tg.wifi_arc[2] = wifi_arc_create(12, 8, 16);
-
-  tg.wifi_dot = bare(tg.wifi_group);
-  lv_obj_set_pos(tg.wifi_dot, 12, 20);
-  lv_obj_set_size(tg.wifi_dot, 4, 4);
-  lv_obj_set_style_radius(tg.wifi_dot, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_opa(tg.wifi_dot, LV_OPA_COVER, 0);
-
-  tg.wifi_slash_points[0] = (lv_point_precise_t){4, 4};
-  tg.wifi_slash_points[1] = (lv_point_precise_t){24, 24};
-  tg.wifi_slash = lv_line_create(tg.wifi_group);
-  lv_line_set_points(tg.wifi_slash, tg.wifi_slash_points, 2);
-  lv_obj_set_style_line_color(tg.wifi_slash, lv_color_white(), 0);
-  lv_obj_set_style_line_width(tg.wifi_slash, 3, 0);
-  lv_obj_set_style_line_rounded(tg.wifi_slash, true, 0);
-  lv_obj_remove_flag(tg.wifi_slash, LV_OBJ_FLAG_CLICKABLE);
+  tg.wifi_group = bare(tg.shift);
+  lv_obj_set_pos(tg.wifi_group, 426, 28);
+  lv_obj_set_size(tg.wifi_group, 20, 18);
+  /* One muted, native-size image sits in the same translated page shell as
+   * every app.  It therefore follows burn-in drift and cannot float above a
+   * full-screen setup or OTA takeover. */
+  tg.wifi_image = lv_image_create(tg.wifi_group);
+  lv_obj_remove_style_all(tg.wifi_image);
+  lv_image_set_src(tg.wifi_image, &tg_img_wifi_offline);
+  lv_obj_set_pos(tg.wifi_image, 0, 0);
+  lv_obj_remove_flag(tg.wifi_image, LV_OBJ_FLAG_CLICKABLE);
 
   wifi_status_render();
   lv_timer_create(wifi_status_timer, 1000, NULL);
