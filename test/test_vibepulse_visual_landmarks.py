@@ -524,27 +524,34 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
             finder = opened.crop((x, y, x + 24, y + 24))
             self.assertIn((0, 0, 0), finder.get_flattened_data())
 
-        # QR, SSID, password, fallback URL and footer occupy separate bands.
-        for box in (
-            (142, 108, 338, 304),
-            (34, 312, 446, 344),
-            (34, 346, 446, 394),
-            (34, 400, 446, 432),
-            (34, 438, 446, 476),
-        ):
+        # The primary QR view has only the QR, one large manual button and footer.
+        for box in ((142, 108, 338, 304), (74, 326, 406, 416),
+                    (34, 438, 446, 476)):
             with self.subTest(box=box):
                 self.assertTrue(any(
                     pixel != (0, 0, 0)
                     for pixel in opened.crop(box).get_flattened_data()
                 ))
 
-        # Manual fallback has no large white QR canvas but retains instructions.
+        self.assertTrue(all(
+            pixel == (0, 0, 0)
+            for pixel in opened.crop((34, 304, 446, 324)).get_flattened_data()
+        ), "QR view must not repeat SSID/password/address below the code")
+
+        # Manual details replace the QR and keep one equally large back button.
         manual_qr = manual.crop((142, 108, 338, 304))
         self.assertLess(
             sum(pixel == (255, 255, 255)
                 for pixel in manual_qr.get_flattened_data()),
             3000,
         )
+        for box in ((34, 132, 446, 188), (34, 196, 446, 250),
+                    (34, 260, 446, 304), (74, 326, 406, 416)):
+            with self.subTest(manual_box=box):
+                self.assertTrue(any(
+                    pixel != (0, 0, 0)
+                    for pixel in manual.crop(box).get_flattened_data()
+                ))
 
         self.assertNotEqual(searching.tobytes(), starting.tobytes())
         self.assertNotEqual(starting.tobytes(), opened.tobytes())

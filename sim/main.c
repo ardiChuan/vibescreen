@@ -1218,8 +1218,9 @@ static int run_vibepulse_static_qa(void) {
                      NULL, 583);
   dump_overlay_frame("wifi-setup-open");
   dump_overlay_frame("wifi-setup-qr");
-  torget_wifi_ui_set(TG_WIFI_UI_OPEN, "Cafe Guest", "", NULL, 583);
+  torget_wifi_ui_set_manual_details(true);
   dump_overlay_frame("wifi-setup-manual");
+  torget_wifi_ui_set_manual_details(false);
   torget_wifi_ui_set(TG_WIFI_UI_JOINING, "Niclas iPhone", NULL, NULL, 0);
   dump_overlay_frame("wifi-joining");
   torget_wifi_ui_set(TG_WIFI_UI_JOINED, "Niclas iPhone", NULL, NULL, 0);

@@ -401,7 +401,7 @@ network once; every visit after that it joins by itself.
 <p align="center">
   <img src="docs/img/vibepulse-wifi-searching.png" width="31%" alt="VibePulse explains that the saved phone hotspot is not visible and reminds the user that the panel needs 2.4 GHz Wi-Fi">
   &nbsp;
-  <img src="docs/img/vibepulse-wifi-setup.png" width="31%" alt="VibePulse Wi-Fi setup screen with a large phone-scannable QR code, temporary network, setup password, local address, and countdown">
+  <img src="docs/img/vibepulse-wifi-setup.png" width="31%" alt="VibePulse Wi-Fi setup screen with a large phone-scannable QR code and one Manual Setup control">
   &nbsp;
   <img src="docs/img/vibepulse-wifi-signal.png" width="31%" alt="The shared launcher with a neutral three-bar Wi-Fi signal icon at the top right">
 </p>
@@ -411,13 +411,16 @@ The normal setup path needs only the panel and a phone:
 
 1. **Scan the QR** on the panel. It joins your phone to the temporary
    `VibePulse-setup` network; it does not contain your destination Wi-Fi
-   password.
+   password. The normal screen keeps the QR dominant; tap **Manual Setup**
+   only if you need to see the temporary name, password, and local address.
 2. The local setup page should open. If it does not, open
    `http://192.168.4.1/` yourself. A browser label such as **Not Secure** is
    expected here: this is a short-lived, device-local page with no internet
    route, not a public website.
-3. Pick a **2.4 GHz** network, enter its password, and tap **Join** once.
-   The ESP32-S3 cannot see 5 GHz-only networks. On an iPhone hotspot, enable
+3. Pick a **2.4 GHz** network and tap **Join** once. For a secured network,
+   the password field names the selected network and is required. For an open
+   network the password field disappears because no password is needed. The
+   ESP32-S3 cannot see 5 GHz-only networks. On an iPhone hotspot, enable
    *Maximize Compatibility*.
 4. Keep the phone nearby while the glass says JOINING. The new credentials
    are remembered **only after the panel connects** successfully. If the

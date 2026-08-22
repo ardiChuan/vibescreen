@@ -12,7 +12,7 @@ new place, panel finds nothing
         │
         ├─ 60 s ─► the glass says WHY (network hunted, radio's own reason)
         │
-        ├─ 90 s ─► the panel raises VibePulse-setup and shows a QR + password
+        ├─ 90 s ─► the panel raises VibePulse-setup and shows a clean QR screen
         │          (a 3 s KEY3 hold opens the same window immediately)
         │
         ├─ from a phone:    scan the QR, portal opens ← normal path
@@ -31,7 +31,7 @@ rescue.
 <p align="center">
   <img src="img/vibepulse-wifi-searching.png" width="31%" alt="The panel explains that a saved hotspot is not visible and that it needs 2.4 GHz Wi-Fi">
   &nbsp;
-  <img src="img/vibepulse-wifi-setup.png" width="31%" alt="The temporary VibePulse Wi-Fi setup network with its phone-scannable QR, password, local address, and countdown">
+  <img src="img/vibepulse-wifi-setup.png" width="31%" alt="The temporary VibePulse Wi-Fi setup network with a phone-scannable QR and one Manual Setup control">
   &nbsp;
   <img src="img/vibepulse-wifi-signal.png" width="31%" alt="The launcher with the global neutral three-bar Wi-Fi indicator">
 </p>
@@ -54,16 +54,20 @@ Four things about travel that the old firmware got wrong:
 
 1. **Scan the QR** shown on the glass. It contains only the temporary
    `VibePulse-setup` access-point name and temporary password. It never embeds
-   the destination network password.
+   the destination network password. The primary screen shows no credential
+   clutter; **Manual Setup** reveals the temporary name, password, and
+   `192.168.4.1` only when the fallback is needed.
 2. The panel's DNS responder points captive-portal checks at the local setup
    page. If iOS or Android does not open it, browse to
    `http://192.168.4.1/`. **Not Secure is expected**: there is no certificate
    because this is a ten-minute local page served directly by the panel, with
    no internet route.
-3. Pick the destination network from the list, enter its password, and press
-   Join once. The list is **strongest first, and it is the panel's radio that
-   decides**. The ESP32-S3 supports 2.4 GHz only; it cannot hear a 5 GHz-only
-   network even when the phone shows full signal.
+3. Pick the destination network and press Join once. For a secured selection,
+   the password field says `Password for <network>` and is required. For an
+   open network the password field is hidden and the page says that no
+   password is required. The list is **strongest first, and it is the panel's
+   radio that decides**. The ESP32-S3 supports 2.4 GHz only; it cannot hear a
+   5 GHz-only network even when the phone shows full signal.
 4. Leave the page open while the glass says JOINING. The browser follows a
    small secret-free status endpoint and reports whether the panel connected
    or needs another try.
@@ -73,11 +77,12 @@ The submitted SSID/password is a temporary trial first. It is copied to NVS
 trial. A stale IP from the previous network cannot validate it. On a wrong
 password, missing network, timeout, reset, or power loss, the trial is not
 saved; **old saved networks remain available**, including the immutable
-`secrets.h` floor. Open networks are supported by leaving the password blank.
+`secrets.h` floor. Open networks are supported automatically; their password
+field is hidden because no password is required.
 
-If QR generation ever fails, the same screen falls back to the printed setup
-SSID, temporary password, and `192.168.4.1`; recovery does not depend on the
-QR renderer.
+If QR generation ever fails, the manual details view appears automatically
+with the setup SSID, temporary password, and `192.168.4.1`; recovery does not
+depend on the QR renderer.
 
 ### Optional: from a Mac — `tools/wifi-here.sh`
 

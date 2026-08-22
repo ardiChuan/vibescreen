@@ -1,6 +1,8 @@
 #ifndef TORGET_WIFI_SETUP_UI_H
 #define TORGET_WIFI_SETUP_UI_H
 
+#include <stdbool.h>
+
 /*
  * Glasets nätverkslager. Två jobb i ETT lager:
  *
@@ -40,5 +42,9 @@ void torget_wifi_ui_create(void);
 void torget_wifi_ui_set(tg_wifi_ui_state state, const char *primary,
                         const char *secondary, const char *detail,
                         int seconds_left);
+
+/* Växlar enbart den lokala presentationen mellan QR och manuell reservväg.
+ * Inga nätuppgifter ändras och anrop utanför ett öppet setupfönster ignoreras. */
+void torget_wifi_ui_set_manual_details(bool visible);
 
 #endif
