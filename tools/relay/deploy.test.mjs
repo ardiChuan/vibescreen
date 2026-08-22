@@ -50,7 +50,8 @@ function options(configPath, overrides = {}) {
 }
 
 test("invalid production configs never reach a child process", async (t) => {
-  const { runProductionDeployment } = await import("./deploy.mjs");
+  const { runProductionDeployment, validateProductionConfig } =
+    await import("./deploy.mjs");
   let childCalls = 0;
   const dependencies = {
     spawnSync() {
@@ -65,8 +66,18 @@ test("invalid production configs never reach a child process", async (t) => {
   delete missingBinding.durable_objects;
   const missingExport = productionConfig();
   delete missingExport.exports;
+  const wrongBinding = productionConfig();
+  wrongBinding.durable_objects.bindings[0].class_name = "WrongMailbox";
+  const remoteBinding = productionConfig();
+  remoteBinding.durable_objects.bindings[0].script_name = "other-worker";
+  const wrongExport = productionConfig();
+  wrongExport.exports.NumbersMailbox.storage = "legacy-kv";
+  const extraLifecycleExport = productionConfig();
+  extraLifecycleExport.exports.RetiredMailbox = { state: "deleted" };
   const missingSecret = productionConfig();
   delete missingSecret.secrets;
+  const plaintextSecret = productionConfig();
+  plaintextSecret.vars = { RELAY_SECRET: "must-not-be-committed" };
 
   const invalid = [
     options(privateConfig(t, productionConfig({ name: "wrong-worker" }))),
@@ -74,8 +85,13 @@ test("invalid production configs never reach a child process", async (t) => {
     options(privateConfig(t, missingKv)),
     options(privateConfig(t, productionConfig({ kvId: "b".repeat(32) }))),
     options(privateConfig(t, missingBinding)),
+    options(privateConfig(t, wrongBinding)),
+    options(privateConfig(t, remoteBinding)),
     options(privateConfig(t, missingExport)),
+    options(privateConfig(t, wrongExport)),
+    options(privateConfig(t, extraLifecycleExport)),
     options(privateConfig(t, missingSecret)),
+    options(privateConfig(t, plaintextSecret)),
     options(privateConfig(t), { expectedKvId: ZERO_KV_ID }),
     options(privateConfig(t), { expectedMain: "wrong.js" }),
     options(resolve(RELAY_DIR, "wrangler.test.jsonc")),
@@ -86,6 +102,11 @@ test("invalid production configs never reach a child process", async (t) => {
       () => runProductionDeployment(invalidOptions, dependencies),
       /deploy guard:/,
     );
+  assert.throws(() => validateProductionConfig(productionConfig(), {
+    configPath: resolve(RELAY_DIR, "..", "private.json"),
+    expectedKvId: REAL_KV_ID,
+    expectedMain: "worker.js",
+  }), /absolute private/);
   assert.equal(childCalls, 0);
 });
 
@@ -103,18 +124,32 @@ test("valid private configs invoke pinned Wrangler only in the chosen mode",
     t, productionConfig({ main: "bootstrap.js" }),
   );
   const workerPath = privateConfig(t);
+  const reordered = productionConfig();
+  reordered.exports.NumbersMailbox = {
+    storage: "sqlite",
+    type: "durable-object",
+  };
+  const reorderedPath = privateConfig(t, reordered);
 
   runProductionDeployment(options(bootstrapPath, {
     expectedMain: "bootstrap.js",
   }), dependencies);
   runProductionDeployment(options(workerPath, { mode: "deploy" }), dependencies);
+  runProductionDeployment(options(reorderedPath), dependencies);
 
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.match(calls[0].command, /node_modules[/\\]\.bin[/\\]wrangler/);
   assert.deepEqual(calls[0].args, [
-    "deploy", "--config", bootstrapPath, "--dry-run",
+    "deploy", resolve(RELAY_DIR, "bootstrap.js"),
+    "--config", bootstrapPath, "--dry-run",
   ]);
-  assert.deepEqual(calls[1].args, ["deploy", "--config", workerPath]);
+  assert.deepEqual(calls[1].args, [
+    "deploy", resolve(RELAY_DIR, "worker.js"), "--config", workerPath,
+  ]);
+  assert.deepEqual(calls[2].args, [
+    "deploy", resolve(RELAY_DIR, "worker.js"),
+    "--config", reorderedPath, "--dry-run",
+  ]);
   assert.equal(calls[0].spawnOptions.cwd, RELAY_DIR);
 });
 

@@ -90,6 +90,8 @@ jobs:
         run: node --test tools/relay/test.mjs
       - name: Run relay Durable Object tests
         run: (cd tools/relay && npm ci && npm test)
+      - name: Dry-build both relay deployment stages
+        run: (cd tools/relay && npm run build:dry)
 
   tokenserver:
     name: Tokenserver tests (${{ matrix.os }})

@@ -1,30 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "vibepulse-relay",
-  "main": "worker.js",
-  "compatibility_date": "2026-08-22",
-  "compatibility_flags": ["nodejs_compat"],
-  "observability": {
-    "enabled": true
-  },
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "NUMBERS_MAILBOX",
-        "class_name": "NumbersMailbox"
-      }
-    ]
-  },
-  "exports": {
-    "NumbersMailbox": {
-      "type": "durable-object",
-      "storage": "sqlite"
-    }
-  },
-  "kv_namespaces": [
-    {
-      "binding": "VIBEPULSE",
-      "id": "00000000000000000000000000000000"
-    }
-  ]
+  "name": "vibepulse-relay-deploy-disabled",
+  "main": "DEPLOY_DISABLED_USE_GUARD.js",
+  "compatibility_date": "2026-08-22"
 }

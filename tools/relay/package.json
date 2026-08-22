@@ -7,9 +7,11 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "vitest run --config vitest.config.mjs",
+    "test": "vitest run --config vitest.config.mjs && node --test deploy.test.mjs",
     "test:merge": "node --test test.mjs",
-    "deploy:dry": "wrangler deploy --dry-run"
+    "build:dry": "node deploy.mjs ci-dry",
+    "deploy:dry": "node deploy.mjs dry-run",
+    "deploy": "node deploy.mjs deploy"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.0.0",

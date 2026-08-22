@@ -50,24 +50,37 @@ export class NumbersMailbox extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
-      ctx.storage.sql.exec(`
-        CREATE TABLE IF NOT EXISTS publishers (
-          publisher TEXT PRIMARY KEY
-            CHECK (length(publisher) BETWEEN 1 AND 64)
-        );
-        CREATE TABLE IF NOT EXISTS documents (
-          endpoint TEXT NOT NULL,
-          publisher TEXT NOT NULL,
-          received_at REAL NOT NULL,
-          body_json TEXT NOT NULL,
-          PRIMARY KEY (endpoint, publisher),
-          FOREIGN KEY (publisher) REFERENCES publishers(publisher)
-        );
-      `);
+      ctx.storage.transactionSync(() => {
+        ctx.storage.sql.exec(`
+          CREATE TABLE IF NOT EXISTS publishers (
+            publisher TEXT PRIMARY KEY
+              CHECK (length(publisher) BETWEEN 1 AND 64)
+          );
+          CREATE TABLE IF NOT EXISTS documents (
+            endpoint TEXT NOT NULL,
+            publisher TEXT NOT NULL,
+            received_at REAL NOT NULL,
+            body_json TEXT NOT NULL,
+            PRIMARY KEY (endpoint, publisher),
+            FOREIGN KEY (publisher) REFERENCES publishers(publisher)
+          );
+          CREATE TABLE IF NOT EXISTS mailbox_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            receipt_sequence INTEGER NOT NULL CHECK (receipt_sequence >= 0)
+          );
+        `);
+        // If this code follows an earlier mailbox build, continue above its
+        // largest receipt value so an upgrade cannot make new rows look old.
+        ctx.storage.sql.exec(`
+          INSERT OR IGNORE INTO mailbox_state (singleton, receipt_sequence)
+          SELECT 1, COALESCE(CAST(MAX(received_at) AS INTEGER), 0)
+          FROM documents
+        `);
+      });
     });
   }
 
-  async publish(endpoint, publisher, bodyJson, receivedAt) {
+  async publish(endpoint, publisher, bodyJson) {
     assertEndpoint(endpoint);
     if (typeof publisher !== "string" ||
         !PUBLISHER_PATTERN.test(publisher))
@@ -75,9 +88,6 @@ export class NumbersMailbox extends DurableObject {
     if (typeof bodyJson !== "string" || bodyJson.length > MAX_BODY_BYTES)
       throw new RangeError("invalid body");
     JSON.parse(bodyJson);
-    if (typeof receivedAt !== "number" || !Number.isFinite(receivedAt) ||
-        receivedAt < 0)
-      throw new RangeError("invalid receipt time");
 
     return this.ctx.storage.transactionSync(() => {
       const registered = this.ctx.storage.sql.exec(`
@@ -92,6 +102,13 @@ export class NumbersMailbox extends DurableObject {
           "INSERT INTO publishers (publisher) VALUES (?)", publisher,
         );
       }
+
+      const receivedAt = this.ctx.storage.sql.exec(`
+        UPDATE mailbox_state
+        SET receipt_sequence = receipt_sequence + 1
+        WHERE singleton = 1
+        RETURNING receipt_sequence
+      `).one().receipt_sequence;
 
       this.ctx.storage.sql.exec(`
         INSERT INTO documents (endpoint, publisher, received_at, body_json)
@@ -154,6 +171,16 @@ function mailbox(env) {
   return env.NUMBERS_MAILBOX.getByName(MAILBOX_NAME);
 }
 
+function logMailboxFailure(operation) {
+  // Never attach the thrown error: RPC errors can contain request-derived
+  // strings. The operation is enough to distinguish write/read failures.
+  console.error(JSON.stringify({
+    level: "error",
+    event: "numbers_mailbox_failure",
+    operation,
+  }));
+}
+
 export default {
   async fetch(request, env) {
     // Hemligheten är en Worker-secret (wrangler secret put RELAY_SECRET),
@@ -179,15 +206,17 @@ export default {
       }
       let result;
       try {
-        result = await mailbox(env).publish(
-            endpoint, publisher, raw, Date.now() / 1000);
+        result = await mailbox(env).publish(endpoint, publisher, raw);
       } catch {
+        logMailboxFailure("publish");
         return new Response("relay unavailable", { status: 503 });
       }
       if (result === "full")
         return new Response("too many publishers", { status: 409 });
-      if (result !== "stored")
+      if (result !== "stored") {
+        logMailboxFailure("publish");
         return new Response("relay unavailable", { status: 503 });
+      }
       return new Response("ok", { status: 200 });
     }
 
@@ -196,6 +225,7 @@ export default {
       try {
         docs = await mailbox(env).getDocs(endpoint);
       } catch {
+        logMailboxFailure("read");
         return new Response("relay unavailable", { status: 503 });
       }
       const merged = endpoint === "/api/tokens" ? mergeTokens(docs)

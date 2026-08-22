@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker, { NumbersMailbox } from "./worker.js";
-import rawConfig from "./wrangler.jsonc?raw";
+import rawConfig from "./wrangler.test.jsonc?raw";
 
 const SECRET = "s".repeat(64);
 const MAILBOX_NAME = "numbers-mailbox-v1";
@@ -364,6 +364,7 @@ describe("public numbers Worker routing and wire contract", () => {
   });
 
   it("fails closed when the mailbox binding is missing or broken", async () => {
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
     const missing = fakeEnv({ includeBinding: false });
     const missingResponse = await relayRequest(
       missing.requestEnv, "/api/tokens",
@@ -379,6 +380,13 @@ describe("public numbers Worker routing and wire contract", () => {
     const brokenBody = await brokenResponse.text();
     expect(brokenBody).toBe("relay unavailable");
     expect(brokenBody).not.toContain("binding detail");
+    expect(diagnostic).toHaveBeenCalledTimes(2);
+    for (const call of diagnostic.mock.calls)
+      expect(JSON.parse(String(call[0]))).toEqual({
+        level: "error",
+        event: "numbers_mailbox_failure",
+        operation: "read",
+      });
   });
 
   it("turns storage RPC errors into a non-leaking non-success response",
@@ -517,7 +525,8 @@ describe("rollback-compatible KV bootstrap", () => {
 describe("Wrangler Durable Object configuration", () => {
   it("retains KV only for rollback and declares one SQLite mailbox export", () => {
     const config = JSON.parse(rawConfig);
-    expect(config.main).toBe("worker.js");
+    expect(config.name).toBe("vibepulse-relay-bootstrap-test");
+    expect(config.main).toBe("bootstrap.js");
     expect(config.compatibility_date).toBe("2026-08-22");
     expect(config.durable_objects).toEqual({
       bindings: [{
@@ -531,6 +540,7 @@ describe("Wrangler Durable Object configuration", () => {
     expect(config.kv_namespaces).toEqual([expect.objectContaining({
       binding: "VIBEPULSE",
     })]);
+    expect(config.secrets).toEqual({ required: ["RELAY_SECRET"] });
     expect(config).not.toHaveProperty("migrations");
   });
 });
