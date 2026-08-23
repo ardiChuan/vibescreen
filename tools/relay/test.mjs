@@ -19,16 +19,22 @@ test("en ensam avsändare passerar orörd", () => {
 test("varje pool tas från den maskin som såg den senast", () => {
   const mac = { receivedAt: 200, publisher: "mac", body: {
     v: 2,
-    weekPct: 70, weekObservedAt: 150,        // äldre Claude-observation
+    claudeWeekPct: 70, claudeWeekStale: true,
+    claudeWeekObservedAt: 150,               // äldre Claude-observation
     codexWeekPct: 41, codexWeekObservedAt: 190,  // färsk Codex (Macen kör Codex)
   } };
   const pc = { receivedAt: 210, publisher: "pc", body: {
     v: 2,
-    weekPct: 73, weekObservedAt: 205,        // färsk Claude (PC:n frågade nyss)
+    claudeWeekPct: 73, claudeWeekStale: false,
+    claudeWeekObservedAt: 205,               // färsk Claude (PC:n frågade nyss)
     codexWeekPct: 39, codexWeekObservedAt: 100,  // gammal Codex
   } };
   const merged = mergeTokens([mac, pc]);
-  assert.equal(merged.weekPct, 73, "Claude ska komma från PC:n");
+  assert.equal(merged.claudeWeekPct, 73, "Claude ska komma från PC:n");
+  assert.equal(merged.claudeWeekStale, false,
+               "PC:ns färska Claude-status ska följa poolen");
+  assert.equal(merged.claudeWeekObservedAt, 205,
+               "Claude-stämpeln ska följa PC:ns pool");
   assert.equal(merged.codexWeekPct, 41, "Codex ska komma från Macen");
   assert.equal(merged.codexWeekObservedAt, 190,
                "stämpeln ska följa sin pools vinnare");

@@ -423,20 +423,23 @@ describe("public numbers Worker routing and wire contract", () => {
     const stub = env.NUMBERS_MAILBOX.getByName(MAILBOX_NAME);
     await stub.publish("/api/tokens", "mac", JSON.stringify({
       v: 2,
-      weekPct: 70, weekObservedAt: 150,
+      claudeWeekPct: 70, claudeWeekStale: true,
+      claudeWeekObservedAt: 150,
       codexWeekPct: 41, codexWeekObservedAt: 190,
     }));
     await stub.publish("/api/tokens", "pc", JSON.stringify({
       v: 2,
-      weekPct: 73, weekObservedAt: 205,
+      claudeWeekPct: 73, claudeWeekStale: false,
+      claudeWeekObservedAt: 205,
       codexWeekPct: 39, codexWeekObservedAt: 100,
     }));
 
     const response = await relayRequest(env, "/api/tokens");
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
-      weekPct: 73,
-      weekObservedAt: 205,
+      claudeWeekPct: 73,
+      claudeWeekStale: false,
+      claudeWeekObservedAt: 205,
       codexWeekPct: 41,
       codexWeekObservedAt: 190,
     });
