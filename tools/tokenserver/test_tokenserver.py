@@ -1588,6 +1588,35 @@ class UsageSnapshotTests(unittest.TestCase):
         self.assertIsInstance(snapshot["claudeForecastPctAtReset"], int)
         self.assertEqual(snapshot["codexForecastState"], "at_reset")
 
+    def test_snapshot_exposes_live_pool_observation_times_for_relay_merge(self):
+        now_ts = 1_800_000_000
+        snapshot = self._snapshot(
+            StubHistory(), now_ts,
+            claude={
+                "weekPct": 47.0,
+                "weekResetAt": now_ts + 300 * 60,
+                "weekObservedAt": now_ts - 3,
+                "weekIdentity": tokenserver._quota_identity(
+                    "claude", "general_weekly"),
+                "modelPct": 73.0,
+                "modelResetAt": now_ts + 300 * 60,
+                "modelObservedAt": now_ts - 2,
+                "modelIdentity": tokenserver._quota_identity(
+                    "claude", "model_weekly"),
+                "modelLabel": "FABLE · WEEK",
+            },
+            codex={
+                "codexWeekPct": 35.0,
+                "codexWeekResetAt": now_ts + 300 * 60,
+                "codexWeekObservedAt": now_ts - 1,
+                "codexWeekIdentity": tokenserver._quota_identity(
+                    "codex", "general_weekly", "synthetic"),
+            })
+
+        self.assertEqual(snapshot["claudeWeekObservedAt"], now_ts - 3)
+        self.assertEqual(snapshot["claudeModelWeekObservedAt"], now_ts - 2)
+        self.assertEqual(snapshot["codexWeekObservedAt"], now_ts - 1)
+
     def test_snapshot_flattens_collecting_and_exhaustion_states(self):
         now_ts = 1_800_000_000
         history = StubHistory({
@@ -1712,6 +1741,40 @@ class UsageSnapshotTests(unittest.TestCase):
         self.assertTrue(stale["codexWeekStale"])
         self.assertIsNone(empty["codexWeekPct"])
         self.assertFalse(empty["codexWeekStale"])
+
+    def test_stale_cache_retains_pool_observation_times_for_relay_merge(self):
+        now_ts = 1_800_000_000
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = QuotaCache(Path(temp_dir) / "quota.json",
+                               now=lambda: now_ts)
+            records = (
+                CachedQuota(
+                    provider="claude", scope="general_weekly",
+                    identity=tokenserver._quota_identity(
+                        "claude", "general_weekly"),
+                    pct=47.0, reset_at=now_ts + 3600,
+                    observed_at=now_ts - 30),
+                CachedQuota(
+                    provider="claude", scope="model_weekly",
+                    identity=tokenserver._quota_identity(
+                        "claude", "model_weekly"),
+                    pct=73.0, reset_at=now_ts + 3600,
+                    observed_at=now_ts - 20, label="FABLE · WEEK"),
+                CachedQuota(
+                    provider="codex", scope="general_weekly",
+                    identity=tokenserver._quota_identity(
+                        "codex", "general_weekly", "general"),
+                    pct=35.0, reset_at=now_ts + 3600,
+                    observed_at=now_ts - 10),
+            )
+            for record in records:
+                cache.put(record)
+            snapshot = self._snapshot(
+                StubHistory(), now_ts, quota_cache=cache)
+
+        self.assertEqual(snapshot["claudeWeekObservedAt"], now_ts - 30)
+        self.assertEqual(snapshot["claudeModelWeekObservedAt"], now_ts - 20)
+        self.assertEqual(snapshot["codexWeekObservedAt"], now_ts - 10)
 
     def test_success_then_failed_attempt_resolves_only_through_stale_cache(self):
         now_ts = 1_800_000_000

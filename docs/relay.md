@@ -69,10 +69,13 @@ never enables either encrypted activity feature.
 
 ## Multiple publishers
 
-Every quota pool carries its own observation timestamp (`weekObservedAt`,
-`modelObservedAt`, and similar fields). `/api/tokens` merges each pool from the
-publisher that observed that pool most recently. Claude numbers can therefore
-come from an always-on PC while Codex numbers come from the Mac where Codex ran.
+Every quota pool carries its own observation timestamp
+(`claudeWeekObservedAt`, `claudeModelWeekObservedAt`,
+`codexWeekObservedAt`, and similar fields). `/api/tokens` merges each pool from
+the publisher that observed that pool most recently. Claude numbers can
+therefore come from an always-on PC while Codex numbers come from the Mac where
+Codex ran. Cached stale values retain their original observation time, so a
+recently published old cache cannot outrank a genuinely newer reading.
 
 Max Tracker and GitHub retain whole-document semantics. For those endpoints,
 the mailbox-owned receipt counter makes the most recently stored publication

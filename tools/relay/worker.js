@@ -19,8 +19,10 @@
  * samma brevlåda under eget namn. Läsningen slår ihop dem:
  *
  *   /api/tokens      — färskast VINNER PER POOL: varje kvotpool bär redan
- *                      sin egen observationsstämpel (weekObservedAt,
- *                      modelObservedAt, ... — byggda för stalenesslogiken),
+ *                      sin egen observationsstämpel
+ *                      (claudeWeekObservedAt,
+ *                      claudeModelWeekObservedAt, ... — byggda för
+ *                      stalenesslogiken),
  *                      så Codex-siffran kan komma från Macen som körde
  *                      Codex senast medan Claude-siffran kommer från PC:n
  *                      som frågade Anthropic för tio sekunder sedan.

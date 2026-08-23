@@ -1795,6 +1795,7 @@ def _resolve_weekly_quota(source, provider, scope, prefix, quota_cache,
         return {
             "pct": round(float(pct), 1),
             "reset_at": int(reset_at),
+            "observed_at": int(observed_at),
             "label": record.label,
             "stale": False,
             "live": True,
@@ -1805,6 +1806,7 @@ def _resolve_weekly_quota(source, provider, scope, prefix, quota_cache,
         return {
             "pct": round(float(cached.pct), 1),
             "reset_at": cached.reset_at,
+            "observed_at": cached.observed_at,
             "label": cached.label,
             "stale": True,
             "live": False,
@@ -1922,6 +1924,7 @@ def get_snapshot(projects_dir: Path, history=None, now_ts=None,
     result["claudeWeekPct"] = claude_week["pct"]
     result["claudeWeekResetMin"] = _reset_minutes(
         claude_week["reset_at"], current_ts)
+    result["claudeWeekObservedAt"] = claude_week.get("observed_at")
     result["claudeWeekStale"] = bool(
         claude_week["pct"] is not None and claude_week["stale"])
     # The exact "*Stale: false" gate: claude_week["live"] is precisely what
@@ -1934,6 +1937,7 @@ def get_snapshot(projects_dir: Path, history=None, now_ts=None,
     result["claudeModelWeekPct"] = claude_model["pct"]
     result["claudeModelWeekResetMin"] = _reset_minutes(
         claude_model["reset_at"], current_ts)
+    result["claudeModelWeekObservedAt"] = claude_model.get("observed_at")
     result["claudeModelWeekLabel"] = claude_model["label"]
     result["claudeModelWeekStale"] = bool(
         claude_model["pct"] is not None and claude_model["stale"])
@@ -1942,6 +1946,7 @@ def get_snapshot(projects_dir: Path, history=None, now_ts=None,
     result["codexWeekPct"] = codex_week["pct"]
     result["codexWeekResetMin"] = _reset_minutes(
         codex_week["reset_at"], current_ts)
+    result["codexWeekObservedAt"] = codex_week.get("observed_at")
     result["codexWeekStale"] = bool(
         codex_week["pct"] is not None and codex_week["stale"])
     if max_tracker_store is not None:
