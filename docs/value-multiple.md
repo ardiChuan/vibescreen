@@ -19,17 +19,19 @@ Nothing to install. Run the tokenserver with what you actually pay:
 ```sh
 python3 tools/tokenserver/tokenserver.py \
   --claude-plan max5x \
-  --plan-cost-usd 100
+  --plan claude=100
 ```
 
-`--plan-cost-usd` is the important one. Subscription prices are not part of
-any API price list, so the server cannot look yours up — see
+`--plan claude=100` is the important one; repeat `--plan` for every provider
+you pay for, for example `--plan codex=20`. Subscription prices are not part
+of any API price list, so the server cannot look yours up — see
 [Where the numbers come from](#where-the-numbers-come-from). Without it you
 get the US list price for the plan, and `cost_source` says `default` so the
 display can avoid implying precision.
 
-Running Codex as well? Add `--codex-plan pro`. The two monthly costs are
-added, so the multiple answers *what do I get back for everything I pay for?*
+`--claude-plan max5x` and `--codex-plan pro` select the Max Tracker badges;
+they do not replace your declared costs. The provider costs are added, so the
+multiple answers *what do I get back for everything I pay for?*
 
 The figure lands on `GET /api/tokens` under an additive `value` key:
 
@@ -210,7 +212,7 @@ supplies is the accounting convention; the rates come from the catalogue.
 | **Model rates** | Generated from [LiteLLM's price catalogue][catalogue], pinned to an exact revision. `prices.json` records the upstream `blob_sha`, verifiable with `git hash-object` on the downloaded file. |
 | **Cache rates** | The same catalogue: real per-model cache-read and cache-creation prices, including the separate 1-hour write rate. Not inferred from input. |
 | **Accounting convention** | Curated in `update_prices.py`, because no catalogue carries it — and read out of each vendor's source rather than assumed. This is the one number-affecting fact that is ours. |
-| **Subscription costs** | US public list prices as a starting point. Deliberately *not* from an API price list: those do not cover consumer subscriptions, and what you pay depends on plan, tax and currency. Pass `--plan-cost-usd`; the payload reports which was used. |
+| **Subscription costs** | US public list prices as a starting point. Deliberately *not* from an API price list: those do not cover consumer subscriptions, and what you pay depends on plan, tax and currency. Pass `--plan claude=USD` and/or `--plan codex=USD`; the payload reports which was used. |
 
 Why a catalogue rather than the vendor pricing pages: vendor prices live in
 HTML marketing pages with no stable machine-readable form, while this is one

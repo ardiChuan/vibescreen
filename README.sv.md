@@ -9,9 +9,10 @@ Appplattformen för hyllskärmen (Waveshare ESP32-S3-Touch-AMOLED-2.16,
 firmware-binär som flashas; appar pluggar in som ESP-IDF-komponenter och
 kan bo i egna repon. En skärm = en binär = ett bygge här. MIT-licens.
 
-Utbruten ur [Solelkollen](https://solelkollen.se)s firmware (P25 i
-Solceller-repots `docs/roadmap-hyllskarmen.md`); Solceller-kopian fortsätter
-driva skärmen tills det här repot bevisat sig med en lyckad flash.
+Utbruten ur [Solelkollen](https://solelkollen.se)s firmware. VibePulse-repot
+äger nu skärmens firmware; den första fysiska flashen och den statiska grinden
+passerade 2026-08-13, OTA-kedjan följde 2026-08-14 och v0.7.0 släpptes
+2026-08-23.
 
 ## Arkitekturen i tre meningar
 
@@ -38,12 +39,12 @@ components/
   app_solelkollen/        companion: fyra vyer, /api/glance + /api/glance-sverige
 ~/Buddy/components/
   app_buddy/              companion: Vibbe/Buddy, companion build input
-sim/                      SDL-simulatorn: hela plattformen + apparna på Macen
+sim/                      SDL-simulatorn: hela plattformen + apparna på datorn
 sim-fixtures/             inspelade API-svar simulatorn och testerna delar
 test/                     hosttester, körs med clang utan ESP-IDF: ./test/run.sh
-tools/tokenserver/        Mac-tjänsten som serverar VibePulse-data över LAN
+tools/tokenserver/        datorservicen som serverar VibePulse-data över LAN
 spec/                     hardware.md (alla hårdvarufällor) + ui-spec.md (designsystemet)
-third_party/cjson/        vendrad cJSON 1.7.18 — samma parser på Macen som på kortet
+third_party/cjson/        vendrad cJSON 1.7.18 — samma parser på datorn som på kortet
 ```
 
 Repot innehåller alltså EN app: VibePulse. Solelkollen och Vibbe/Buddy är

@@ -69,6 +69,8 @@ For decisions across isolated Wi-Fi, read
 separate lifecycle:
 
 ```sh
+python3 -m pip install -r requirements-interaction-relay.txt
+cd tools/interaction-relay && npm ci && npx wrangler login && cd ../..
 python3 tools/vibepulse_setup.py relay install --url HTTPS_ORIGIN --yes-e2e-cloud
 python3 tools/vibepulse_setup.py relay status
 python3 tools/vibepulse_setup.py relay doctor
@@ -321,8 +323,8 @@ läser dess stdout; det gjordes förut med `select.select`, som på Windows
 bara tar sockets — aldrig pipes. Läsningen sker nu i en läsartråd med kö,
 samma kod på alla plattformar.
 
-Tillståndsfilerna (lås, probestatus, kvotcache, historik, max-spårare) och
-loggen bor under `%LOCALAPPDATA%\VibePulse\` i stället för macOS
+Tillståndsfilerna (lås, probestatus, kvotcache, historik, max-spårare) bor
+under `%LOCALAPPDATA%\VibePulse\` i stället för macOS
 `~/Library/Application Support/VibePulse`. Sökvägarna fungerade bokstavligt
 även förut — `Path.home()` löser ut — men lade ett `Library`-träd i
 användarprofilen som ingenting annat på maskinen känner igen.
@@ -336,7 +338,11 @@ powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.
 Skriptet registrerar tjänsten för den inloggade användaren, startar den
 direkt och startar om den vid fel. Det bakar inte in Claude/Codex- eller
 detaljval i kommandoraden; samma sparade tokenserver-konfiguration används
-som vid manuell start. Avinstallera själva autostarten med:
+som vid manuell start. Uppgiften kör `pythonw.exe` och den nuvarande
+installationen omdirigerar inte stdout/stderr till en beständig fil. Kontrollera
+hälsan med `curl http://localhost:8737/`; kör tjänsten manuellt med
+`python.exe` i en terminal när du behöver felsökningsloggen. Avinstallera
+själva autostarten med:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1 -Uninstall
@@ -403,7 +409,8 @@ alltid `false`.
 ## Lokal usagehistorik
 
 Tjänsten sparar historiken atomiskt i
-`~/Library/Application Support/VibePulse/usage-history.json`. Högst en punkt
+`~/Library/Application Support/VibePulse/usage-history.json` på macOS och
+under `%LOCALAPPDATA%\VibePulse\` på Windows. Högst en punkt
 per leverantör, fönster och 15 minuter behålls, och allt äldre än åtta dagar
 rensas. Varje punkt har exakt fem värden: tid, `claude`/`codex`, quotafönster,
 procent och avrundad resetcykel. Promptar, svar, kommandon, projekt, filnamn,
@@ -414,14 +421,16 @@ timmarna i den aktuella veckocykeln. Resultatet är antingen `collecting`,
 `unavailable`, beräknad procent vid reset (`at_reset`) eller beräknad tid då
 quotan tar slut (`exhausts`).
 
-Peka skärmen hit i repytrotens `secrets.h`:
+Peka skärmen hit i reporotens `secrets.h`. På macOS är Bonjour-namnet bäst;
+på Windows används den aktiva LAN-adressen med en DHCP-reservation eftersom
+tjänsten inte annonserar mDNS där:
 
 ```c
-#define TK_TOKENS_URL "http://<macens-lan-ip>:8737/api/tokens"
+#define TK_TOKENS_URL "http://<datorns-host-eller-lan-ip>:8737/api/tokens"
 ```
 
-Macens LAN-IP: `ipconfig getifaddr en0`. Ge gärna Macen fast DHCP-lease i
-routern — byter IP:t adress står skärmen med streck tills secrets.h flashas om.
+Macens Bonjour-namn: `scutil --get LocalHostName` (lägg till `.local`).
+Windows LAN-IP: `ipconfig`; reservera den valda IPv4-adressen i routern.
 
 ## Autostart via launchd
 
@@ -456,5 +465,5 @@ python3 tools/tokenserver/smoke.py
   generell observation räknas som källfel och följer stale-kontraktet ovan.
   Claude-proben kostar en tom förfrågan var 240:e sekund — försumbart mot
   fönstren den mäter.
-- Är Macen av visar skärmen streck efter två minuter (stale), inte gamla
+- Är datorn av visar skärmen streck efter två minuter (stale), inte gamla
   siffror som låtsas vara färska. Det är rätt beteende, inte ett fel.

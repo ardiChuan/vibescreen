@@ -38,8 +38,10 @@ cannot determine yourself.
 
 1. **macOS or Windows?** Both serve data. On Windows the Claude token comes
    from `%USERPROFILE%\.claude\.credentials.json` instead of the keychain,
-   and state and logs live under `%LOCALAPPDATA%\VibePulse\`. The supplied
-   `install-windows-task.ps1` adds autostart through Task Scheduler. On Linux
+   and state lives under `%LOCALAPPDATA%\VibePulse\`. The supplied
+   `install-windows-task.ps1` adds autostart through Task Scheduler; its
+   current background task does not persist stdout/stderr, so use the root
+   health endpoint or run manually for diagnostic logs. On Linux
    the firmware still builds and the simulator still runs, but the service
    finds no Claude token at all — there is no keychain and the credential
    file is read only on Windows
@@ -66,8 +68,10 @@ Then edit `secrets.h`. Two separate things must be right:
   the only network it knows before it has ever been anywhere. Every network
   *after* the first is taught to the panel at the place itself, with no
   rebuild — see [wifi.md](wifi.md).
-- **Replace `DIN-MAC` in `TK_VIBEPULSE_BASE_URL`** with their Mac's Bonjour
-  name.
+- **Replace `DIN-MAC` in `TK_VIBEPULSE_BASE_URL`** with an address the panel
+  can reach. On macOS, use the Mac's Bonjour name. On Windows, use the active
+  LAN IPv4 address and reserve that address in the router; the tokenserver does
+  not advertise an mDNS name on Windows.
 
 Those `#define`s ship active on purpose, with an obvious placeholder. Do not
 comment them out or delete them: `components/app_tokens/net.c` guards every
@@ -76,26 +80,31 @@ out entirely and the firmware then compiles cleanly, boots cleanly, connects
 to WiFi cleanly — and shows dashes forever, with no error anywhere to tell
 you why. A wrong hostname at least shows up in the serial log.
 
-Use the Bonjour name, not an IP, so the same binary works at home and on a
-phone hotspot:
+On macOS, use the Bonjour name instead of a raw IP so the same binary works at
+home and on a phone hotspot:
 
 ```sh
 scutil --get LocalHostName     # e.g. "Niclas-MacBook" -> Niclas-MacBook.local
 ```
 
-**Verify:** `secrets.h` has a non-empty SSID, and
+On Windows, use `ipconfig` to find the IPv4 address of the active adapter. A
+DHCP reservation matters: if that address changes, direct-LAN mode shows
+dashes until the URL is rebuilt. The optional relays remove the same-LAN
+requirement but do not make a stale local URL correct.
+
+**Verify:** `secrets.h` has a non-empty SSID and no `DIN-MAC` placeholder:
 
 ```sh
-grep -q 'DIN-MAC' secrets.h && echo "PLACEHOLDER STILL THERE" || echo "hostname set"
-grep -nE 'http://[0-9]' secrets.h && echo "WARNING: raw IP in a URL" || echo "no raw IPs"
+grep -q 'DIN-MAC' secrets.h && echo "PLACEHOLDER STILL THERE" || echo "host set"
 ```
 
-prints `hostname set` and `no raw IPs`. If the placeholder is still there,
+It must print `host set`. If the placeholder is still there,
 the board will look for a host that does not exist and every page will stay
-on dashes. If the second line finds a raw IP: that is a snapshot of a DHCP
-lease, and it *will* go stale — it cost an entire evening of network
-debugging in the wrong direction before anyone read what the URL actually
-contained (`docs/lessons.md` 2026-08-17). Use the Bonjour name.
+on dashes. On macOS, a raw IP is a snapshot of a DHCP lease and should be
+replaced with the Bonjour name. On Windows, document the DHCP reservation
+that keeps the chosen IPv4 stable. A stale compiled address cost an entire
+evening of network debugging before anyone read the URL
+(`docs/lessons.md` 2026-08-17).
 
 Ask the user for the WiFi password. Do not guess it, and do not commit
 `secrets.h` — it is gitignored, keep it that way.
@@ -122,8 +131,10 @@ Ask first. Then:
 idf.py -p /dev/cu.usbmodem101 flash    # confirm the real port first
 ```
 
-Find the port with `ls /dev/cu.usbmodem*`. Two hardware facts decide whether
-this works, both learned the hard way:
+On macOS, find the port with `ls /dev/cu.usbmodem*`. On Windows, use the
+board's `COM` port instead, for example `idf.py -p COM5 flash`, after
+confirming it in Device Manager or the ESP-IDF terminal. Two hardware facts
+decide whether this works, both learned the hard way:
 
 - **Flash in download mode, with the panel dark.** Hold **BOOT**, tap
   **RESET**, release **BOOT**. The board re-enumerates as a ROM device.
@@ -137,7 +148,10 @@ up after reset.
 
 ## Step 4 — tokenserver
 
-Pure stdlib, nothing to install:
+The core local service is pure stdlib, with nothing to install. The optional
+encrypted interaction/status relay adds the pinned dependency in
+`requirements-interaction-relay.txt`; install it only when enabling that
+relay.
 
 ```sh
 python3 tools/tokenserver/tokenserver.py
@@ -148,7 +162,7 @@ the panel talks directly to it. On WiFi with client isolation, the optional
 numbers relay can still carry quota data as long as this service is running;
 it does not publish agent activity or Needs You prompts.
 
-**Verify**, from the same Mac:
+**Verify**, from the same computer:
 
 ```sh
 curl -s localhost:8737/ | python3 -m json.tool
@@ -162,13 +176,13 @@ are not arriving:
 |---|---|---|
 | `usage_http_200 + ok` | Working. Limits parsed. | Nothing |
 | `not_run` | Probe has not fired yet | It runs every 120 s — wait |
-| `no_claude_oauth_token` | No Claude Desktop / Claude Code token found | Have them sign in to Claude Code on this Mac |
+| `no_claude_oauth_token` | No Claude Desktop / Claude Code token found | Have them sign in to Claude Code on this computer |
 | `token_expired_…` | Token found but expired | Re-authenticate in Claude Code |
 | `usage_http_401` / `usage_http_403` | Every token source rejected (on macOS the probe tries Claude Desktop's process token, then the keychain, and falls back automatically; on Windows there is only `%USERPROFILE%\.claude\.credentials.json`) | Re-authenticate in Claude Code |
 | `usage_http_200 + no_mapped_limits` | Authenticated, but nothing in the usage response mapped (a `; fallback_…` suffix records the header-probe outcome) | Plan may not expose limits; Codex half still works |
-| `usage_request_failed: …` | Network/DNS failure from the Mac | Check the Mac's own connectivity |
+| `usage_request_failed: …` | Network/DNS failure from the computer | Check the computer's own connectivity |
 | `usage_http_429 + backoff_until_HH:MM` | Rate-limited by the API; the probe rests until the shown time | Wait — it retries by itself |
-| `probe_crashed: <Type>` | The probe itself hit a bug (crash before it could classify the failure) | Read the traceback in `~/Library/Logs/torget-tokenserver.log`; worth filing |
+| `probe_crashed: <Type>` | The probe itself hit a bug (crash before it could classify the failure) | Read `~/Library/Logs/torget-tokenserver.log` on macOS. On Windows, stop the background task and run the service in a terminal to capture stderr; worth filing |
 
 Codex is read separately from its local app-server, so a bad `claudeProbe`
 never explains missing Codex numbers, and vice versa.
@@ -249,10 +263,11 @@ the shared device key.
 
 To opt in to encrypted decisions across isolated Wi-Fi, first read the exact
 privacy boundary in [interaction-relay.md](interaction-relay.md). Enable at
-least one provider and detail above, install the pinned Worker dependencies,
-then run:
+least one provider and detail above, install the pinned Python and Worker
+dependencies, then run:
 
 ```sh
+python3 -m pip install -r requirements-interaction-relay.txt
 cd tools/interaction-relay && npm ci && npx wrangler login && cd ../..
 python3 tools/vibepulse_setup.py relay install \
   --url https://vibepulse-interaction-relay.YOUR-SUBDOMAIN.workers.dev \
@@ -363,8 +378,8 @@ workflow, consent model and troubleshooting live in [ota.md](ota.md).
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Screen boots, everything is dashes, forever | `DIN-MAC` never replaced in `secrets.h`, or the `TK_*` defines were removed | Set the real Bonjour name, rebuild, reflash |
-| Dashes, and the Mac's URL is set | tokenserver not running, or Mac asleep, or firewall | Start it; check `curl localhost:8737/` |
+| Screen boots, everything is dashes, forever | `DIN-MAC` never replaced in `secrets.h`, the Windows LAN IP changed, or the `TK_*` defines were removed | Set the reachable host (Bonjour on macOS; reserved LAN IPv4 on Windows), rebuild, reflash |
+| Dashes, and the computer's URL is set | tokenserver not running, computer asleep, or firewall | Start it; check `curl localhost:8737/` |
 | Dashes only for Claude, Codex fine (or vice versa) | That provider's source is unavailable | Check `claudeProbe`; the other half working is by design |
 | Never joins WiFi | Network is 5 GHz | 2.4 GHz only. iPhone hotspot: enable "Maximize Compatibility". The glass names the reason itself after 60 s |
 | Moved to a new place; panel finds nothing | The new network was never taught to it | It raises `VibePulse-setup` after 90 s (or a 3 s KEY3 hold). Run `tools/wifi-here.sh` on the Mac, or join the AP from a phone. Remembered afterwards — [docs/wifi.md](wifi.md) |
@@ -374,7 +389,7 @@ workflow, consent model and troubleshooting live in [ota.md](ota.md).
 | Panel shows stale quota / empty Fable weekly in the morning | Upstream 429 penalty from the shared account bucket | Self-heals: dead tokens are never resent, the penalty persists across restarts, deltas serve from cache. Check `claudeProbe` on `curl localhost:8737/` |
 | Panel shows stale while powered from the computer USB port | The Mac port cannot feed WiFi TX bursts — fetches time out | Expected on Mac USB; run from wall power. Logs stay valid on Mac USB, data does not |
 | OTA boots always show state 0xffffffff and the health gate always rests | `sdkconfig` generated before the rollback line landed in `sdkconfig.defaults` (defaults only apply on fresh generation) | `grep BOOTLOADER_APP_ROLLBACK sdkconfig` — set `=y`, rebuild, and USB-flash ONCE (the bootloader carries the logic; OTA never writes it) |
-| No `/dev/cu.usbmodem*` | Not in download mode | Hold BOOT, tap RESET, release BOOT |
+| No `/dev/cu.usbmodem*` or Windows `COM` port | Not in download mode | Hold BOOT, tap RESET, release BOOT |
 | Flash starts then dies; board hangs | USB port cannot power the panel | Download mode to flash; own PSU to run |
 | Numbers freeze and go stale | Service or LAN dropped | Last good values are kept deliberately; restart the service |
 | `./test/run.sh` refuses to start | Unpinned PyYAML/Pillow | See [Hardware knowledge](../README.md#hardware-knowledge) |
