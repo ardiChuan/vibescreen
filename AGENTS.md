@@ -24,7 +24,7 @@ Designsystemet: **spec/ui-spec.md**. Hårdvarusanningen routas under
 `Hardware-aware work` nedan; läs den kanoniska femfilslistan där före
 hårdvaruarbete.
 
-## Status (2026-08-13, första flashen gjord)
+## Status (2026-08-23, v0.7.0)
 
 Plattformen bröts ut ur underhållarens tidigare solcells-firmware (den
 historiken ligger i ett privat repo och är inget du behöver) och stöptes om
@@ -34,9 +34,11 @@ enligt granskningens tre krav: (1) versionerat appkontrakt
 äger bara WiFi/SNTP/lås/ljus/rotation; (3) MIT-licens.
 
 **Det här repot innehåller EN app: VibePulse** (Claude/Codex-användning via
-tools/tokenserver på Macen, platt JSON över LAN). Den ligger först i
-registret, så en färsk klon utifrån bygger en binär som startar i VibePulse
-och ingenting annat.
+tools/tokenserver på macOS eller Windows, normalt platt JSON över LAN).
+Valfria och oberoende Cloudflare-reläer kan bära siffror respektive
+end-to-end-krypterade interaktioner/live-status över separata nät; allt är
+default-off. Appen ligger först i registret, så en färsk klon utifrån bygger
+en binär som startar i VibePulse och ingenting annat.
 
 Solelkollen och Vibbe/Buddy är egna produkter i egna repon och dras in som
 companion-inputs när de finns utcheckade — `TORGET_SOLELKOLLEN_DIR`
@@ -52,8 +54,9 @@ med användarens uttryckliga tillåtelse, från mergad main; den statiska
 fysiska grinden är PASSERAD för kvotsidorna, agentmonitorn och Max Tracker,
 och Solceller-kopian är avvecklad som skärmens drivrutin. Evidens:
 `docs/superpowers/reviews/2026-08-13-max-tracker-physical-static.md`.
-Fortfarande ogrindat: rörelse/animation — den kräver
-interaktionsprotokollet i AMOLED-skillen, mätt på panelen först.
+Completion-pulsen har också passerat fysisk rörelsegranskning. Ny rörelse eller
+animation är fortfarande ogrindad tills den följer interaktionsprotokollet i
+AMOLED-skillen och mäts på panelen.
 
 ## Arbetsregler
 
@@ -69,6 +72,19 @@ interaktionsprotokollet i AMOLED-skillen, mätt på panelen först.
   Tokenmätaren, blev andra användaren — det är mallen).
 - **Ärlighetsinvarianten:** aldrig påhittade nollor — utan data visas
   streck; räknare backar aldrig; copyn säger vad siffran faktiskt mäter.
+
+## Releaser och utåtriktad dokumentation
+
+- En viktig användarfunktion är inte klar förrän `README.md` visar den i
+  tagline/intro och i en egen aktuell sektion med riktiga 480×480-bilder.
+- När en tagg skapas flyttas innehållet från `Unreleased` till en daterad
+  rubrik i `CHANGELOG.md`, en ny tom `Unreleased` lämnas överst och README:ns
+  `Latest release` uppdateras i samma arbete.
+- Varje GitHub-release får en ren, bildsatt release body under
+  `docs/releases/`. Bild-URL:er ska vara absoluta
+  `raw.githubusercontent.com/.../<tag>/...`-URL:er, releasen ska inte börja
+  med en H1 och `torget.bin` får aldrig bifogas eftersom den innehåller
+  användarens Wi-Fi-uppgifter och device key.
 
 ## AMOLED visual work
 
@@ -113,9 +129,6 @@ firmware-enabled genom det build-inputet; exakt revision och evidens finns i
 `spec/hardware-sources.yaml`. Fysisk mikrofon-/högtalarfunktion är fortfarande
 overifierad.
 
-- WiFi-provisionering + OTA + konfig-UI — trigger: första enheten som lämnar
-  huset (kompilerad secrets.h duger inte för sålda enheter; ESP-IDF:s
-  wifi_provisioning finns färdig).
 - Responsiv layout för andra Waveshare-storlekar — trigger: andra skärmtypen.
 - Butiks-/paketmaskineri och appar i egna repon via Espressifs registry —
   trigger: bevisad traktion efter open source.

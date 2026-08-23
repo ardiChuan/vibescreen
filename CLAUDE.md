@@ -64,3 +64,9 @@ Two rules, learned 2026-08-16, not optional:
   compiled in). The per-release OG card is auto-generated and NOT customisable;
   the one shared-link image you can set is the repo's Social preview (Settings ->
   Social preview) — refresh it for a major feature.
+- **Tagging includes the documentation cut.** In the same effort, move the
+  shipped entries out of `Unreleased` into a dated version in `CHANGELOG.md`,
+  leave a new empty `Unreleased` section at the top, update README's `Latest
+  release`, and save the GitHub-ready body under `docs/releases/`. A tag on a
+  commit whose changelog still calls its features unreleased is not a finished
+  release.

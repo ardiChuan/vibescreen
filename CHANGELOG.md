@@ -5,7 +5,35 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ## Unreleased
 
+No user-facing changes yet.
+
+## v0.7.0 — 2026-08-23
+
+Codex joins the answerable Needs You flow, the panel gains phone-first Wi-Fi
+onboarding, and the host service becomes portable across macOS and Windows.
+Optional encrypted interaction and live-status relays keep the panel useful
+when it and the computer are on unrelated ordinary internet Wi-Fi. Illustrated
+notes: [Codex and any Wi-Fi](docs/releases/2026-08-23-codex-and-any-wifi.md).
+
 ### Added
+
+- **Codex interactions on the panel.** The optional plugin bridges supported
+  questions and a narrow safe-command approval tier into the shared Needs You
+  UI. Provider/view-bound verdicts, bounded text, fail-closed setup, and strict
+  allowlists keep unknown, mutating, secret-bearing, or ambiguous requests on
+  the computer.
+- **Encrypted Needs You across unrelated Wi-Fi.** A user-owned Cloudflare
+  Durable Object mailbox carries fixed-size end-to-end encrypted request and
+  verdict frames. It is separate from the numbers relay, uses outbound HTTPS
+  only, and stays off until a provider, bounded detail, and the relay are each
+  explicitly enabled.
+- **Encrypted live agent status across unrelated Wi-Fi.** A third independent
+  transport carries only minimized Claude/Codex rows, never the pending
+  decision. Direct LAN wins; stale relay rows clear honestly.
+- **Phone-first Wi-Fi setup.** The panel shows a scannable QR, serves a local
+  network picker, tests credentials before saving them, and keeps every old
+  recovery network after a failed trial. The top-right Wi-Fi mark now appears
+  consistently across the launcher, apps, Needs You, OTA, and setup.
 
 - **The panel travels.** It remembers six places in NVS and joins the one
   that worked most recently; arriving somewhere new no longer means editing
@@ -13,8 +41,9 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   since OTA needs the network the panel cannot reach. Two ways to teach it a
   place: `tools/wifi-here.sh` on the Mac hands over the network it is
   already on (reading the password from the keychain, one prompt, nothing
-  typed), or the panel raises `VibePulse-setup` with the password on the
-  glass and serves a captive portal listing what its *own* radio can see.
+  typed), or the panel raises `VibePulse-setup` with a phone-first QR; the
+  temporary password stays behind the Manual Setup fallback. Its captive
+  portal lists what the panel's *own* radio can see.
   The window opens by itself after 90 s without an IP, or on a 3 s KEY3
   hold, and closes after ten minutes — the access point, HTTP server and DNS
   responder do not exist outside it (the lazy-surface rule from the
@@ -38,16 +67,20 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
     freshest-per-pool on read using the observation stamps the staleness
     logic already carries — Claude from whichever machine asked Anthropic
     last, Codex from whichever machine ran Codex last.
-  The boundary is enforced from three directions
+  The numbers-only boundary is enforced from three directions
   (`test/test_relay_boundary.py`, `test_publisher.py`, the Worker's path
   allowlist): the relay carries *numbers* (quota, burn rate, Max Tracker,
-  GitHub), never *activity* (agent status, Needs You, the device key's
-  answer path — those stay on the LAN). Full design: `docs/relay.md`.
+  GitHub), never *activity*. The separately enabled encrypted interaction and
+  live-status relays use a different Worker, credentials, protocol, and
+  privacy boundary. Full designs: `docs/relay.md` and
+  `docs/interaction-relay.md`.
 - **Windows autostart** for the tokenserver
   (`tools/tokenserver/install-windows-task.ps1`): a scheduled task running
   as the logged-in user (never SYSTEM — the credential file lives in the
-  user profile), restarting on failure, logs in `%LOCALAPPDATA%\VibePulse\`.
-  Closes the gap in issue #3.
+  user profile), restarting on failure, with state in
+  `%LOCALAPPDATA%\VibePulse\`. The current background task does not persist
+  stdout/stderr; use the root health endpoint or run manually for diagnostic
+  logs. Closes the gap in issue #3.
 - **Hold KEY3 twice to reach WiFi setup on a connected panel.** The setup
   window used to open only when the panel had no network — you could not
   pre-load the phone hotspot at home before a trip. Now a second full 3 s
@@ -114,7 +147,7 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   `NameError` in the rebased Windows branch (PR #11): the missing
   `test_interactions` catches it immediately.
 
-### Added
+### Desktop support
 
 - The tokenserver reads Claude's OAuth token on Windows. Claude Code has no
   keychain integration there, so `claude login` writes the same
@@ -147,19 +180,56 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   The old paths worked literally on Windows but planted a `Library` tree in
   the user profile that nothing else on the machine recognises.
 
-  What remains for [#3](https://github.com/niclasvestlund-YT/vibepulse/issues/3)
-  is autostart: the launchd plist has no Windows equivalent, and `smoke.py`
-  now finds the right state directory but still tells you to run `launchctl`.
-  Reported by Erik Elfström, who found it porting a fork to a LilyGO
-  T-Display-S3.
-- The completion alert finally pulses. The accent outline and icon ring
-  breathe (full → 39 % → full, ease-in-out, four 1200 ms cycles filling the
-  PULSE phase exactly) and then rest; text and the provider icon stay solid
-  for readability. Proven pixel-by-pixel in the simulator and reviewed on
-  the physical panel
-  ([review](docs/superpowers/reviews/2026-08-14-completion-pulse-physical-motion.md)).
-  The static attention gate now permits exactly this one animation and pins
-  its shape.
+  Native Task Scheduler autostart, immediate start, restart-on-failure, and
+  saved interaction-provider choices complete the Windows host path in this
+  release. Reported by Erik Elfström, who found the original gaps while
+  porting a fork to a LilyGO T-Display-S3.
+- Renewed Claude credentials are detected and published promptly. A stale
+  Claude Desktop process token can no longer leave a valid new login hidden
+  behind cached `401` data until the next long probe interval.
+
+## v0.6.0 — 2026-08-16
+
+- **Needs You becomes an input device for Claude Code.** A held question or
+  supported permission takes over the panel; a tap reveals the bounded view
+  and APPROVE / DENY / LEAVE IT returns a signed verdict to the same live
+  session. Walking away always falls back to the terminal.
+- The shared LVGL takeover was rebuilt around the approved
+  attract → decision → payoff flow, including long-text fit guards and a
+  private fallback state.
+- The LVGL pool moved to PSRAM to restore the internal DMA headroom the AMOLED
+  flush needs, fixing a physical panel freeze.
+
+## v0.5.0 — 2026-08-15
+
+- Added the **value multiple** page: priced month-to-date Claude/Codex token
+  usage divided by the plan cost the user explicitly declares. Unknown prices
+  degrade to a dash instead of being guessed.
+- Added the optional **GitHub project pulse**: stars/forks page plus a named
+  new-star takeover, with screen, notification, and future sound as separate
+  default-off switches.
+- Fixed Codex resume/fork replay overcounting by grouping rollouts by session
+  and using the most complete copy. Illustrated notes:
+  [value and GitHub](docs/releases/2026-08-15-value-and-github.md).
+
+## v0.4.0 — 2026-08-14
+
+- Added the consent-gated A/B OTA platform: physical KEY3/touch consent,
+  authenticated inactive-slot upload, image verification, a 15-second boot
+  health gate, and automatic rollback.
+- Added UPDATE READY, the OTA progress ring, and a boot screen driven by real
+  Wi-Fi/time/data signals.
+- Hardened the tokenserver against rejected tokens, concurrent probing, 429
+  penalties, and stale build delivery. Illustrated notes:
+  [OTA platform](docs/releases/2026-08-14-ota-platform.md).
+
+## v0.3.0 — 2026-08-14
+
+- Added the observability map, transition logs, smoke-test contract, backlog,
+  and lessons log so a stale or foreign tokenserver is visible instead of
+  looking healthy.
+- The completion alert gained its first measured pulse and physical motion
+  review; text and provider marks remain solid for readability.
 
 ## v0.2.1 — 2026-08-13
 

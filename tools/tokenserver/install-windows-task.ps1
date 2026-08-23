@@ -20,8 +20,9 @@ Designval, i linje med resten av repot:
   läser %USERPROFILE%\.claude\.credentials.json — en SYSTEM-tjänst hade
   läst fel profil och dessutom gett processen mer rättigheter än den
   behöver.
-- pythonw.exe (inget konsolfönster). Loggarna hamnar där de redan bor:
-  %LOCALAPPDATA%\VibePulse\ (tjänstens egen självroterande logg).
+- pythonw.exe (inget konsolfönster). Den nuvarande uppgiften omdirigerar inte
+  stdout/stderr till en beständig fil. GET / är hälsokollen; kör servern med
+  python.exe i en terminal när en felsökningslogg behövs.
 - Interaction providers and detail are read from the tokenserver's saved config.
   Keep those choices out of the scheduled command so setup changes cannot go
   stale here. The optional publish arguments below are numbers-relay settings,
@@ -80,5 +81,6 @@ Start-ScheduledTask -TaskName $TaskName
 Write-Host "Uppgiften '$TaskName' registrerad och startad."
 Write-Host "  server:  $Server"
 if ($PublishUrl) { Write-Host "  relä:    $PublishUrl" }
-Write-Host "  loggar:  $env:LOCALAPPDATA\VibePulse\"
+Write-Host "  state:   $env:LOCALAPPDATA\VibePulse\"
+Write-Host "  logg:    ingen beständig bakgrundslogg; kör manuellt för felsökning"
 Write-Host "Verifiera:  curl http://localhost:8737/  (claudeProbe ska visa ok)"

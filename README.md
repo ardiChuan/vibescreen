@@ -11,13 +11,15 @@ too: one command moves it onto whatever WiFi you are on today.**
 
 Claude Code and Codex usage, live agent activity, and a full-screen
 **NEEDS YOU** alert you can answer with a tap. A ~$30 ESP32-S3 panel plus a
-pure-stdlib Python service on your Mac or Windows PC. Local mode needs no
+core, pure-stdlib Python service on your Mac or Windows PC. Local mode needs no
 VibePulse account and keeps agent activity on your LAN. The optional
 numbers-only relay can carry quota data across isolated WiFi; a separate,
 default-off encrypted interaction relay can carry supported Needs You
 decisions without requiring the panel and computer to share a LAN. A third,
 independent **Live agent status relay** can keep the Claude/Codex activity rows
-current across ordinary internet WiFi. Every cloud feature is off by default.
+current across ordinary internet WiFi. Every cloud feature is off by default;
+only the encrypted interaction/status relay adds the pinned Python
+`cryptography` dependency.
 
 ## The problem
 
@@ -36,6 +38,19 @@ the room, no window to switch to, no menu bar to squint at.
 > of tweaks are still on the list, but enough people asked about it that I'm
 > opening it up now rather than when it feels "done". Expect rough edges and
 > frequent commits.
+
+## Latest release: v0.7.0
+
+The 23 August release closes the loop for both providers: supported Claude
+Code **and Codex** questions can be answered from the panel, the screen can be
+moved to a new 2.4 GHz network from a phone, and the host service now runs on
+Windows as well as macOS. Optional, separately controlled encrypted relays can
+carry Needs You decisions and live agent rows when the panel and computer are
+on unrelated WiFi.
+
+[Read the illustrated v0.7.0 notes](docs/releases/2026-08-23-codex-and-any-wifi.md)
+· [Full changelog](CHANGELOG.md)
+· [Compare v0.6.0...v0.7.0](https://github.com/niclasvestlund-YT/vibepulse/compare/v0.6.0...v0.7.0)
 
 ## What's on screen
 
@@ -64,7 +79,8 @@ weekly quota. Each with a reset countdown and how much you've burned today.
 **NEEDS YOU** — when an agent blocks on your input, the whole screen turns
 into the alert, in that provider's colour, naming the project it's waiting
 on. Tap to dismiss — or, with the opt-in Needs You bridge, **tap to answer
-it** without switching windows ([see below](#answer-claude-from-the-panel)).
+it** without switching windows
+([see below](#answer-claude-or-codex-from-the-panel)).
 
 </td>
 </tr>
@@ -199,7 +215,7 @@ previous page after two minutes.
 
 <img src="docs/img/github/sim-star-popup.png" alt="Full-screen popup celebrating a new GitHub star" width="320">
 
-The Mac service polls GitHub's public API and republishes a small, validated
+The computer service polls GitHub's public API and republishes a small, validated
 LAN payload. The ESP32 never talks to GitHub, and a GitHub timeout or rate
 limit cannot stall the Claude/Codex endpoints. Configure it with:
 
@@ -253,7 +269,7 @@ swipeable strip, alongside GitHub — neither replaces the other.
 </table>
 
 ```
-python3 tools/tokenserver/tokenserver.py --claude-plan max5x --plan-cost-usd 100
+python3 tools/tokenserver/tokenserver.py --claude-plan max5x --plan claude=100
 ```
 
 It counts cache tokens, which is the whole point — a real record here reads
@@ -268,7 +284,7 @@ the figure to a dash rather than being silently free.
 ## How it works
 
 ```
-        your Mac                             your shelf
+      your computer                          your shelf
 ┌────────────────────────────┐          ┌──────────────┐
 │ ~/.claude/projects/*.jsonl │          │              │
 │ ~/.codex/sessions/*.jsonl  │ ───────► │   ESP32-S3   │
@@ -293,9 +309,9 @@ to the panel; captive portals and 5 GHz-only networks are not.
 - **[Waveshare ESP32-S3-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-s3-touch-amoled-2.16.htm)**
   (~$30). No soldering, just a USB-C cable. It's the same board Clawdmeter
   uses, so if you already own one you're 10 minutes away.
-- **A Mac or PC** running the tokenserver. Direct LAN mode needs the panel to
-  reach that computer; the optional relays remove the same-WiFi requirement.
-  Claude quota log reading remains macOS-only for now.
+- **A Mac or Windows PC** running the tokenserver. Claude and Codex quota
+  collection are supported on both. Direct LAN mode needs the panel to reach
+  that computer; the optional relays remove the same-WiFi requirement.
 - **Claude Code and/or Codex.** Either alone is fine.
 - **2.4 GHz WiFi.** The ESP32-S3 can't see 5 GHz networks.
 
@@ -305,7 +321,7 @@ Clone the repo, open your coding agent inside it (Claude Code, Codex,
 Cursor, whatever you run), and say:
 
 > Set up VibePulse for me: help me fill in secrets.h, build and flash the
-> board over USB, and start the tokenserver on this Mac.
+> board over USB, and start the tokenserver on this Mac or Windows PC.
 
 The repo is built for this. `CLAUDE.md` and `AGENTS.md` point your agent
 straight at **[docs/agent-setup.md](docs/agent-setup.md)** — an English
@@ -317,6 +333,10 @@ Reading rather than running? That runbook is also the fastest way to
 understand how the pieces fit together.
 
 ## Setup, the manual way
+
+The commands below show the macOS path. Windows is supported for the host
+service too; use the Windows ESP-IDF environment and the OS-specific host
+address/autostart steps in [the agent runbook](docs/agent-setup.md).
 
 1. Install [ESP-IDF 5.5](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/index.html)
    and `brew install cmake ninja`
@@ -346,7 +366,8 @@ understand how the pieces fit together.
    panel's draw makes the board bounce off the bus or hang, which looks
    like a flaky cable. After flashing, run the screen from its own USB
    power supply, not your computer.
-3. Start the service on your Mac. Pure Python stdlib, nothing to install:
+3. Start the core service on your computer. Pure Python stdlib, nothing to
+   install for local mode:
 
    ```
    python3 tools/tokenserver/tokenserver.py
@@ -380,7 +401,7 @@ USB-C remains the rescue path and is never written by an OTA. After an OTA
 reboot the window re-arms itself once, so a build-test-build session needs
 one hold, not one per build.
 
-The tokenserver announces the newest build on your Mac
+The tokenserver announces the newest build on your computer
 (`otaAvailableVersion` on `/api/tokens`); when the screen runs an older
 version it takes the glass with an **UPDATE READY** notice — hold KEY3 to
 receive — or answer the on-glass LATER/UPDATE pills by touch; tapping
@@ -510,18 +531,23 @@ Max Tracker fixtures, `T` re-feeds tokens, `G` simulates a new GitHub star,
 
 ## Privacy
 
-- Agent activity and usage stay on your LAN; the screen only ever receives
-  percentages, counts and coarse status — a project name, a model, an effort
-  level.
+- In local mode, agent activity and usage stay on your LAN; the screen only
+  ever receives percentages, counts and coarse status — a project name, a
+  model, an effort level.
 - No prompts, no code, no commands, no file contents are stored or served.
   The service keeps only content-free quota points (at most one per 15
   minutes, kept 8 days) for the trends.
-- Your OAuth token never leaves the Mac.
-- If the optional GitHub module is enabled, the Mac anonymously reads only
-  public repository and stargazer metadata from GitHub. The ESP32 still
-  talks only to the Mac over your LAN.
+- Your OAuth token never leaves the computer.
+- The optional numbers relay publishes only quota, reset, Max Tracker, and
+  optional public GitHub numbers. The separate interaction and live-status
+  relays send fixed-size end-to-end encrypted ciphertext; all three are off
+  by default and independently controlled.
+- If the optional GitHub module is enabled, the computer anonymously reads
+  only public repository and stargazer metadata from GitHub. In local mode,
+  the ESP32 still talks only to that computer over your LAN.
 - A lost or stolen screen leaks your WiFi credentials and the LAN hostname
-  of your Mac — both of which you rotate yourself, not in any cloud.
+  or address of your computer — both of which you rotate yourself, not in any
+  cloud.
 
 ## Tweak it
 
@@ -551,8 +577,8 @@ zeros, and provider accents locked to Claude `#D97757` and Codex `#6F78FF`.
 platform/            app contract + launcher + fonts (IBM Plex)
 main/                ESP32 host layer: boot, WiFi, SNTP, app registry
 components/app_*     the app (VibePulse lives in app_tokens/)
-tools/tokenserver/   the Mac service (Python stdlib)
-sim/                 SDL simulator, the whole platform on your Mac
+tools/tokenserver/   the computer service (core is Python stdlib)
+sim/                 SDL simulator, the whole platform on your computer
 test/                host tests, run with ./test/run.sh (no ESP-IDF needed)
 spec/                hardware truth + UI design system
 ```
@@ -589,12 +615,15 @@ by default; set `PYTHON_BIN` to point at a different 3.11+ interpreter.
   `{"claudeAiOauth": {...}}` record to
   `%USERPROFILE%\.claude\.credentials.json` and the service reads it; the
   Codex app-server read and the single-probe lock no longer depend on
-  macOS-only syscalls; state and logs live under `%LOCALAPPDATA%\VibePulse\`.
+  macOS-only syscalls; state lives under `%LOCALAPPDATA%\VibePulse\`.
   For autostart, run the shipped Task Scheduler installer from the repo root:
   `powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1`.
   It runs as your signed-in user, starts immediately, restarts on failure, and
-  keeps interaction-provider choices in the tokenserver's saved config.
-- **Linux for the Mac service?** Not yet —
+  keeps interaction-provider choices in the tokenserver's saved config. The
+  current background task does not persist stdout/stderr; use
+  `curl http://localhost:8737/` for health and run the service in a terminal
+  when you need a diagnostic log.
+- **Linux for the tokenserver?** Not yet —
   [#2](https://github.com/niclasvestlund-YT/vibepulse/issues/2);
   contributions very welcome.
 - **Other boards or panel sizes?** Not yet. The platform is pinned to this
@@ -605,7 +634,8 @@ by default; set `PYTHON_BIN` to point at a different 3.11+ interpreter.
   [#4](https://github.com/niclasvestlund-YT/vibepulse/issues/4).
 - **Just Claude, no Codex (or vice versa)?** Works. The other half shows
   dashes.
-- **Does it need internet?** No. The board talks to one host on your LAN.
+- **Does it need internet?** Local-only mode does not. The optional relays and
+  GitHub pulse do; each stays off until you enable it.
 
 ## License
 
