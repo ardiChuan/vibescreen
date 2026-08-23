@@ -21,6 +21,21 @@ point at the backlog item.
 
 ---
 
+## 2026-08-23 · Claude kept working after every readable token copy had died
+
+**What happened:** the panel showed Claude `STALE` while Claude Desktop was
+actively consuming the plan on both Mac and PC. **Root cause:** Desktop can
+refresh and use credentials inside its running client without replacing the
+launch-time environment token or the expired Claude Code keychain record that
+the tokenserver is allowed to read. The previous recovery assumed real client
+use always replaced one of those copies. **The rule:** authentication health
+and quota-observation health are separate truths; use a bounded official local
+usage artifact when it proves freshness, but never infer a named model pool or
+reset it does not contain. **Guards:** strict v2/size/age/percentage parsing,
+authenticated-reset reuse, OAuth-newer precedence, and regression coverage in
+`ClaudePlanUsageFallbackTests`. **Watch for:** Claude changing the local file's
+version, cadence, path, or `fh`/`sd` fields.
+
 ## 2026-08-19 · `sdkconfig.defaults` did not migrate the existing LVGL pool
 
 **What happened:** v0.6 froze on any full redraw while the LVGL task held

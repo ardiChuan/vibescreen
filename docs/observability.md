@@ -144,6 +144,13 @@ Returns live server state, added after real debugging nights:
   `usage_http_401`, `usage_http_429 + backoff_until_HH:MM`,
   `usage_request_failed: <Type>`, `probe_crashed: <Type>` (the probe
   itself hit a bug — the log has the traceback).
+- `claudeLocalUsage` — the passive Claude Desktop fallback for the general
+  week: `fresh_applied` means the official local plan history is newer than
+  the readable OAuth copy and was combined with a still-valid authenticated
+  reset; `oauth_newer` means the normal probe already has newer truth.
+  `fresh_without_reset` refuses to invent a reset, while `missing`, `stale`,
+  `invalid*`, and `unsupported` explain why the local file was not trusted.
+  This fallback never marks the named Fable/Opus model pool fresh.
 - `ratelimitHeaders` / `unknownRateLimitBuckets` — header names seen by
   the fallback probe. A non-empty `unknownRateLimitBuckets` means
   Anthropic added a bucket we don't map yet: file it.

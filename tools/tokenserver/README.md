@@ -1,6 +1,7 @@
 # tokenserver — VibePulse computer service
 
-> **English quickstart:** `python3 tokenserver.py`. Pure Python 3 stdlib,
+> **English quickstart:** `python3 tokenserver.py`. Python 3.11+ is required;
+> the core service uses only the standard library,
 > nothing to install. It reads your local Claude Code/Codex logs and serves
 > `/api/tokens` + `/api/agent-status` + `/api/max-tracker` on port 8737 for
 > the screen. Add `--github-repo owner/repository` for the optional public
@@ -100,7 +101,13 @@ sekund. Ren Python 3-stdlib — inget att installera. Tre källor:
    (`max_tokens: 0` — prefill utan output, i praktiken gratis) var 240:e
    sekund; rate-limit-headrarna i svaret bär usage-panelens tre fönster:
    5-timmars, veckan och veckan för tyngsta modellen (Fable/Opus).
-   Tokenen lämnar aldrig datorn — skärmen får bara procenttal.
+   Tokenen lämnar aldrig datorn — skärmen får bara procenttal. Om de
+   tokenkopior tokenservern kan läsa har gått ut men den officiella Claude
+   Desktop-klienten fortfarande arbetar, används dess innehållsfria
+   `plan-usage-history.json` passivt för den generella veckan. Filen måste
+   vara högst 20 minuter gammal och en tidigare autentiserad cachepost måste
+   fortfarande bära poolens giltiga reset. Modellveckan gissas aldrig och
+   förblir därför stale tills OAuth-proben återhämtar sig.
 3. **Codex tak** — tjänsten frågar Codex lokala, skrivskyddade app-server via
    `account/rateLimits/read`, alltså samma aktuella snapshot som Codex-panelen
    visar. Om app-servern saknas används en passiv fallback: begränsad läsning
@@ -439,8 +446,10 @@ cp se.torget.tokenserver.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/se.torget.tokenserver.plist
 ```
 
-Plisten antar att repot bor i `~/Torget` och användaren `niclasvestlund` —
-redigera sökvägarna annars. Loggen hamnar i
+Plisten antar att repot bor i `~/Torget`, att repots Python 3.11+-miljö finns
+i `.venv` och att användaren är `niclasvestlund` — redigera sökvägarna
+annars. Med krypterat interaktionsrelä aktiverat ska den miljön även ha
+`requirements-interaction-relay.txt` installerad. Loggen hamnar i
 `~/Library/Logs/torget-tokenserver.log` (syns i Konsol-appen, överlever
 omstart; servern roterar den själv vid start om den vuxit förbi ~5 MB, med
 svansen bevarad i `.old`). Raderna har tidsstämplar och loggar övergångar,

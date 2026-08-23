@@ -5,7 +5,13 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ## Unreleased
 
-No user-facing changes yet.
+### Fixed
+
+- Claude's general weekly quota no longer goes stale merely because the OAuth
+  copies visible to the tokenserver expired while Claude Desktop kept working.
+  A strict passive fallback reads only the official client's bounded local
+  percentage history and reuses a still-valid authenticated reset; named
+  Fable/Opus limits remain honestly stale until OAuth recovers.
 
 ## v0.7.0 — 2026-08-23
 

@@ -168,16 +168,17 @@ it does not publish agent activity or Needs You prompts.
 curl -s localhost:8737/ | python3 -m json.tool
 ```
 
-Read `claudeProbe` in that output — it is the single most useful diagnostic
-in the whole system, and it tells you exactly why Claude's numbers are or
-are not arriving:
+Read `claudeProbe` and `claudeLocalUsage` in that output. The first explains
+the authenticated source; the second explains whether Claude Desktops
+content-free local plan history safely keeps the general week fresh while a
+readable OAuth copy is expired:
 
 | `claudeProbe` | Meaning | What to do |
 |---|---|---|
 | `usage_http_200 + ok` | Working. Limits parsed. | Nothing |
 | `not_run` | Probe has not fired yet | It runs every 120 s — wait |
 | `no_claude_oauth_token` | No Claude Desktop / Claude Code token found | Have them sign in to Claude Code on this computer |
-| `token_expired_…` | Token found but expired | Re-authenticate in Claude Code |
+| `token_expired_…` | Token found but expired | The service rechecks every 15 s. `claudeLocalUsage: fresh_applied` can keep the general week live; re-authenticate only if the model week must recover too |
 | `usage_http_401` / `usage_http_403` | Every token source rejected (on macOS the probe tries Claude Desktop's process token, then the keychain, and falls back automatically; on Windows there is only `%USERPROFILE%\.claude\.credentials.json`) | Re-authenticate in Claude Code |
 | `usage_http_200 + no_mapped_limits` | Authenticated, but nothing in the usage response mapped (a `; fallback_…` suffix records the header-probe outcome) | Plan may not expose limits; Codex half still works |
 | `usage_request_failed: …` | Network/DNS failure from the computer | Check the computer's own connectivity |
@@ -386,7 +387,7 @@ workflow, consent model and troubleshooting live in [ota.md](ota.md).
 | `wifi-here.sh` cannot join the setup AP | The window is closed, or `TG_OTA_TOKEN` is missing so the password is random | Check the glass says WIFI SETUP; without a token run `TG_AP_PASS=<what the glass shows> tools/wifi-here.sh` |
 | Panel joined the venue WiFi but still shows dashes | Client isolation, or a captive portal the panel cannot pass | Not fixable on the device. Use the phone hotspot instead |
 | "This project has no OTA" / partitions.csv shows one factory partition | Reading a tree from before the OTA foundation (A/B slots + otadata + `components/torget_ota/`) | Check which branch/commit the checkout is on; read `partitions.csv` in THAT tree before concluding. OTA workflow: `tools/ota-flash.sh <ip>` + a 3 s KEY3 hold |
-| Panel shows stale quota / empty Fable weekly in the morning | Upstream 429 penalty from the shared account bucket | Self-heals: dead tokens are never resent, the penalty persists across restarts, deltas serve from cache. Check `claudeProbe` on `curl localhost:8737/` |
+| Panel shows stale quota / empty Fable weekly in the morning | The readable OAuth copy expired/rejected, or an upstream 429 penalty is active | The general week can recover from Claude Desktops bounded local plan history; the named Fable/Opus pool still requires OAuth. Check both `claudeProbe` and `claudeLocalUsage` on `curl localhost:8737/` |
 | Panel shows stale while powered from the computer USB port | The Mac port cannot feed WiFi TX bursts — fetches time out | Expected on Mac USB; run from wall power. Logs stay valid on Mac USB, data does not |
 | OTA boots always show state 0xffffffff and the health gate always rests | `sdkconfig` generated before the rollback line landed in `sdkconfig.defaults` (defaults only apply on fresh generation) | `grep BOOTLOADER_APP_ROLLBACK sdkconfig` — set `=y`, rebuild, and USB-flash ONCE (the bootloader carries the logic; OTA never writes it) |
 | No `/dev/cu.usbmodem*` or Windows `COM` port | Not in download mode | Hold BOOT, tap RESET, release BOOT |

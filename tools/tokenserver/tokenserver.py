@@ -121,6 +121,8 @@ LIMITS_EVERY_S = 240  # rate-limit-proben: 15 anrop/h — kontots bucket delas
 AUTH_RECOVERY_EVERY_S = 15.0  # lokal tokenkontroll; ingen upstream vid väntan
                       # med Claude Code självt, och kvoten rör sig långsamt;
                       # panelens 30 s-pollar får ändå cachat svar direkt
+CLAUDE_PLAN_USAGE_FRESH_S = 20 * 60
+CLAUDE_PLAN_USAGE_MAX_BYTES = 2 * 1024 * 1024
 HTTP_MAX_WORKERS = 32
 JSON_BODY_TIMEOUT_S = 2.0
 
@@ -128,6 +130,7 @@ JSON_BODY_TIMEOUT_S = 2.0
 # konfiguration. Testerna patchar konstanten för att köra Windows-grenarna
 # på en Mac.
 _IS_WINDOWS = sys.platform == "win32"
+_claude_plan_usage_status = "not_checked"
 
 
 def _state_dir():
@@ -144,6 +147,90 @@ def _state_dir():
                 else Path.home() / "AppData" / "Local")
         return base / "VibePulse"
     return Path.home() / "Library" / "Application Support" / "VibePulse"
+
+
+def _claude_plan_usage_path():
+    """Claude Desktops lokala, innehållsfria planhistorik.
+
+    Filen ägs och uppdateras av den officiella klienten. Den innehåller bara
+    tid, organisation och procentsatser för femtimmars-/veckofönstret — inga
+    promptar, svar, kommandon eller OAuth-hemligheter.
+    """
+    if _IS_WINDOWS:
+        app_data = os.environ.get("APPDATA")
+        base = (Path(app_data) if app_data
+                else Path.home() / "AppData" / "Roaming")
+        return base / "Claude" / "plan-usage-history.json"
+    return (Path.home() / "Library" / "Application Support" / "Claude" /
+            "plan-usage-history.json")
+
+
+def _read_claude_plan_usage(path=None, now_ts=None):
+    """Returnera senaste strikta, färska lokala usageprovet eller ``None``.
+
+    Det här är en passiv reserv när åtkomsttokenen som tokenservern kan läsa
+    har gått ut men Claude Desktop fortfarande har en aktuell usagebild. Hela
+    filen är storleksbegränsad och den senaste posten valideras fail-closed;
+    rått organisations-id lämnar aldrig funktionen.
+    """
+    global _claude_plan_usage_status
+    usage_path = (_claude_plan_usage_path() if path is None else Path(path))
+    current_ts = time.time() if now_ts is None else now_ts
+    try:
+        size = usage_path.stat().st_size
+        if size <= 0 or size > CLAUDE_PLAN_USAGE_MAX_BYTES:
+            _claude_plan_usage_status = "invalid_size"
+            return None
+        payload = json.loads(usage_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        _claude_plan_usage_status = "missing"
+        return None
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _claude_plan_usage_status = "invalid"
+        return None
+
+    if (not isinstance(payload, dict) or payload.get("version") != 2 or
+            not isinstance(payload.get("samples"), list) or
+            not payload["samples"]):
+        _claude_plan_usage_status = "unsupported"
+        return None
+
+    samples = payload["samples"]
+    latest = samples[-1]
+    if not isinstance(latest, dict):
+        _claude_plan_usage_status = "invalid"
+        return None
+    timestamp_ms = latest.get("t")
+    org = latest.get("org")
+    usage = latest.get("u")
+    if (not isinstance(timestamp_ms, int) or isinstance(timestamp_ms, bool) or
+            timestamp_ms <= 0 or not isinstance(org, str) or
+            not 1 <= len(org.encode("utf-8")) <= 128 or
+            not isinstance(usage, dict)):
+        _claude_plan_usage_status = "invalid"
+        return None
+
+    values = []
+    for key in ("fh", "sd"):
+        value = usage.get(key)
+        if (not isinstance(value, (int, float)) or isinstance(value, bool) or
+                not math.isfinite(value) or not 0 <= value <= 100):
+            _claude_plan_usage_status = "invalid"
+            return None
+        values.append(round(float(value), 1))
+
+    observed_at = timestamp_ms / 1000
+    age_s = current_ts - observed_at
+    if age_s < -60 or age_s > CLAUDE_PLAN_USAGE_FRESH_S:
+        _claude_plan_usage_status = "stale"
+        return None
+
+    _claude_plan_usage_status = "fresh"
+    return {
+        "session_pct": values[0],
+        "week_pct": values[1],
+        "observed_at": int(observed_at),
+    }
 
 
 def _log_dir():
@@ -342,6 +429,44 @@ def _quota_identity(provider, scope, raw_identity=None):
     stable = "default-v1" if raw_identity is None else str(raw_identity)
     material = f"{provider}\0{scope}\0{stable}".encode("utf-8")
     return hashlib.sha256(material).hexdigest()
+
+
+def _merge_claude_plan_usage(claude, quota_cache, now_ts, path=None):
+    """Låt en färsk officiell lokal veckoprocent slå en äldre OAuthbild.
+
+    Den lokala filen saknar reset-tid och modellpool. Därför får den endast
+    komplettera den generella veckan när en fortfarande giltig, tidigare
+    autentiserad cachepost bär samma pools reset. Modellkvoten förblir ärligt
+    stale tills OAuth-proben återhämtar sig.
+    """
+    global _claude_plan_usage_status
+    local = _read_claude_plan_usage(path=path, now_ts=now_ts)
+    if local is None:
+        return claude
+
+    existing_at = claude.get("weekObservedAt")
+    if (isinstance(existing_at, (int, float)) and
+            not isinstance(existing_at, bool) and
+            math.isfinite(existing_at) and
+            existing_at >= local["observed_at"]):
+        _claude_plan_usage_status = "oauth_newer"
+        return claude
+
+    cached = quota_cache.latest("claude", "general_weekly", now=now_ts)
+    if cached is None or cached.reset_at <= now_ts:
+        _claude_plan_usage_status = "fresh_without_reset"
+        return claude
+
+    merged = dict(claude)
+    merged.update({
+        "weekPct": local["week_pct"],
+        "weekResetAt": cached.reset_at,
+        "weekResetMin": max(0, int(round((cached.reset_at - now_ts) / 60))),
+        "weekObservedAt": local["observed_at"],
+        "weekIdentity": cached.identity,
+    })
+    _claude_plan_usage_status = "fresh_applied"
+    return merged
 
 
 def _parse_file(path: Path, month_start: datetime, start_offset=0):
@@ -1883,11 +2008,12 @@ def get_snapshot(projects_dir: Path, history=None, now_ts=None,
 
     # null = ärlig frånvaro (nyckelring/probe/loggar otillgängliga) — skärmen
     # visar streck, aldrig hittade procent. Samma regel som sharePct.
-    claude = get_limits() or {}
-    codex = _read_codex_limits()
     current_ts = time.time() if now_ts is None else now_ts
     usage_history = _get_usage_history() if history is None else history
     cache = _get_quota_cache() if quota_cache is None else quota_cache
+    claude = _merge_claude_plan_usage(
+        get_limits() or {}, cache, current_ts)
+    codex = _read_codex_limits()
 
     session_pct = claude.get("sessionPct")
     session_reset_at = claude.get("sessionResetAt")
@@ -2571,6 +2697,7 @@ class Handler(BaseHTTPRequestHandler):
                            if self.github_monitor is not None
                            else disabled_snapshot()),
                 "claudeProbe": _probe_status,
+                "claudeLocalUsage": _claude_plan_usage_status,
                 "ratelimitHeaders": _probe_headers,
                 "unknownRateLimitBuckets": _probe_unknown_buckets,
                 # GET / parsas aldrig av skärmen — fält kan läggas till

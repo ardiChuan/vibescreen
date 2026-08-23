@@ -71,6 +71,108 @@ class _FakeUsageResponse:
         return json.dumps(self._payload).encode()
 
 
+class ClaudePlanUsageFallbackTests(unittest.TestCase):
+    NOW = 1_800_000_000
+
+    def _write(self, root, *, timestamp_ms=None, fh=7, sd=14,
+               version=2):
+        path = Path(root) / "plan-usage-history.json"
+        path.write_text(json.dumps({
+            "version": version,
+            "samples": [{
+                "t": (int(self.NOW * 1000) if timestamp_ms is None
+                      else timestamp_ms),
+                "org": "bounded-local-org-id",
+                "u": {"fh": fh, "sd": sd},
+            }],
+        }), encoding="utf-8")
+        return path
+
+    def test_reads_fresh_bounded_percentages_without_exposing_org(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parsed = tokenserver._read_claude_plan_usage(
+                self._write(temp_dir), now_ts=self.NOW)
+
+        self.assertEqual(parsed, {
+            "session_pct": 7.0,
+            "week_pct": 14.0,
+            "observed_at": self.NOW,
+        })
+        self.assertNotIn("org", parsed)
+
+    def test_rejects_stale_future_malformed_and_out_of_range_samples(self):
+        cases = (
+            ("stale", {"timestamp_ms": int(
+                (self.NOW - tokenserver.CLAUDE_PLAN_USAGE_FRESH_S - 1)
+                * 1000)}),
+            ("future", {"timestamp_ms": int((self.NOW + 61) * 1000)}),
+            ("bad-version", {"version": 3}),
+            ("bad-five-hour", {"fh": -1}),
+            ("bad-week", {"sd": 101}),
+        )
+        for name, kwargs in cases:
+            with self.subTest(name=name), \
+                    tempfile.TemporaryDirectory() as temp_dir:
+                parsed = tokenserver._read_claude_plan_usage(
+                    self._write(temp_dir, **kwargs), now_ts=self.NOW)
+                self.assertIsNone(parsed)
+
+    def test_windows_path_uses_roaming_application_data(self):
+        with mock.patch.object(tokenserver, "_IS_WINDOWS", True), \
+                mock.patch.dict(os.environ, {"APPDATA": r"C:\Users\n\AppData\Roaming"}):
+            path = tokenserver._claude_plan_usage_path()
+
+        self.assertEqual(
+            path,
+            Path(r"C:\Users\n\AppData\Roaming") / "Claude" /
+            "plan-usage-history.json")
+
+    def test_fresh_local_week_reuses_authenticated_reset_and_becomes_live(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = QuotaCache(Path(temp_dir) / "quota.json",
+                               now=lambda: self.NOW)
+            cache.put(CachedQuota(
+                provider="claude", scope="general_weekly",
+                identity="opaque-cache-identity", pct=13,
+                reset_at=self.NOW + 3600, observed_at=self.NOW - 300))
+            merged = tokenserver._merge_claude_plan_usage(
+                {}, cache, self.NOW, path=self._write(temp_dir))
+
+        self.assertEqual(merged["weekPct"], 14.0)
+        self.assertEqual(merged["weekResetAt"], self.NOW + 3600)
+        self.assertEqual(merged["weekObservedAt"], self.NOW)
+        self.assertEqual(merged["weekIdentity"], "opaque-cache-identity")
+        self.assertNotIn("modelPct", merged)
+        self.assertEqual(tokenserver._claude_plan_usage_status,
+                         "fresh_applied")
+
+    def test_newer_oauth_observation_wins_over_local_file(self):
+        oauth = {
+            "weekPct": 15.0,
+            "weekObservedAt": self.NOW + 1,
+            "modelPct": 10.0,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            merged = tokenserver._merge_claude_plan_usage(
+                oauth, mock.Mock(), self.NOW,
+                path=self._write(temp_dir))
+
+        self.assertIs(merged, oauth)
+        self.assertEqual(tokenserver._claude_plan_usage_status,
+                         "oauth_newer")
+
+    def test_fresh_file_without_authenticated_reset_does_not_invent_one(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = QuotaCache(Path(temp_dir) / "quota.json",
+                               now=lambda: self.NOW)
+            merged = tokenserver._merge_claude_plan_usage(
+                {}, cache, self.NOW, path=self._write(temp_dir))
+
+        self.assertEqual(merged, {})
+        self.assertEqual(tokenserver._claude_plan_usage_status,
+                         "fresh_without_reset")
+
+
 class ClaudeLimitHeaderTests(unittest.TestCase):
     def setUp(self):
         # Probelåset och straffrutefilen pekas om till en tempkatalog så
@@ -1617,6 +1719,34 @@ class UsageSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["claudeModelWeekObservedAt"], now_ts - 2)
         self.assertEqual(snapshot["codexWeekObservedAt"], now_ts - 1)
 
+    def test_snapshot_uses_fresh_local_claude_week_when_oauth_is_stale(self):
+        now_ts = 1_800_000_000
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = QuotaCache(Path(temp_dir) / "quota.json",
+                               now=lambda: now_ts)
+            cache.put(CachedQuota(
+                provider="claude", scope="general_weekly",
+                identity="opaque-cache-identity", pct=13,
+                reset_at=now_ts + 300 * 60, observed_at=now_ts - 300))
+            cache.put(CachedQuota(
+                provider="claude", scope="model_weekly",
+                identity="opaque-model-identity", pct=10,
+                reset_at=now_ts + 300 * 60, observed_at=now_ts - 300,
+                label="FABLE · WEEK"))
+            with mock.patch.object(
+                    tokenserver, "_read_claude_plan_usage",
+                    return_value={"session_pct": 7.0, "week_pct": 14.0,
+                                  "observed_at": now_ts - 1}), \
+                    mock.patch.object(
+                        tokenserver, "_persist_quota_records_async"):
+                snapshot = self._snapshot(
+                    StubHistory(), now_ts, claude={}, quota_cache=cache)
+
+        self.assertEqual(snapshot["claudeWeekPct"], 14.0)
+        self.assertFalse(snapshot["claudeWeekStale"])
+        self.assertEqual(snapshot["claudeWeekObservedAt"], now_ts - 1)
+        self.assertTrue(snapshot["claudeModelWeekStale"])
+
     def test_snapshot_flattens_collecting_and_exhaustion_states(self):
         now_ts = 1_800_000_000
         history = StubHistory({
@@ -2339,6 +2469,8 @@ class HandlerPrivacyTests(unittest.TestCase):
     def test_root_diagnostics_contain_names_but_no_header_values_or_body(self):
         handler = self._handler("/")
         with mock.patch.object(tokenserver, "_probe_status", "http_401"), \
+                mock.patch.object(tokenserver, "_claude_plan_usage_status",
+                                  "fresh_applied"), \
                 mock.patch.object(tokenserver, "_probe_headers", [
                     "anthropic-ratelimit-unified-7d-utilization"]), \
                 mock.patch.object(tokenserver, "_probe_unknown_buckets", [
@@ -2351,6 +2483,7 @@ class HandlerPrivacyTests(unittest.TestCase):
         self.assertEqual(payload["ratelimitHeaders"], [
             "anthropic-ratelimit-unified-7d-utilization"])
         self.assertEqual(payload["unknownRateLimitBuckets"], ["7d_haiku"])
+        self.assertEqual(payload["claudeLocalUsage"], "fresh_applied")
 
     def test_root_diagnostics_report_only_safe_interaction_switches(self):
         handler = self._handler("/")
