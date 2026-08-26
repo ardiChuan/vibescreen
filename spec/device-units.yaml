@@ -10,6 +10,6 @@ units:
     battery: not_fitted
     microsd: unknown
     antenna: onboard
-    installed_firmware: unknown-after-next-flash
-    last_physical_verification: "2026-08-06"
+    installed_firmware: v0.7.0-5-ge6feb29-dirty
+    last_physical_verification: "2026-08-27"
     secrets: false

@@ -138,6 +138,11 @@ WIFI_GLOBAL_BMPS = {
     for bars in range(4)
 }
 EXPECTED_BMPS.update(WIFI_GLOBAL_BMPS)
+WIFI_DRIFT_BMPS = {
+    f"torget-wifi-drift-{tag}.bmp"
+    for tag in ("0", "1", "2", "3", "return")
+}
+EXPECTED_BMPS.update(WIFI_DRIFT_BMPS)
 EXPECTED_PNGS = {
     f"{Path(name).stem.removeprefix('torget-')}.png"
     for name in EXPECTED_BMPS
@@ -211,7 +216,7 @@ class PreviewWiringTests(unittest.TestCase):
         self.assertIn("os.O_NOFOLLOW", self.script)
         self.assertIn("image.size != expected", self.script)
         self.assertIn("Preview directory:", self.script)
-        for name in EXPECTED_BMPS - WIFI_GLOBAL_BMPS:
+        for name in EXPECTED_BMPS - WIFI_GLOBAL_BMPS - WIFI_DRIFT_BMPS:
             with self.subTest(name=name):
                 self.assertIn(name, self.script)
         self.assertIn("wifi_global_surfaces", self.script)
@@ -220,6 +225,7 @@ class PreviewWiringTests(unittest.TestCase):
         self.assertIn('"needs-you"', self.script)
         self.assertIn('"companion"', self.script)
         self.assertIn('f"torget-wifi-global-{surface}-{bars}.bmp"', self.script)
+        self.assertIn('f"torget-wifi-drift-{tag}.bmp"', self.script)
 
     def test_simulator_uses_private_dir_nofollow_and_propagates_failures(self):
         self.assertIn('getenv("TORGET_CAPTURE_DIR")', self.sim)

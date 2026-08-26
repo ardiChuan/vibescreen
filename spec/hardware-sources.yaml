@@ -1,5 +1,19 @@
 schema_version: 1
 sources:
+  - id: torget-physical-2026-08-27-vibepulse
+    kind: physical-test
+    rank: 1
+    title: VibePulse Codex physical end-to-end findings for torget-home-01
+    publisher: Torget
+    locator: docs/superpowers/reviews/2026-08-27-vibepulse-codex-physical-end-to-end.md
+    revision: findings-2026-08-27; unit=torget-home-01; firmware=v0.7.0-5-ge6feb29-dirty
+    accessed: "2026-08-27"
+    board_revision: unknown
+    unit: torget-home-01
+    tests:
+      - vibepulse-codex-approve-roundtrip-2026-08-27
+      - localized-project-font-physical-render-2026-08-27
+
   - id: torget-physical-2026-08-06
     kind: physical-test
     rank: 1

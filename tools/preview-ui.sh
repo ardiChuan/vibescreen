@@ -204,6 +204,10 @@ expected_names.update(
     for surface in wifi_global_surfaces
     for bars in range(4)
 )
+expected_names.update(
+    f"torget-wifi-drift-{tag}.bmp"
+    for tag in ("0", "1", "2", "3", "return")
+)
 actual_names = {path.name for path in capture_dir.iterdir()}
 missing = sorted(expected_names - actual_names)
 unexpected = sorted(actual_names - expected_names)

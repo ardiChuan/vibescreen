@@ -164,6 +164,12 @@ mutating, secret-bearing, or text that does not fit stays on the computer;
 silence never means approval. Recommended questions are equally strict: Codex
 must mark one of two or three options itself. VibePulse never guesses.
 
+After a firmware or Codex-bridge change, use the canonical physical smoke test
+in [docs/agent-setup.md](docs/agent-setup.md#post-flash-physical-codex-smoke-test).
+A pass requires visible **APPROVE**, a real panel tap, and the matching answered
+result back in Codex. A waiting screen, timeout, **LEAVE IT**, or computer
+fallback is not a pass.
+
 ### Independent switches
 
 VibePulse is open source, so installing one part never silently enables
@@ -303,6 +309,13 @@ The computer must be on for fresh local data. It does not have to stay in the
 same house when a relay is enabled, but it does have to run the tokenserver so
 there is something to publish. A phone hotspot is fine after it has been taught
 to the panel; captive portals and 5 GHz-only networks are not.
+
+The startup/doctor health check also guards Claude's saved usage credential.
+`GET /` exposes only `claudeCredential.status` and whole minutes remaining—
+never an access or refresh token—and warns 30 minutes before expiry. This
+matters because Claude Desktop can remain logged in after the separate
+credential readable by VibePulse has aged out; stale Fable data is never
+reported as current.
 
 ## What you need
 

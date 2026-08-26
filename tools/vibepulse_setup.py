@@ -1507,7 +1507,58 @@ def _doctor(
             fixes = True
         else:
             print("PASS Tokenserver", file=stdout)
+            if config.claude_interactions and not _doctor_claude_quota(
+                    payload, stdout):
+                fixes = True
     return not fixes
+
+
+def _doctor_claude_quota(payload: dict, stdout) -> bool:
+    """Report the safe credential/probe guard published by tokenserver."""
+    credential = payload.get("claudeCredential")
+    probe = payload.get("claudeProbe")
+    if not isinstance(credential, dict):
+        print("FIX Claude quota credential: diagnostics are too old; "
+              "restart the VibePulse tokenserver", file=stdout)
+        return False
+
+    status = credential.get("status")
+    remaining = credential.get("expiresInMin")
+    if status == "ready" and isinstance(remaining, int) and remaining >= 0:
+        if probe == "usage_http_200 + ok":
+            print(f"PASS Claude quota credential: ready ({remaining} min "
+                  "remaining)", file=stdout)
+            return True
+        if probe == "not_run":
+            print("WAIT Claude quota probe: credential is ready but the "
+                  "first probe has not completed", file=stdout)
+            return False
+        print("FIX Claude quota probe: credential is ready but the usage "
+              "source is unavailable; see docs/agent-setup.md", file=stdout)
+        return False
+
+    if status == "expiring" and isinstance(remaining, int) and remaining >= 0:
+        print(f"FIX Claude quota credential: expires in {remaining} min; "
+              "start a new Claude Code CLI turn before then so its supported "
+              "client refreshes Keychain", file=stdout)
+        return False
+    if status == "expired":
+        print("FIX Claude quota credential: expired; login status alone is "
+              "not enough—start a new Claude Code CLI turn, then restart "
+              "the VibePulse tokenserver", file=stdout)
+        return False
+    if status == "unavailable":
+        print("FIX Claude quota credential: no supported Claude credential "
+              "was found on this computer", file=stdout)
+        return False
+    if status == "unknown":
+        print("FIX Claude quota credential: a process token exists but its "
+              "expiry cannot be guarded; sign in with Claude Code so the "
+              "supported credential store is populated", file=stdout)
+        return False
+
+    print("FIX Claude quota credential: invalid diagnostics", file=stdout)
+    return False
 
 
 def _resolve_executables(python, codex):

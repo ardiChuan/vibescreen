@@ -147,6 +147,19 @@ agentstatusen över LAN. VibePulse sparar högst en content-fri quotapunkt per
 endast tid, leverantör, fönster, procent och resetcykel. Se README:n där för
 kontrakt, integritetsgräns och autostart via launchd.
 
+Startup-/doctor-kontrollen bevakar också Claudes sparade usage-credential.
+`GET /` visar bara `claudeCredential.status` och hela minuter kvar—aldrig
+åtkomst- eller refresh-token—och varnar 30 minuter före utgång. Det behövs
+eftersom Claude Desktop kan fortsätta vara inloggad efter att den separata
+credential VibePulse får läsa har blivit för gammal; gammal Fable-data märks
+alltid som stale.
+
+Efter firmware- eller Codex-bridgeändringar ska den fysiska rökkontrollen i
+[agent-setup](docs/agent-setup.md#post-flash-physical-codex-smoke-test) köras.
+Godkänt kräver synlig **APPROVE**, ett verkligt tryck på panelen och samma svar
+tillbaka i Codex. Vänteskärm, timeout, **LEAVE IT** eller datorfallback räknas
+inte som godkänt och betyder aldrig ett tyst godkännande.
+
 ## Hårdvarufällorna
 
 Översikten finns i `spec/hardware.md`; capability-, source- och unitstatus

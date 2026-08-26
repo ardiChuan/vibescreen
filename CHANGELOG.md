@@ -5,6 +5,29 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ## Unreleased
 
+Release candidate notes:
+[v0.7.1 — health and panel reliability](docs/releases/2026-08-27-health-and-panel-reliability.md).
+
+### Added
+
+- Startup diagnostics now expose content-free Claude credential readiness and
+  recent physical panel polling. `doctor` and the host smoke check warn before
+  the readable credential expires and distinguish an authenticated client
+  from a live panel path without returning tokens or panel addresses.
+- A canonical Codex → panel → touch → Codex smoke test and recovery table now
+  cover missing recommendations, physical fit/privacy fallback, stale
+  worktree flashes, and font-glyph failures. Silence and computer fallback
+  remain failures, never implicit approval.
+
+### Changed
+
+- The VibePulse Codex plugin is `0.1.1`. Its skill carries the verified short
+  physical smoke payload and pre-flash version comparison so a fresh task does
+  not invent a longer, buttonless diagnostic prompt.
+- Relay publishing performs its first potentially expensive producer scan on
+  its background thread, allowing the local tokenserver to bind immediately
+  at login.
+
 ### Fixed
 
 - Claude's general weekly quota no longer goes stale merely because the OAuth
@@ -12,6 +35,15 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   A strict passive fallback reads only the official client's bounded local
   percentage history and reuses a still-valid authenticated reset; named
   Fable/Opus limits remain honestly stale until OAuth recovers.
+- Claude login state can no longer make startup health look green when the
+  separate credential readable by VibePulse is near expiry or already dead.
+  The root endpoint reports only `ready`, `expiring`, `expired`, `unavailable`,
+  or `unknown` plus whole minutes remaining; local recovery is rechecked every
+  15 seconds.
+- Mixed-case, numeric, and punctuated project names no longer render as boxes
+  on the Needs You attract screen. The label now uses the existing full-ASCII
+  `plex_ui_21` raster and is guarded by simulator and physical Swedish-copy
+  checks.
 
 ## v0.7.0 — 2026-08-23
 

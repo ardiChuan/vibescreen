@@ -43,6 +43,14 @@ After installation, open Codex, run `/hooks`, review the VibePulse
 **Start a new Codex task** so the hooks and MCP tool are freshly loaded. Doctor
 reports trust/setup problems but does not bypass review.
 
+The same doctor path reads a content-free Claude credential guard from
+`GET /`: `ready`, `expiring`, `expired`, `unavailable`, or `unknown`, plus
+whole minutes remaining when known. It warns 30 minutes before expiry and
+never returns or logs an access token, refresh token, account id, or Keychain
+body. A new Claude Code CLI turn is the supported refresh path; the service
+then detects the new local credential within 15 seconds without retrying a
+dead token upstream.
+
 The Codex safe-command tier only offers **ALLOW ONCE** for recognized
 read-only, test, and build commands. Unknown, mutating, secret-bearing, or
 truncated commands use the computer fallback. Questions do too unless Codex

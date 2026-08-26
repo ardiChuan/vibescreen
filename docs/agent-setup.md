@@ -178,7 +178,7 @@ readable OAuth copy is expired:
 | `usage_http_200 + ok` | Working. Limits parsed. | Nothing |
 | `not_run` | Probe has not fired yet | It runs every 120 s — wait |
 | `no_claude_oauth_token` | No Claude Desktop / Claude Code token found | Have them sign in to Claude Code on this computer |
-| `token_expired_…` | Token found but expired | The service rechecks every 15 s. `claudeLocalUsage: fresh_applied` can keep the general week live; re-authenticate only if the model week must recover too |
+| `token_expired_…` | Token found but expired; Claude may still say logged in because login state and the exported usage credential are different | The service rechecks locally every 15 s. `claudeLocalUsage: fresh_applied` can keep the general week live; for Fable, start a **new Claude Code CLI turn** and send one short message so Claude's supported client refreshes Keychain |
 | `usage_http_401` / `usage_http_403` | Every token source rejected (on macOS the probe tries Claude Desktop's process token, then the keychain, and falls back automatically; on Windows there is only `%USERPROFILE%\.claude\.credentials.json`) | Re-authenticate in Claude Code |
 | `usage_http_200 + no_mapped_limits` | Authenticated, but nothing in the usage response mapped (a `; fallback_…` suffix records the header-probe outcome) | Plan may not expose limits; Codex half still works |
 | `usage_request_failed: …` | Network/DNS failure from the computer | Check the computer's own connectivity |
@@ -187,6 +187,15 @@ readable OAuth copy is expired:
 
 Codex is read separately from its local app-server, so a bad `claudeProbe`
 never explains missing Codex numbers, and vice versa.
+
+Also read `claudeCredential` on the same `GET /` response. It contains only a
+safe status and whole minutes remaining—never either OAuth token. `expiring`
+starts 30 minutes before failure; `expired` is actionable even when
+`claude auth status` still says logged in. `python3 tools/vibepulse_setup.py
+doctor`, Codex `SessionStart`, and `python3 tools/tokenserver/smoke.py` all
+consume this guard. After Claude's supported client refreshes the credential,
+the service notices locally within 15 seconds; it does not call an
+undocumented refresh endpoint or mutate the refresh token itself.
 
 Then check the endpoints the screen polls:
 
@@ -372,6 +381,31 @@ On the glass: a tap opens the decision; APPROVE / DENY / LEAVE IT answer it; on
 the private screen a tap hands it to the terminal. KEY3 held ~1.5–3 s and
 released is the panic — deny everything parked; the 3 s hold still opens OTA.
 
+### Post-flash physical Codex smoke test
+
+After a firmware flash or a VibePulse/Codex setup change, send one exact short
+question through `mcp__vibepulse__ask`:
+
+- header `Test`
+- question `Ser du APPROVE?`
+- `Ja` — description `APPROVE syns` — recommended
+- `Nej` — description `APPROVE saknas`
+
+A pass requires all of the following: the panel opens the question, shows the
+recommended `Ja` card plus **APPROVE** and **LEAVE IT**, accepts the physical
+tap on **APPROVE**, and the waiting call returns `status: answered`,
+`option_index: 0`, `answer: Ja`. The non-recommended option stays on the
+computer by design. `DENY` is used for readable permission cards, not as the
+second button for a recommended question.
+
+Silence, timeout, **LEAVE IT**, panel absence, computer fallback, or a private
+**SOMETHING IS WAITING** screen without answer buttons is not a pass and never
+means approval. Before flashing, record `git describe --tags --always --dirty` from
+the exact build checkout and compare it with `otaAvailableVersion`; preview,
+test, build, and flash from that same checkout. The full verified evidence and
+recovery sequence is in
+[the 2026-08-27 physical review](superpowers/reviews/2026-08-27-vibepulse-codex-physical-end-to-end.md).
+
 ## When it does not work
 
 After the first USB flash, day-to-day updates go over the air — the full
@@ -387,6 +421,10 @@ workflow, consent model and troubleshooting live in [ota.md](ota.md).
 | `wifi-here.sh` cannot join the setup AP | The window is closed, or `TG_OTA_TOKEN` is missing so the password is random | Check the glass says WIFI SETUP; without a token run `TG_AP_PASS=<what the glass shows> tools/wifi-here.sh` |
 | Panel joined the venue WiFi but still shows dashes | Client isolation, or a captive portal the panel cannot pass | Not fixable on the device. Use the phone hotspot instead |
 | "This project has no OTA" / partitions.csv shows one factory partition | Reading a tree from before the OTA foundation (A/B slots + otadata + `components/torget_ota/`) | Check which branch/commit the checkout is on; read `partitions.csv` in THAT tree before concluding. OTA workflow: `tools/ota-flash.sh <ip>` + a 3 s KEY3 hold |
+| **UPDATE READY** appears immediately after USB flash | The flashed image is older than the advertised OTA build, often because it came from another worktree | Compare the booted version, `git describe --tags --always --dirty`, and `otaAvailableVersion`; rebuild and flash from the intended checkout |
+| A test question shows only **LEAVE IT** | The request has no single explicit recommendation | Use 2–3 short options and mark exactly one genuinely recommended option |
+| **SOMETHING IS WAITING** appears with no answer buttons | The question failed the physical fit/privacy gate | Finish on the computer. For a diagnostic only, use the canonical short smoke test above |
+| Letters become boxes in project/status text | The UI selected an uppercase-only font | Use `plex_ui_21` for mixed-case/localized text and verify with `RÄKSMÖRGÅS` |
 | Panel shows stale quota / empty Fable weekly in the morning | The readable OAuth copy expired/rejected, or an upstream 429 penalty is active | The general week can recover from Claude Desktops bounded local plan history; the named Fable/Opus pool still requires OAuth. Check both `claudeProbe` and `claudeLocalUsage` on `curl localhost:8737/` |
 | Panel shows stale while powered from the computer USB port | The Mac port cannot feed WiFi TX bursts — fetches time out | Expected on Mac USB; run from wall power. Logs stay valid on Mac USB, data does not |
 | OTA boots always show state 0xffffffff and the health gate always rests | `sdkconfig` generated before the rollback line landed in `sdkconfig.defaults` (defaults only apply on fresh generation) | `grep BOOTLOADER_APP_ROLLBACK sdkconfig` — set `=y`, rebuild, and USB-flash ONCE (the bootloader carries the logic; OTA never writes it) |

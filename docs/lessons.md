@@ -21,6 +21,33 @@ point at the backlog item.
 
 ---
 
+## 2026-08-27 · A green build from an old tree hid the panel test
+
+**What happened:** the panel first showed **UPDATE READY**, then questions with
+only **LEAVE IT** or a buttonless private screen, while localized project text
+contained boxes. **Root cause:** a valid but older worktree was flashed, the
+attract label used an uppercase-only font, and the diagnostic questions did
+not satisfy the one-recommendation/physical-fit contract. **The rule:**
+preview, test, build, and flash from one identified checkout, then verify the
+whole Codex → panel → touch → Codex round trip with one canonical short
+question. **Guards:** the post-flash smoke recipe in `docs/agent-setup.md`, the
+physical review dated 2026-08-27, plugin documentation assertions, and the
+hardware registry. **Watch for:** treating a successful build, a visible
+waiting screen, silence, or computer fallback as an end-to-end pass.
+
+## 2026-08-26 · Logged in did not mean the exported usage token was fresh
+
+**What happened:** Claude kept working all evening while Fable alone became
+stale; `claude auth status` still said logged in. **Root cause:** Claude
+Desktop's long-lived child retained a frozen process token, while the separate
+Keychain access token VibePulse can read expired at 21:52; the passive general
+week fallback masked the split. **The rule:** login state and an out-of-process
+usage credential are separate health dimensions, and expiry must be warned
+before the first failed request. **Guards:** content-free `claudeCredential`
+readiness on `GET /`, a 30-minute startup/doctor/smoke warning, 15-second local
+recovery checks, and honest stale rendering. **Watch for:** hidden keepalive
+prompts or undocumented refresh-token calls—neither is an acceptable fix.
+
 ## 2026-08-23 · Claude kept working after every readable token copy had died
 
 **What happened:** the panel showed Claude `STALE` while Claude Desktop was

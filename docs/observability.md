@@ -144,6 +144,11 @@ Returns live server state, added after real debugging nights:
   `usage_http_401`, `usage_http_429 + backoff_until_HH:MM`,
   `usage_request_failed: <Type>`, `probe_crashed: <Type>` (the probe
   itself hit a bug — the log has the traceback).
+- `claudeCredential` — the content-free pre-expiry guard for the saved Claude
+  Code credential: `ready`, `expiring`, `expired`, `unavailable`, or
+  `unknown`, plus whole `expiresInMin` when known. It never contains OAuth
+  token values or account data. Startup, doctor, and the smoke test warn 30
+  minutes before expiry instead of waiting for Fable to become stale.
 - `claudeLocalUsage` — the passive Claude Desktop fallback for the general
   week: `fresh_applied` means the official local plan history is newer than
   the readable OAuth copy and was combined with a still-valid authenticated
