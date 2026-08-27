@@ -2484,7 +2484,10 @@ class RelaySetupTests(unittest.TestCase):
             plugin.mkdir(parents=True)
             cache = base / "codex-marketplace-cache"
             cache.mkdir()
-            listing = plugin_listing(repo=repo, marketplace_root=cache)
+            # Hosted Windows runners may spell TEMP through an 8.3 alias;
+            # model the CLI's canonical emitted path, not tempfile's input.
+            listing = plugin_listing(
+                repo=repo, marketplace_root=cache.resolve())
             listing["installed"][0].update({
                 "version": "1.0.0",
                 "installPolicy": "project",
