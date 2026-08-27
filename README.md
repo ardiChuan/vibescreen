@@ -331,7 +331,9 @@ reported as current.
   that computer; the optional relays remove the same-WiFi requirement. The
   exact support/evidence boundary is maintained in
   **[Host platform support](docs/platform-support.md)**; Windows release
-  candidates use the reproducible
+  installation and recovery use the public
+  **[Windows host runbook](docs/windows-setup.md)**, while release candidates
+  use the reproducible
   **[Windows validation gate](docs/windows-validation.md)**.
 - **Claude Code and/or Codex.** Either alone is fine.
 - **2.4 GHz WiFi.** The ESP32-S3 can't see 5 GHz networks.
@@ -356,8 +358,9 @@ understand how the pieces fit together.
 ## Setup, the manual way
 
 The commands below show the macOS path. Windows is supported for the host
-service too; use the Windows ESP-IDF environment and the OS-specific host
-address/autostart steps in [the agent runbook](docs/agent-setup.md).
+service too; use the Windows ESP-IDF environment and the OS-specific
+[Windows host runbook](docs/windows-setup.md) for the standalone Codex CLI,
+host address, firewall, Task Scheduler, startup health, and recovery steps.
 
 1. Install [ESP-IDF 5.5](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/index.html)
    and `brew install cmake ninja`
@@ -652,7 +655,9 @@ by default; set `PYTHON_BIN` to point at a different 3.11+ interpreter.
   stdout/stderr to
   `%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log`; the server's
   rotation guard keeps one `.old` tail. Use `-ValidateOnly` to verify the
-  checkout and Python 3.11+ interpreter without changing Task Scheduler.
+  checkout and Python 3.11+ interpreter without changing Task Scheduler. The
+  complete install, hook-review, firewall, startup-health, physical-test, and
+  recovery procedure is the [Windows host runbook](docs/windows-setup.md).
 - **Linux for the tokenserver?** Not yet —
   [#2](https://github.com/niclasvestlund-YT/vibepulse/issues/2). The Ubuntu
   tokenserver CI lane is portability evidence, not a support claim: current

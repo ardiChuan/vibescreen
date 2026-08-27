@@ -214,7 +214,11 @@ assert "$LogCapBytes = 5MB" in windows_runner
 assert "$LogTailBytes = 256KB" in windows_runner
 assert "Write-VibePulseLogLine" in windows_runner
 assert "run-windows-task.ps1" in windows_service
-assert "-MultipleInstances StopExisting" in windows_service
+assert "-MultipleInstances IgnoreNew" in windows_service
+assert "Stop-ScheduledTask -TaskName $TaskName" in windows_service
+assert windows_service.index("New-ScheduledTaskSettingsSet") < \
+    windows_service.index("if ($ValidateOnly) {")
+assert "task objects: runtime construction passed" in windows_service
 assert "Validate the Windows Task Scheduler installer without installing" in ci
 assert ".\\tools\\tokenserver\\install-windows-task.ps1 -ValidateOnly" in ci
 assert ".\\test\\windows-task-runner.ps1" in ci

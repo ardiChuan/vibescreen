@@ -21,6 +21,35 @@ point at the backlog item.
 
 ---
 
+## 2026-08-27 · CI parsed a Task Scheduler value the real PC rejected
+
+**What happened:** the installer parsed and `-ValidateOnly` passed in CI, but
+the first real installation stopped before task registration. **Root cause:**
+`-MultipleInstances StopExisting` is valid in the Task Scheduler schema but
+is not a member of Windows 10's ScheduledTasks PowerShell enum, which exposes
+only `Parallel`, `Queue`, and `IgnoreNew`. **The rule:** parser success proves
+syntax, not runtime compatibility; every service definition needs a real-host
+install/update/start cycle. **Guards:** the installer now explicitly stops its
+own running task during an update and uses the broadly supported `IgnoreNew`
+policy; the boundary test locks both behaviors and the Windows release gate
+requires the real lifecycle. **Watch for:** parameters that exist in XML or
+newer documentation but not in the target OS module.
+
+## 2026-08-27 · A visible Windows Codex command was not a runnable CLI
+
+**What happened:** Codex worked in the Windows desktop app and `Get-Command`
+could resolve `codex`, but the VibePulse background read failed and a local
+wrapper reported that the CLI was missing. **Root cause:** Windows exposed a
+Store-managed `WindowsApps` alias that was not executable from the scheduled
+background context; Task Scheduler also inherits a smaller `PATH` than an
+interactive shell. **The rule:** Windows provider validation must execute the
+standalone CLI from its stable per-user path and prove the app-server quota
+read, not merely resolve a command name. **Guards:** executable discovery now
+prefers `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`, ignores
+`WindowsApps`, doctor tests execution, and the public Windows runbook separates
+desktop login, CLI execution, and fresh quota evidence. **Watch for:** wrappers
+or scheduled tasks that reintroduce interactive-`PATH` assumptions.
+
 ## 2026-08-27 · A green build from an old tree hid the panel test
 
 **What happened:** the panel first showed **UPDATE READY**, then questions with
