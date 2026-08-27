@@ -42,7 +42,6 @@ import os
 import queue
 import re
 import select
-import shutil
 import socket
 import stat
 import subprocess
@@ -69,6 +68,7 @@ except ImportError:  # macOS/Linux
 
 if __package__:
     from .agent_status import AgentStatusService
+    from .codex_command import resolve_codex_executable
     from .codex_interactions import (
         codex_permission_response,
         codex_question_result,
@@ -92,6 +92,7 @@ if __package__:
     from . import codex_usage, interactions, value_meter
 else:  # direktkörning: python3 tools/tokenserver/tokenserver.py
     from agent_status import AgentStatusService
+    from codex_command import resolve_codex_executable
     from codex_interactions import (
         codex_permission_response,
         codex_question_result,
@@ -1468,16 +1469,7 @@ def _parse_codex_rate_limits_response(body, observed_at, now_ts):
 
 
 def _codex_app_server_command():
-    executable = shutil.which("codex")
-    if executable:
-        return executable
-    for candidate in (
-        "/Applications/ChatGPT.app/Contents/Resources/codex",
-        "/Applications/Codex.app/Contents/Resources/codex",
-    ):
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    return None
+    return resolve_codex_executable()
 
 
 def _pump_lines(stream):

@@ -338,6 +338,23 @@ läser dess stdout; det gjordes förut med `select.select`, som på Windows
 bara tar sockets — aldrig pipes. Läsningen sker nu i en läsartråd med kö,
 samma kod på alla plattformar.
 
+Codex skrivbordsapp och Codex CLI är två olika installationsytor på Windows.
+Store-appens `codex`-alias kan synas för `Get-Command` men ändå nekas när en
+bakgrundsuppgift försöker starta det. Installera därför OpenAI:s fristående
+CLI en gång i PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+```
+
+Öppna därefter ett nytt PowerShell-fönster och verifiera `codex --version`.
+VibePulse föredrar installerarens stabila användarsökväg
+`%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe` framför `PATH` och
+ignorerar avsiktligt `WindowsApps`-alias. Kör
+`python tools\vibepulse_setup.py doctor` efter installationen; ett grönt
+`PASS Codex executable` betyder att samma körbara CLI kan användas av
+setupverktyget och tokenserverns app-serverläsning.
+
 Tillståndsfilerna (lås, probestatus, kvotcache, historik, max-spårare) bor
 under `%LOCALAPPDATA%\VibePulse\` i stället för macOS
 `~/Library/Application Support/VibePulse`. Sökvägarna fungerade bokstavligt

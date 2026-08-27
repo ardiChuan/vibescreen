@@ -640,8 +640,16 @@ by default; set `PYTHON_BIN` to point at a different 3.11+ interpreter.
   For autostart, run the shipped Task Scheduler installer from the repo root:
   `powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1`.
   It runs as your signed-in user, starts immediately, restarts on failure, and
-  keeps interaction-provider choices in the tokenserver's saved config. The
-  background task writes bounded stdout/stderr to
+  keeps interaction-provider choices in the tokenserver's saved config.
+  The Codex desktop app alone is not enough for the background quota read:
+  its Store-managed `codex` alias can resolve but still be denied by Windows.
+  Install OpenAI's standalone CLI once in PowerShell:
+  `powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"`.
+  VibePulse prefers its stable per-user executable under
+  `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` and ignores `WindowsApps`
+  aliases. Open a new PowerShell window, run `codex --version`, then rerun
+  `python tools\vibepulse_setup.py doctor`. The background task writes bounded
+  stdout/stderr to
   `%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log`; the server's
   rotation guard keeps one `.old` tail. Use `-ValidateOnly` to verify the
   checkout and Python 3.11+ interpreter without changing Task Scheduler.

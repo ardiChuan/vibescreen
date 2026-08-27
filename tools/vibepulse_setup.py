@@ -13,7 +13,6 @@ import re
 import secrets
 import selectors
 import signal
-import shutil
 import stat
 import subprocess
 import sys
@@ -35,6 +34,7 @@ from tokenserver.vibepulse_config import (  # noqa: E402
     load_config,
     save_config,
 )
+from tokenserver.codex_command import resolve_codex_executable  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1410,7 +1410,13 @@ def _doctor(
         print("OFF Codex executable: provider intentionally disabled",
               file=stdout)
     elif codex is None:
-        print("FIX Codex executable: install or expose codex on PATH", file=stdout)
+        if sys.platform == "win32":
+            print("FIX Codex executable: install the standalone Codex CLI; "
+                  "the Windows desktop app alias is not background-safe",
+                  file=stdout)
+        else:
+            print("FIX Codex executable: install or expose codex on PATH",
+                  file=stdout)
         fixes = True
     else:
         codex_ok = _codex_probe_ok(codex, run)
@@ -1565,7 +1571,7 @@ def _resolve_executables(python, codex):
     python_path = (Path(sys.executable) if python is _AUTO else
                    (None if python is None else Path(python)))
     if codex is _AUTO:
-        found = shutil.which("codex")
+        found = resolve_codex_executable()
         codex_path = Path(found) if found else None
     else:
         codex_path = None if codex is None else Path(codex)
