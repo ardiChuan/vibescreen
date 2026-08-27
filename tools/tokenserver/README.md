@@ -353,11 +353,12 @@ powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.
 Skriptet registrerar tjänsten för den inloggade användaren, startar den
 direkt och startar om den vid fel. Det bakar inte in Claude/Codex- eller
 detaljval i kommandoraden; samma sparade tokenserver-konfiguration används
-som vid manuell start. Uppgiften kör `pythonw.exe` och den nuvarande
-installationen omdirigerar inte stdout/stderr till en beständig fil. Kontrollera
-hälsan med `curl http://localhost:8737/`; kör tjänsten manuellt med
-`python.exe` i en terminal när du behöver felsökningsloggen. Avinstallera
-själva autostarten med:
+som vid manuell start. En dold PowerShell-wrapper kör den verifierade
+Python 3.11+-tolken och skriver stdout/stderr till
+`%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log`; loggen roteras vid
+cirka 5 MB med en `.old`-svans. Kontrollera hälsan med
+`curl http://localhost:8737/`. Kontrollera installeraren utan att röra
+Task Scheduler med `-ValidateOnly`. Avinstallera själva autostarten med:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1 -Uninstall

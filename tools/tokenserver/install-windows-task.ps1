@@ -20,9 +20,9 @@ Designval, i linje med resten av repot:
   läser %USERPROFILE%\.claude\.credentials.json — en SYSTEM-tjänst hade
   läst fel profil och dessutom gett processen mer rättigheter än den
   behöver.
-- pythonw.exe (inget konsolfönster). Den nuvarande uppgiften omdirigerar inte
-  stdout/stderr till en beständig fil. GET / är hälsokollen; kör servern med
-  python.exe i en terminal när en felsökningslogg behövs.
+- En dold PowerShell-wrapper kör python.exe och skriver en begränsad logg till
+  %LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log. En enda .old-fil
+  håller omstarter och lång drift från att växa utan gräns.
 - Interaction providers and detail are read from the tokenserver's saved config.
   Keep those choices out of the scheduled command so setup changes cannot go
   stale here. The optional publish arguments below are numbers-relay settings,
@@ -35,11 +35,52 @@ Designval, i linje med resten av repot:
 param(
     [string]$PublishUrl = "",
     [string]$PublishName = "",
+    [switch]$ValidateOnly,
     [switch]$Uninstall
 )
 
 $ErrorActionPreference = "Stop"
 $TaskName = "VibePulse tokenserver"
+
+if ($ValidateOnly -and $Uninstall) {
+    throw "-ValidateOnly and -Uninstall cannot be combined"
+}
+
+function Resolve-VibePulsePython {
+    # Task Scheduler inherits a much smaller PATH than an interactive shell.
+    # Resolve the real interpreter at install time and reject Python versions
+    # the tokenserver does not support instead of registering a task that can
+    # only fail after the next login.
+    $candidates = @()
+    $py = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($py) {
+        try {
+            $pyLauncher = $py.Source
+            $resolved = & $pyLauncher -3 -c `
+                "import sys; print(sys.executable if sys.version_info >= (3, 11) else '')"
+            if ($LASTEXITCODE -eq 0 -and $resolved) {
+                $candidates += $resolved.Trim()
+            }
+        } catch {
+            # Continue to explicit python.exe/python3.exe candidates.
+        }
+    }
+    foreach ($name in @("python.exe", "python3.exe")) {
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if ($command) { $candidates += $command.Source }
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        try {
+            & $candidate -c `
+                "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
+            if ($LASTEXITCODE -eq 0) { return $candidate }
+        } catch {
+            # Try the next candidate and fail once with one actionable message.
+        }
+    }
+    throw "VibePulse requires Python 3.11 or newer. Install it, reopen PowerShell, and rerun this installer."
+}
 
 if ($Uninstall) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
@@ -54,25 +95,41 @@ if ($Uninstall) {
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $Server = Join-Path $RepoRoot "tools\tokenserver\tokenserver.py"
 if (-not (Test-Path $Server)) { throw "hittar inte $Server" }
+$Runner = Join-Path $RepoRoot "tools\tokenserver\run-windows-task.ps1"
+if (-not (Test-Path $Runner)) { throw "hittar inte $Runner" }
 
-# pythonw = ingen konsol. Faller tillbaka till python.exe om pythonw
-# saknas (minimala installationer) — då syns ett fönster, men tjänsten kör.
-$Python = (Get-Command pythonw.exe -ErrorAction SilentlyContinue).Source
-if (-not $Python) { $Python = (Get-Command python.exe).Source }
+$PythonConsole = Resolve-VibePulsePython
+# Task Scheduler starts a hidden PowerShell wrapper. Keep python.exe rather
+# than pythonw.exe so stdout/stderr can be captured in the durable log.
+$PowerShell = (Get-Command powershell.exe -ErrorAction Stop).Source
 
-$ServerArgs = "`"$Server`""
-if ($PublishUrl) {
-    $ServerArgs += " --publish `"$PublishUrl`""
-    if ($PublishName) { $ServerArgs += " --publish-name `"$PublishName`"" }
+if ($ValidateOnly) {
+    $Version = & $PythonConsole -c `
+        "import sys; print('.'.join(map(str, sys.version_info[:3])))"
+    Write-Host "VibePulse Windows installer validation: OK"
+    Write-Host "  repo:    $RepoRoot"
+    Write-Host "  server:  $Server"
+    Write-Host "  runner:  $Runner"
+    Write-Host "  python:  $PythonConsole ($Version)"
+    Write-Host "  action:  no Task Scheduler changes were made"
+    exit 0
 }
 
-$Action = New-ScheduledTaskAction -Execute $Python -Argument $ServerArgs `
+$RunnerArgs = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass" +
+    " -File `"$Runner`" -Python `"$PythonConsole`" -Server `"$Server`""
+if ($PublishUrl) {
+    $RunnerArgs += " -PublishUrl `"$PublishUrl`""
+    if ($PublishName) { $RunnerArgs += " -PublishName `"$PublishName`"" }
+}
+
+$Action = New-ScheduledTaskAction -Execute $PowerShell -Argument $RunnerArgs `
     -WorkingDirectory $RepoRoot
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $Settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 5) `
-    -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
+    -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
+    -MultipleInstances StopExisting
 
 Register-ScheduledTask -TaskName $TaskName -Action $Action `
     -Trigger $Trigger -Settings $Settings -Force | Out-Null
@@ -82,5 +139,5 @@ Write-Host "Uppgiften '$TaskName' registrerad och startad."
 Write-Host "  server:  $Server"
 if ($PublishUrl) { Write-Host "  relä:    $PublishUrl" }
 Write-Host "  state:   $env:LOCALAPPDATA\VibePulse\"
-Write-Host "  logg:    ingen beständig bakgrundslogg; kör manuellt för felsökning"
+Write-Host "  logg:    $env:LOCALAPPDATA\VibePulse\Logs\torget-tokenserver.log"
 Write-Host "Verifiera:  curl http://localhost:8737/  (claudeProbe ska visa ok)"

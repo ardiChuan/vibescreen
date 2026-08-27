@@ -5,6 +5,26 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ## Unreleased
 
+### Added
+
+- A versioned host-platform support matrix and reproducible Windows release
+  gate now separate CI portability, real-host service evidence, and the
+  physical panel loop. Linux remains explicitly unsupported until its XDG,
+  credential, systemd, real-host, and panel gates pass.
+- The Windows Task Scheduler installer has a non-mutating `-ValidateOnly`
+  mode, rejects Python older than 3.11 before registration, and is parsed plus
+  dry-validated on every Windows CI run. The runner's stdout/stderr capture,
+  bounded rotation, and a path containing spaces plus non-ASCII characters
+  are exercised there as well.
+- Windows autostart now keeps a bounded diagnostic log under
+  `%LOCALAPPDATA%\VibePulse\Logs` instead of discarding stdout/stderr; provider
+  choices remain in the private saved config rather than the scheduled command.
+- Setup doctor no longer rejects a healthy Python 3.11+ interpreter because
+  of a cross-platform whitespace mismatch in its exact sentinel.
+- A security policy, contribution guide, and pull-request evidence checklist
+  document private reporting, secret handling, platform-claim discipline, and
+  the difference between CI, real-host, and physical-panel validation.
+
 ## v0.7.1 — 2026-08-27
 
 Release notes:

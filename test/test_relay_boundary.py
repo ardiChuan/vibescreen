@@ -25,8 +25,15 @@ tokenserver_readme = read("tools/tokenserver/README.md")
 interaction_guide = read("docs/interaction-relay.md")
 interaction_worker_readme = read("tools/interaction-relay/README.md")
 observability = read("docs/observability.md")
+platform_support = read("docs/platform-support.md")
+windows_validation = read("docs/windows-validation.md")
+windows_host_report = read(
+    "docs/superpowers/reviews/2026-08-27-windows-v0.7.1-read-only.md")
+ci = read(".github/workflows/ci.yml")
 mac_service = read("tools/tokenserver/se.torget.tokenserver.plist")
 windows_service = read("tools/tokenserver/install-windows-task.ps1")
+windows_runner = read("tools/tokenserver/run-windows-task.ps1")
+windows_runner_test = read("test/windows-task-runner.ps1")
 
 # --- What may cross: numbers -------------------------------------------
 for name in ("TK_TOKENS_RELAY_URL", "TK_MAX_TRACKER_RELAY_URL",
@@ -152,7 +159,8 @@ assert plist["ProgramArguments"] == [
     "/Users/niclasvestlund/Torget/.venv/bin/python", "-u", "tokenserver.py"
 ]
 for source, name in ((mac_service, "macOS launchd template"),
-                     (windows_service, "Windows Task Scheduler installer")):
+                     (windows_service, "Windows Task Scheduler installer"),
+                     (windows_runner, "Windows Task Scheduler runner")):
     for forbidden in ("--interactions", "--claude-interactions",
                       "--codex-interactions", "--interaction-detail",
                       "--legacy-claude-panel-v1"):
@@ -180,5 +188,43 @@ assert "install-windows-task.ps1" in tokenserver_readme, (
 )
 assert "What is missing is **autostart**" not in readme
 assert "Kvar på Windows: **autostart**" not in tokenserver_readme
+
+# Platform claims must stay narrower than the evidence. Windows has a real,
+# non-mutating installer gate; Ubuntu unit tests alone must never be promoted
+# to Linux support while #2's host/service work remains open.
+for required in (
+        "Automated evidence", "Real-host evidence", "Physical end to end",
+        "Windows", "Linux", "Not supported yet"):
+    assert required.lower() in platform_support.lower(), (
+        f"platform support matrix must explain {required}"
+    )
+for required in (
+        "-ValidateOnly", "Private", "Task Scheduler", "Ser du APPROVE?",
+        "Silence", "reboot"):
+    assert required.lower() in windows_validation.lower(), (
+        f"Windows release gate must include {required}"
+    )
+assert "[Host platform support](docs/platform-support.md)" in readme
+assert "[Windows validation gate](docs/windows-validation.md)" in readme
+assert "-ValidateOnly" in windows_service
+assert "no Task Scheduler changes were made" in windows_service
+assert "%LOCALAPPDATA%\\VibePulse\\Logs\\torget-tokenserver.log" in readme
+assert "torget-tokenserver.log" in windows_runner
+assert "$LogCapBytes = 5MB" in windows_runner
+assert "$LogTailBytes = 256KB" in windows_runner
+assert "Write-VibePulseLogLine" in windows_runner
+assert "run-windows-task.ps1" in windows_service
+assert "-MultipleInstances StopExisting" in windows_service
+assert "Validate the Windows Task Scheduler installer without installing" in ci
+assert ".\\tools\\tokenserver\\install-windows-task.ps1 -ValidateOnly" in ci
+assert ".\\test\\windows-task-runner.ps1" in ci
+assert "VibePulse runner å" in windows_runner_test
+assert "stdout was not captured" in windows_runner_test
+assert "stderr was not captured" in windows_runner_test
+assert "Ubuntu" in readme and "not a support claim" in readme
+assert "778 tests" in windows_host_report
+assert "Panel end to end | FAIL" in windows_host_report
+assert "Codex quota source | FAIL" in windows_host_report
+assert "No credential, token, account identifier" in windows_host_report
 
 print("OK: the numbers relay carries only numbers; activity uses a separate encrypted boundary")

@@ -1,7 +1,7 @@
 # Observability: every log this system generates
 
 VibePulse spans two machines — a screen with no persistent storage and a
-Python service on a Mac — and each produces evidence in a different place,
+Python service on a Mac or Windows PC — and each produces evidence in a different place,
 with a different lifetime, in a different language. This doc maps all of
 it: where each log lives, how long it survives, what a healthy one looks
 like, and a periodic **comb routine** for reading through them to catch
@@ -25,9 +25,9 @@ backlog IDs in parentheses track closing them.
 | # | Source | Where it lives | Survives |
 |---|--------|----------------|----------|
 | 1 | Firmware serial console | USB, only while a monitor is attached | nothing — not even a reboot |
-| 2 | Tokenserver stderr | terminal, or `~/Library/Logs/torget-tokenserver.log` under launchd | durable; self-rotated at ~5 MB (tail kept in `.old`) |
-| 3 | `GET /` diagnostic endpoint | `http://<mac>:8737/`, live state | process lifetime |
-| 4 | Server state files | `~/Library/Application Support/VibePulse/` | durable (8 d / 400 d retention) |
+| 2 | Tokenserver stderr | terminal; `~/Library/Logs/torget-tokenserver.log` under launchd; `%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log` under Task Scheduler | durable; self-rotated at ~5 MB (tail kept in `.old`) |
+| 3 | `GET /` diagnostic endpoint | `http://<host>:8737/`, live state | process lifetime |
+| 4 | Server state files | `~/Library/Application Support/VibePulse/` on macOS; `%LOCALAPPDATA%\VibePulse\` on Windows | durable (8 d / 400 d retention) |
 | 5 | The screen itself | dashes, `STALE`, `NO DATA` | live only |
 | 6 | CI logs | GitHub Actions | per-run |
 
@@ -117,6 +117,16 @@ elsewhere, launchd is silently running *different code than you're
 editing* — that exact trap cost an hour once and is why `GET /` reports
 `rev` ([lessons.md](lessons.md)) and why the smoke test compares it to
 your checkout.
+
+Under Task Scheduler, `install-windows-task.ps1` starts
+`run-windows-task.ps1`, which appends both streams to
+**`%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log`** as the signed-in
+user. The wrapper rotates an oversized file before Python starts; the
+tokenserver's own hourly identity-checked rotation guard keeps the running
+process bounded too. One `.old` file preserves the previous tail. The
+scheduled command contains the checkout/interpreter paths and optional
+numbers-relay URL, but provider/detail choices stay in the saved private
+configuration.
 
 Still invisible from the log: per-request keychain nuance (OBS-20) and
 the probe's backoff-streak value (OBS-18) — those live only on `GET /`
@@ -253,7 +263,7 @@ Verbatim strings worth grepping for, and what they mean:
 Run every week or two, and after any incident. Every step is a command
 plus a question; an agent asked to **"comb the logs"** follows this list
 top to bottom and reports findings against the backlog. With the
-tokenserver on the Mac and the board on its shelf, steps 1–5 need no
+tokenserver on the host computer and the board on its shelf, steps 1–5 need no
 hardware handling at all.
 
 Steps 1–4 are automated: **`python3 tools/tokenserver/smoke.py`** runs
@@ -270,16 +280,20 @@ the manual detail below is for interpreting what it flags — and steps
    `usage_http_200 + ok`. Anything else → the table in
    [agent-setup.md](agent-setup.md). `unknownRateLimitBuckets` non-empty
    → new upstream bucket, file a backlog item.
-3. **The log file.** `wc -c ~/Library/Logs/torget-tokenserver.log`
-   (missing file under launchd means the service never started).
+3. **The log file.** On macOS, `wc -c
+   ~/Library/Logs/torget-tokenserver.log`; on Windows inspect
+   `%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log`. A missing file
+   under launchd or Task Scheduler means the service never reached its
+   logging entrypoint.
    `grep -c serverar` — more than one per intended restart means
    crash-looping. `grep -n Traceback` — any hit is a bug; the `500 på`
    line above it names the route. `grep -c 'agent-status'` — a large
    count means a persistent throttled error has been repeating every
    30 s. `grep 'claude-probe:'` — the transition history: when did
    things break, when did they recover.
-4. **State files.** For each file in
-   `~/Library/Application Support/VibePulse/`: does it parse
+4. **State files.** For each file in the platform state directory
+   (`~/Library/Application Support/VibePulse/` on macOS or
+   `%LOCALAPPDATA%\VibePulse\` on Windows): does it parse
    (`python3 -m json.tool < f > /dev/null`)? Is the mtime recent for
    `usage-history.json` (should move every ≤15 min while you work)? Did
    `max-tracker.json` shrink dramatically since last comb (silent

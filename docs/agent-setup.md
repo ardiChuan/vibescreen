@@ -40,8 +40,8 @@ cannot determine yourself.
    from `%USERPROFILE%\.claude\.credentials.json` instead of the keychain,
    and state lives under `%LOCALAPPDATA%\VibePulse\`. The supplied
    `install-windows-task.ps1` adds autostart through Task Scheduler; its
-   current background task does not persist stdout/stderr, so use the root
-   health endpoint or run manually for diagnostic logs. On Linux
+   bounded diagnostic log lives at
+   `%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log`. On Linux
    the firmware still builds and the simulator still runs, but the service
    finds no Claude token at all — there is no keychain and the credential
    file is read only on Windows
@@ -183,7 +183,7 @@ readable OAuth copy is expired:
 | `usage_http_200 + no_mapped_limits` | Authenticated, but nothing in the usage response mapped (a `; fallback_…` suffix records the header-probe outcome) | Plan may not expose limits; Codex half still works |
 | `usage_request_failed: …` | Network/DNS failure from the computer | Check the computer's own connectivity |
 | `usage_http_429 + backoff_until_HH:MM` | Rate-limited by the API; the probe rests until the shown time | Wait — it retries by itself |
-| `probe_crashed: <Type>` | The probe itself hit a bug (crash before it could classify the failure) | Read `~/Library/Logs/torget-tokenserver.log` on macOS. On Windows, stop the background task and run the service in a terminal to capture stderr; worth filing |
+| `probe_crashed: <Type>` | The probe itself hit a bug (crash before it could classify the failure) | Read `~/Library/Logs/torget-tokenserver.log` on macOS or `%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log` on Windows; worth filing |
 
 Codex is read separately from its local app-server, so a bad `claudeProbe`
 never explains missing Codex numbers, and vice versa.

@@ -51,6 +51,11 @@ test. Silence and computer fallback are never treated as approval.
 · [Full changelog](CHANGELOG.md)
 · [Compare v0.7.0...v0.7.1](https://github.com/niclasvestlund-YT/vibepulse/compare/v0.7.0...v0.7.1)
 
+Contributing or validating another host? Read
+[CONTRIBUTING.md](CONTRIBUTING.md), the
+[host support matrix](docs/platform-support.md), and
+[SECURITY.md](SECURITY.md) before sharing logs or test evidence.
+
 ## What's on screen
 
 Six core pages, swipe or auto-rotate, plus the always-present value-multiple
@@ -323,7 +328,11 @@ reported as current.
   uses, so if you already own one you're 10 minutes away.
 - **A Mac or Windows PC** running the tokenserver. Claude and Codex quota
   collection are supported on both. Direct LAN mode needs the panel to reach
-  that computer; the optional relays remove the same-WiFi requirement.
+  that computer; the optional relays remove the same-WiFi requirement. The
+  exact support/evidence boundary is maintained in
+  **[Host platform support](docs/platform-support.md)**; Windows release
+  candidates use the reproducible
+  **[Windows validation gate](docs/windows-validation.md)**.
 - **Claude Code and/or Codex.** Either alone is fine.
 - **2.4 GHz WiFi.** The ESP32-S3 can't see 5 GHz networks.
 
@@ -632,12 +641,16 @@ by default; set `PYTHON_BIN` to point at a different 3.11+ interpreter.
   `powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1`.
   It runs as your signed-in user, starts immediately, restarts on failure, and
   keeps interaction-provider choices in the tokenserver's saved config. The
-  current background task does not persist stdout/stderr; use
-  `curl http://localhost:8737/` for health and run the service in a terminal
-  when you need a diagnostic log.
+  background task writes bounded stdout/stderr to
+  `%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log`; the server's
+  rotation guard keeps one `.old` tail. Use `-ValidateOnly` to verify the
+  checkout and Python 3.11+ interpreter without changing Task Scheduler.
 - **Linux for the tokenserver?** Not yet —
-  [#2](https://github.com/niclasvestlund-YT/vibepulse/issues/2);
-  contributions very welcome.
+  [#2](https://github.com/niclasvestlund-YT/vibepulse/issues/2). The Ubuntu
+  tokenserver CI lane is portability evidence, not a support claim: current
+  `main` still needs XDG paths, Linux credential selection, systemd user
+  service lifecycle, and a real-host + panel validation report. See
+  [Host platform support](docs/platform-support.md).
 - **Other boards or panel sizes?** Not yet. The platform is pinned to this
   exact panel so one pixel-perfect build stays pixel-perfect, but a port is
   a contained job (BSP, layout constants, fonts) —
