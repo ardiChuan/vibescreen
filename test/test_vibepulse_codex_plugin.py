@@ -744,6 +744,7 @@ class McpServerTests(unittest.TestCase):
         initialized = responses[0]["result"]
         self.assertEqual(initialized["protocolVersion"], "2025-06-18")
         self.assertEqual(initialized["serverInfo"]["name"], "vibepulse")
+        self.assertEqual(initialized["serverInfo"]["version"], "0.1.1")
         self.assertEqual(initialized["capabilities"], {"tools": {"listChanged": False}})
         self.assertEqual(responses[1]["result"], {})
         tools = responses[2]["result"]["tools"]
@@ -1198,7 +1199,7 @@ class PluginPackageTests(unittest.TestCase):
         self.assertRegex(
             manifest["version"], r"^(0|[1-9][0-9]*)\."
             r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
-        self.assertEqual(manifest["version"], "0.1.0")
+        self.assertEqual(manifest["version"], "0.1.1")
         self.assertEqual(manifest["author"]["name"], "Niclas Vestlund")
         self.assertNotIn("email", manifest["author"])
         self.assertEqual(manifest["license"], "MIT")
@@ -1268,6 +1269,45 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("python3 tools/vibepulse_setup.py status", body)
         self.assertIn("python3 tools/vibepulse_setup.py doctor", body)
         self.assertRegex(body.lower(), r"relay (?:is|remains) not enabled")
+        for physical_guard in (
+                "Ser du APPROVE?", "SOMETHING IS WAITING",
+                "status: answered", "option_index: 0",
+                "git describe --tags --always --dirty", "otaAvailableVersion"):
+            self.assertIn(physical_guard, body)
+
+    def test_physical_smoke_contract_and_failure_record_are_documented(self):
+        setup = (ROOT / "docs/agent-setup.md").read_text(encoding="utf-8")
+        review = (ROOT / "docs/superpowers/reviews/"
+                  "2026-08-27-vibepulse-codex-physical-end-to-end.md").read_text(
+                      encoding="utf-8")
+        lessons = (ROOT / "docs/lessons.md").read_text(encoding="utf-8")
+
+        for text in (setup, review):
+            for contract in (
+                    "Ser du APPROVE?", "APPROVE syns", "APPROVE saknas",
+                    "status: answered", "option_index: 0", "answer: Ja",
+                    "SOMETHING IS WAITING", "computer fallback",
+                    "git describe --tags --always --dirty", "otaAvailableVersion"):
+                self.assertIn(contract, text)
+        self.assertIn("v0.7.0-5-ge6feb29-dirty", review)
+        self.assertIn("A green build from an old tree hid the panel test",
+                      lessons)
+
+    def test_v071_release_candidate_is_upgradeable_safe_and_evidence_backed(self):
+        release = (ROOT / "docs/releases/"
+                   "2026-08-27-health-and-panel-reliability.md").read_text(
+                       encoding="utf-8")
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        for required in (
+                "VibePulse v0.7.1", "30 minutes", "every 15 seconds",
+                "Ser du APPROVE?", "status: answered", "option_index: 0",
+                "restart the tokenserver", "vibepulse@torget",
+                "python3 tools/vibepulse_setup.py install",
+                "green CI", "source-only", "Do not attach `torget.bin`"):
+            self.assertIn(required, release)
+        self.assertIn("v0.7.1 — health and panel reliability", changelog)
+        self.assertIn("plugin is `0.1.1`", changelog)
+        self.assertNotIn("## v0.7.1 —", changelog)
 
     def test_default_runner_invokes_plugin_suite_once(self):
         runner = (ROOT / "test/run.sh").read_text(encoding="utf-8")

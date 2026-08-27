@@ -111,8 +111,8 @@ capabilities:
       board_wired: "yes"
       bsp_support: "yes"
       firmware_enabled: "yes"
-      unit_verified: unknown
-    confidence: source_inspected
+      unit_verified: "yes"
+    confidence: measured
     resources:
       - "shared I2C port 1 at 400 kHz"
       - "GPIO14 SCL"
@@ -131,12 +131,17 @@ capabilities:
       - waveshare-cst9217-driver-1.0.0
       - waveshare-board-docs-2026-08-10
       - torget-main-1fad449
+      - torget-physical-2026-08-27-vibepulse
     evidence:
       - {field: soc_capable, value: "yes", source: waveshare-schematic-2026-08-10}
       - {field: board_wired, value: "yes", source: waveshare-schematic-2026-08-10}
       - {field: bsp_support, value: "yes", source: waveshare-bsp-2.0.1}
       - {field: firmware_enabled, value: "yes", source: torget-main-1fad449}
-    last_verified: "2026-08-10"
+      - {field: unit_verified, value: "yes", source: torget-physical-2026-08-27-vibepulse}
+    last_verified: "2026-08-27"
+    verification:
+      unit: torget-home-01
+      test: vibepulse-codex-approve-roundtrip-2026-08-27
 
   - id: radio.wifi-24
     name: 2.4 GHz 802.11 b/g/n Wi-Fi

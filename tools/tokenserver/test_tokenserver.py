@@ -71,6 +71,108 @@ class _FakeUsageResponse:
         return json.dumps(self._payload).encode()
 
 
+class ClaudePlanUsageFallbackTests(unittest.TestCase):
+    NOW = 1_800_000_000
+
+    def _write(self, root, *, timestamp_ms=None, fh=7, sd=14,
+               version=2):
+        path = Path(root) / "plan-usage-history.json"
+        path.write_text(json.dumps({
+            "version": version,
+            "samples": [{
+                "t": (int(self.NOW * 1000) if timestamp_ms is None
+                      else timestamp_ms),
+                "org": "bounded-local-org-id",
+                "u": {"fh": fh, "sd": sd},
+            }],
+        }), encoding="utf-8")
+        return path
+
+    def test_reads_fresh_bounded_percentages_without_exposing_org(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parsed = tokenserver._read_claude_plan_usage(
+                self._write(temp_dir), now_ts=self.NOW)
+
+        self.assertEqual(parsed, {
+            "session_pct": 7.0,
+            "week_pct": 14.0,
+            "observed_at": self.NOW,
+        })
+        self.assertNotIn("org", parsed)
+
+    def test_rejects_stale_future_malformed_and_out_of_range_samples(self):
+        cases = (
+            ("stale", {"timestamp_ms": int(
+                (self.NOW - tokenserver.CLAUDE_PLAN_USAGE_FRESH_S - 1)
+                * 1000)}),
+            ("future", {"timestamp_ms": int((self.NOW + 61) * 1000)}),
+            ("bad-version", {"version": 3}),
+            ("bad-five-hour", {"fh": -1}),
+            ("bad-week", {"sd": 101}),
+        )
+        for name, kwargs in cases:
+            with self.subTest(name=name), \
+                    tempfile.TemporaryDirectory() as temp_dir:
+                parsed = tokenserver._read_claude_plan_usage(
+                    self._write(temp_dir, **kwargs), now_ts=self.NOW)
+                self.assertIsNone(parsed)
+
+    def test_windows_path_uses_roaming_application_data(self):
+        with mock.patch.object(tokenserver, "_IS_WINDOWS", True), \
+                mock.patch.dict(os.environ, {"APPDATA": r"C:\Users\n\AppData\Roaming"}):
+            path = tokenserver._claude_plan_usage_path()
+
+        self.assertEqual(
+            path,
+            Path(r"C:\Users\n\AppData\Roaming") / "Claude" /
+            "plan-usage-history.json")
+
+    def test_fresh_local_week_reuses_authenticated_reset_and_becomes_live(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = QuotaCache(Path(temp_dir) / "quota.json",
+                               now=lambda: self.NOW)
+            cache.put(CachedQuota(
+                provider="claude", scope="general_weekly",
+                identity="opaque-cache-identity", pct=13,
+                reset_at=self.NOW + 3600, observed_at=self.NOW - 300))
+            merged = tokenserver._merge_claude_plan_usage(
+                {}, cache, self.NOW, path=self._write(temp_dir))
+
+        self.assertEqual(merged["weekPct"], 14.0)
+        self.assertEqual(merged["weekResetAt"], self.NOW + 3600)
+        self.assertEqual(merged["weekObservedAt"], self.NOW)
+        self.assertEqual(merged["weekIdentity"], "opaque-cache-identity")
+        self.assertNotIn("modelPct", merged)
+        self.assertEqual(tokenserver._claude_plan_usage_status,
+                         "fresh_applied")
+
+    def test_newer_oauth_observation_wins_over_local_file(self):
+        oauth = {
+            "weekPct": 15.0,
+            "weekObservedAt": self.NOW + 1,
+            "modelPct": 10.0,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            merged = tokenserver._merge_claude_plan_usage(
+                oauth, mock.Mock(), self.NOW,
+                path=self._write(temp_dir))
+
+        self.assertIs(merged, oauth)
+        self.assertEqual(tokenserver._claude_plan_usage_status,
+                         "oauth_newer")
+
+    def test_fresh_file_without_authenticated_reset_does_not_invent_one(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = QuotaCache(Path(temp_dir) / "quota.json",
+                               now=lambda: self.NOW)
+            merged = tokenserver._merge_claude_plan_usage(
+                {}, cache, self.NOW, path=self._write(temp_dir))
+
+        self.assertEqual(merged, {})
+        self.assertEqual(tokenserver._claude_plan_usage_status,
+                         "fresh_without_reset")
+
+
 class ClaudeLimitHeaderTests(unittest.TestCase):
     def setUp(self):
         # Probelåset och straffrutefilen pekas om till en tempkatalog så
@@ -268,6 +370,27 @@ class ClaudeLimitHeaderTests(unittest.TestCase):
 
         self.assertEqual(
             candidates, [("standalone-token", 1_900_000_000_000)])
+
+    def test_credential_snapshot_warns_before_expiry_without_exposing_token(self):
+        now = 1_800_000_000
+        cases = (
+            ([], {"status": "unavailable"}),
+            ([("process-secret", None)], {"status": "unknown"}),
+            ([("ready-secret", (now + 31 * 60) * 1000)],
+             {"status": "ready", "expiresInMin": 31}),
+            ([("expiring-secret", (now + 20 * 60) * 1000)],
+             {"status": "expiring", "expiresInMin": 20}),
+            ([("expired-secret", (now - 60) * 1000)],
+             {"status": "expired", "expiresInMin": 0}),
+        )
+        for candidates, expected in cases:
+            with self.subTest(expected=expected):
+                snapshot = tokenserver._oauth_credential_snapshot(
+                    candidates, now_s=now)
+                self.assertEqual(snapshot, expected)
+                serialized = json.dumps(snapshot)
+                for token, _expiry in candidates:
+                    self.assertNotIn(token, serialized)
 
     def test_windows_reads_the_credentials_file_claude_login_writes(self):
         """Windows har ingen nyckelring — `claude login` skriver samma
@@ -1617,6 +1740,34 @@ class UsageSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["claudeModelWeekObservedAt"], now_ts - 2)
         self.assertEqual(snapshot["codexWeekObservedAt"], now_ts - 1)
 
+    def test_snapshot_uses_fresh_local_claude_week_when_oauth_is_stale(self):
+        now_ts = 1_800_000_000
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = QuotaCache(Path(temp_dir) / "quota.json",
+                               now=lambda: now_ts)
+            cache.put(CachedQuota(
+                provider="claude", scope="general_weekly",
+                identity="opaque-cache-identity", pct=13,
+                reset_at=now_ts + 300 * 60, observed_at=now_ts - 300))
+            cache.put(CachedQuota(
+                provider="claude", scope="model_weekly",
+                identity="opaque-model-identity", pct=10,
+                reset_at=now_ts + 300 * 60, observed_at=now_ts - 300,
+                label="FABLE · WEEK"))
+            with mock.patch.object(
+                    tokenserver, "_read_claude_plan_usage",
+                    return_value={"session_pct": 7.0, "week_pct": 14.0,
+                                  "observed_at": now_ts - 1}), \
+                    mock.patch.object(
+                        tokenserver, "_persist_quota_records_async"):
+                snapshot = self._snapshot(
+                    StubHistory(), now_ts, claude={}, quota_cache=cache)
+
+        self.assertEqual(snapshot["claudeWeekPct"], 14.0)
+        self.assertFalse(snapshot["claudeWeekStale"])
+        self.assertEqual(snapshot["claudeWeekObservedAt"], now_ts - 1)
+        self.assertTrue(snapshot["claudeModelWeekStale"])
+
     def test_snapshot_flattens_collecting_and_exhaustion_states(self):
         now_ts = 1_800_000_000
         history = StubHistory({
@@ -2339,6 +2490,10 @@ class HandlerPrivacyTests(unittest.TestCase):
     def test_root_diagnostics_contain_names_but_no_header_values_or_body(self):
         handler = self._handler("/")
         with mock.patch.object(tokenserver, "_probe_status", "http_401"), \
+                mock.patch.object(tokenserver, "_claude_plan_usage_status",
+                                  "fresh_applied"), \
+                mock.patch.object(tokenserver, "_claude_credential", {
+                    "status": "expiring", "expiresInMin": 17}), \
                 mock.patch.object(tokenserver, "_probe_headers", [
                     "anthropic-ratelimit-unified-7d-utilization"]), \
                 mock.patch.object(tokenserver, "_probe_unknown_buckets", [
@@ -2351,6 +2506,9 @@ class HandlerPrivacyTests(unittest.TestCase):
         self.assertEqual(payload["ratelimitHeaders"], [
             "anthropic-ratelimit-unified-7d-utilization"])
         self.assertEqual(payload["unknownRateLimitBuckets"], ["7d_haiku"])
+        self.assertEqual(payload["claudeLocalUsage"], "fresh_applied")
+        self.assertEqual(payload["claudeCredential"], {
+            "status": "expiring", "expiresInMin": 17})
 
     def test_root_diagnostics_report_only_safe_interaction_switches(self):
         handler = self._handler("/")
@@ -2363,6 +2521,11 @@ class HandlerPrivacyTests(unittest.TestCase):
             getattr(tokenserver.Handler, "interaction_relay_reason", None),
             getattr(tokenserver.Handler, "agent_status_relay_status", "off"),
             getattr(tokenserver.Handler, "agent_status_relay_reason", None),
+            tokenserver.Handler.panel_poll_candidate_host,
+            tokenserver.Handler.panel_poll_candidate_at,
+            tokenserver.Handler.panel_poll_candidate_count,
+            tokenserver.Handler.panel_last_seen_at,
+            tokenserver.Handler.panel_last_seen_route,
         )
         self.addCleanup(setattr, tokenserver.Handler,
                         "claude_interactions", saved[0])
@@ -2380,6 +2543,16 @@ class HandlerPrivacyTests(unittest.TestCase):
                         "agent_status_relay_status", saved[6])
         self.addCleanup(setattr, tokenserver.Handler,
                         "agent_status_relay_reason", saved[7])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "panel_poll_candidate_host", saved[8])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "panel_poll_candidate_at", saved[9])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "panel_poll_candidate_count", saved[10])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "panel_last_seen_at", saved[11])
+        self.addCleanup(setattr, tokenserver.Handler,
+                        "panel_last_seen_route", saved[12])
         tokenserver.Handler.claude_interactions = False
         tokenserver.Handler.codex_interactions = True
         tokenserver.Handler.interaction_detail = True
@@ -2388,6 +2561,11 @@ class HandlerPrivacyTests(unittest.TestCase):
         tokenserver.Handler.interaction_relay_reason = None
         tokenserver.Handler.agent_status_relay_status = "off"
         tokenserver.Handler.agent_status_relay_reason = None
+        tokenserver.Handler.panel_poll_candidate_host = None
+        tokenserver.Handler.panel_poll_candidate_at = None
+        tokenserver.Handler.panel_poll_candidate_count = 0
+        tokenserver.Handler.panel_last_seen_at = None
+        tokenserver.Handler.panel_last_seen_route = None
 
         handler.do_GET()
 
@@ -2399,6 +2577,7 @@ class HandlerPrivacyTests(unittest.TestCase):
             "legacyClaudePanelV1": True,
             "relay": {"status": "off"},
             "agentStatusRelay": {"status": "off"},
+            "panel": {"status": "waiting"},
             "transport": "lan",
         })
         serialized = json.dumps(payload["interactions"])
@@ -2430,6 +2609,71 @@ class HandlerPrivacyTests(unittest.TestCase):
         self.assertEqual(disabled["transport"], "lan")
 
 
+class PanelStartupHealthTests(unittest.TestCase):
+    def setUp(self):
+        self.cls = tokenserver.Handler
+        self.saved = (
+            self.cls.panel_poll_candidate_host,
+            self.cls.panel_poll_candidate_at,
+            self.cls.panel_poll_candidate_count,
+            self.cls.panel_last_seen_at,
+            self.cls.panel_last_seen_route,
+        )
+        self.cls.panel_poll_candidate_host = None
+        self.cls.panel_poll_candidate_at = None
+        self.cls.panel_poll_candidate_count = 0
+        self.cls.panel_last_seen_at = None
+        self.cls.panel_last_seen_route = None
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        (self.cls.panel_poll_candidate_host,
+         self.cls.panel_poll_candidate_at,
+         self.cls.panel_poll_candidate_count,
+         self.cls.panel_last_seen_at,
+         self.cls.panel_last_seen_route) = self.saved
+
+    @staticmethod
+    def _handler(host):
+        handler = tokenserver.Handler.__new__(tokenserver.Handler)
+        handler.client_address = (host, 12345)
+        handler.path = "/api/agent-status"
+        return handler
+
+    def test_two_close_panel_polls_turn_health_ready_without_exposing_ip(self):
+        handler = self._handler("192.0.2.40")
+        with mock.patch.object(tokenserver.time, "monotonic",
+                               side_effect=(100.0, 101.0, 102.0, 103.0)):
+            handler._record_panel_poll()
+            self.assertEqual(handler._panel_health_snapshot(), {
+                "status": "waiting"})
+            with self.assertLogs("tokenserver", level="INFO") as captured:
+                handler._record_panel_poll()
+            snapshot = handler._panel_health_snapshot()
+        self.assertEqual(snapshot, {
+            "status": "ready", "ageS": 1,
+            "route": "/api/agent-status"})
+        self.assertIn("panelkontakt READY", "\n".join(captured.output))
+        self.assertNotIn("192.0.2.40", json.dumps(snapshot))
+
+    def test_loopback_or_one_lan_request_cannot_claim_panel_ready(self):
+        loopback = self._handler("127.0.0.1")
+        lan = self._handler("192.0.2.41")
+        with mock.patch.object(tokenserver.time, "monotonic",
+                               side_effect=(100.0, 101.0, 102.0)):
+            loopback._record_panel_poll()
+            lan._record_panel_poll()
+            snapshot = lan._panel_health_snapshot()
+        self.assertEqual(snapshot, {"status": "waiting"})
+
+    def test_recent_proof_expires_instead_of_staying_green(self):
+        self.cls.panel_last_seen_at = 100.0
+        self.cls.panel_last_seen_route = "/api/tokens"
+        with mock.patch.object(tokenserver.time, "monotonic", return_value=116.0):
+            self.assertEqual(self.cls._panel_health_snapshot(), {
+                "status": "stale", "ageS": 16, "route": "/api/tokens"})
+
+
 class HandlerErrorLoggingTests(unittest.TestCase):
     """500-kontraktet plus loggning: felen ska synas lokalt, aldrig på LAN:et,
     och en försvunnen klient är inte ett serverfel."""
@@ -2439,7 +2683,7 @@ class HandlerErrorLoggingTests(unittest.TestCase):
         handler.path = path
         handler.projects_dir = Path("/private/source/path")
         handler.agent_status = mock.Mock()
-        handler.client_address = ("192.0.2.10", 4711)
+        handler.client_address = ("127.0.0.1", 4711)
         handler._send = mock.Mock()
         return handler
 

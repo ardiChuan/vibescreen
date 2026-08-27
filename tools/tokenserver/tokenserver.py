@@ -121,6 +121,9 @@ LIMITS_EVERY_S = 240  # rate-limit-proben: 15 anrop/h — kontots bucket delas
 AUTH_RECOVERY_EVERY_S = 15.0  # lokal tokenkontroll; ingen upstream vid väntan
                       # med Claude Code självt, och kvoten rör sig långsamt;
                       # panelens 30 s-pollar får ändå cachat svar direkt
+CLAUDE_CREDENTIAL_WARNING_S = 30 * 60
+CLAUDE_PLAN_USAGE_FRESH_S = 20 * 60
+CLAUDE_PLAN_USAGE_MAX_BYTES = 2 * 1024 * 1024
 HTTP_MAX_WORKERS = 32
 JSON_BODY_TIMEOUT_S = 2.0
 
@@ -128,6 +131,7 @@ JSON_BODY_TIMEOUT_S = 2.0
 # konfiguration. Testerna patchar konstanten för att köra Windows-grenarna
 # på en Mac.
 _IS_WINDOWS = sys.platform == "win32"
+_claude_plan_usage_status = "not_checked"
 
 
 def _state_dir():
@@ -144,6 +148,90 @@ def _state_dir():
                 else Path.home() / "AppData" / "Local")
         return base / "VibePulse"
     return Path.home() / "Library" / "Application Support" / "VibePulse"
+
+
+def _claude_plan_usage_path():
+    """Claude Desktops lokala, innehållsfria planhistorik.
+
+    Filen ägs och uppdateras av den officiella klienten. Den innehåller bara
+    tid, organisation och procentsatser för femtimmars-/veckofönstret — inga
+    promptar, svar, kommandon eller OAuth-hemligheter.
+    """
+    if _IS_WINDOWS:
+        app_data = os.environ.get("APPDATA")
+        base = (Path(app_data) if app_data
+                else Path.home() / "AppData" / "Roaming")
+        return base / "Claude" / "plan-usage-history.json"
+    return (Path.home() / "Library" / "Application Support" / "Claude" /
+            "plan-usage-history.json")
+
+
+def _read_claude_plan_usage(path=None, now_ts=None):
+    """Returnera senaste strikta, färska lokala usageprovet eller ``None``.
+
+    Det här är en passiv reserv när åtkomsttokenen som tokenservern kan läsa
+    har gått ut men Claude Desktop fortfarande har en aktuell usagebild. Hela
+    filen är storleksbegränsad och den senaste posten valideras fail-closed;
+    rått organisations-id lämnar aldrig funktionen.
+    """
+    global _claude_plan_usage_status
+    usage_path = (_claude_plan_usage_path() if path is None else Path(path))
+    current_ts = time.time() if now_ts is None else now_ts
+    try:
+        size = usage_path.stat().st_size
+        if size <= 0 or size > CLAUDE_PLAN_USAGE_MAX_BYTES:
+            _claude_plan_usage_status = "invalid_size"
+            return None
+        payload = json.loads(usage_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        _claude_plan_usage_status = "missing"
+        return None
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _claude_plan_usage_status = "invalid"
+        return None
+
+    if (not isinstance(payload, dict) or payload.get("version") != 2 or
+            not isinstance(payload.get("samples"), list) or
+            not payload["samples"]):
+        _claude_plan_usage_status = "unsupported"
+        return None
+
+    samples = payload["samples"]
+    latest = samples[-1]
+    if not isinstance(latest, dict):
+        _claude_plan_usage_status = "invalid"
+        return None
+    timestamp_ms = latest.get("t")
+    org = latest.get("org")
+    usage = latest.get("u")
+    if (not isinstance(timestamp_ms, int) or isinstance(timestamp_ms, bool) or
+            timestamp_ms <= 0 or not isinstance(org, str) or
+            not 1 <= len(org.encode("utf-8")) <= 128 or
+            not isinstance(usage, dict)):
+        _claude_plan_usage_status = "invalid"
+        return None
+
+    values = []
+    for key in ("fh", "sd"):
+        value = usage.get(key)
+        if (not isinstance(value, (int, float)) or isinstance(value, bool) or
+                not math.isfinite(value) or not 0 <= value <= 100):
+            _claude_plan_usage_status = "invalid"
+            return None
+        values.append(round(float(value), 1))
+
+    observed_at = timestamp_ms / 1000
+    age_s = current_ts - observed_at
+    if age_s < -60 or age_s > CLAUDE_PLAN_USAGE_FRESH_S:
+        _claude_plan_usage_status = "stale"
+        return None
+
+    _claude_plan_usage_status = "fresh"
+    return {
+        "session_pct": values[0],
+        "week_pct": values[1],
+        "observed_at": int(observed_at),
+    }
 
 
 def _log_dir():
@@ -344,6 +432,44 @@ def _quota_identity(provider, scope, raw_identity=None):
     return hashlib.sha256(material).hexdigest()
 
 
+def _merge_claude_plan_usage(claude, quota_cache, now_ts, path=None):
+    """Låt en färsk officiell lokal veckoprocent slå en äldre OAuthbild.
+
+    Den lokala filen saknar reset-tid och modellpool. Därför får den endast
+    komplettera den generella veckan när en fortfarande giltig, tidigare
+    autentiserad cachepost bär samma pools reset. Modellkvoten förblir ärligt
+    stale tills OAuth-proben återhämtar sig.
+    """
+    global _claude_plan_usage_status
+    local = _read_claude_plan_usage(path=path, now_ts=now_ts)
+    if local is None:
+        return claude
+
+    existing_at = claude.get("weekObservedAt")
+    if (isinstance(existing_at, (int, float)) and
+            not isinstance(existing_at, bool) and
+            math.isfinite(existing_at) and
+            existing_at >= local["observed_at"]):
+        _claude_plan_usage_status = "oauth_newer"
+        return claude
+
+    cached = quota_cache.latest("claude", "general_weekly", now=now_ts)
+    if cached is None or cached.reset_at <= now_ts:
+        _claude_plan_usage_status = "fresh_without_reset"
+        return claude
+
+    merged = dict(claude)
+    merged.update({
+        "weekPct": local["week_pct"],
+        "weekResetAt": cached.reset_at,
+        "weekResetMin": max(0, int(round((cached.reset_at - now_ts) / 60))),
+        "weekObservedAt": local["observed_at"],
+        "weekIdentity": cached.identity,
+    })
+    _claude_plan_usage_status = "fresh_applied"
+    return merged
+
+
 def _parse_file(path: Path, month_start: datetime, start_offset=0):
     """Parse complete usage rows from ``start_offset`` and return new offset."""
     records = []
@@ -542,6 +668,9 @@ _probe_unknown_buckets = []
 _probe_cooldown_until = 0.0
 _probe_failure_streak = 0
 _probe_status_logged = None  # senast loggade status — övergångar loggas, tillstånd inte
+# Content-free credential readiness captured on the probe thread. GET / must
+# never reread Keychain synchronously: startup health has a sub-second budget.
+_claude_credential = {"status": "unknown"}
 # Döda tokens (värde → orsak): en kandidat som fått 401/403 skickas ALDRIG
 # igen. Det var mönstret bakom 429-straffrutan: nyckelringstokenen dog på
 # natten och Desktops frusna processtoken hamrade API:t varje probecykel i
@@ -670,6 +799,30 @@ def _read_oauth_candidates():
     if keychain_token and keychain_token != process_token:
         candidates.append((keychain_token, expires_at))
     return candidates
+
+
+def _oauth_credential_snapshot(candidates, now_s=None):
+    """Return saved-credential expiry readiness without exposing tokens."""
+    if not candidates:
+        return {"status": "unavailable"}
+    expiries = []
+    for _token, raw_expiry in candidates:
+        try:
+            expiry_s = float(raw_expiry) / 1000
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(expiry_s) and expiry_s > 0:
+            expiries.append(expiry_s)
+    if not expiries:
+        return {"status": "unknown"}
+
+    remaining_s = max(expiries) - (time.time() if now_s is None else now_s)
+    if remaining_s <= 0:
+        return {"status": "expired", "expiresInMin": 0}
+    remaining_min = max(1, int(math.ceil(remaining_s / 60)))
+    status = ("expiring" if remaining_s <= CLAUDE_CREDENTIAL_WARNING_S
+              else "ready")
+    return {"status": status, "expiresInMin": remaining_min}
 
 
 def _parse_reset_minutes(value: str, now_ts: float):
@@ -973,8 +1126,9 @@ def _probe_limits():
 
 def _probe_limits_locked():
     global _probe_status, _probe_headers, _probe_unknown_buckets, \
-        _probe_cooldown_until
+        _probe_cooldown_until, _claude_credential
     candidates = _read_oauth_candidates()
+    _claude_credential = _oauth_credential_snapshot(candidates)
     if not candidates:
         _probe_status = "no_claude_oauth_token"
         return None
@@ -1883,11 +2037,12 @@ def get_snapshot(projects_dir: Path, history=None, now_ts=None,
 
     # null = ärlig frånvaro (nyckelring/probe/loggar otillgängliga) — skärmen
     # visar streck, aldrig hittade procent. Samma regel som sharePct.
-    claude = get_limits() or {}
-    codex = _read_codex_limits()
     current_ts = time.time() if now_ts is None else now_ts
     usage_history = _get_usage_history() if history is None else history
     cache = _get_quota_cache() if quota_cache is None else quota_cache
+    claude = _merge_claude_plan_usage(
+        get_limits() or {}, cache, current_ts)
+    codex = _read_codex_limits()
 
     session_pct = claude.get("sessionPct")
     session_reset_at = claude.get("sessionResetAt")
@@ -2114,6 +2269,19 @@ class Handler(BaseHTTPRequestHandler):
     interaction_relay_reason = None
     agent_status_relay_status = "off"
     agent_status_relay_reason = None
+    # Innehållsfritt närvarobevis för startup-hälsan. Den befintliga panelen
+    # pollar /api/agent-status varje sekund. Två kända panel-GET från samma
+    # icke-loopback-klient inom ett kort fönster är starkare evidens än en
+    # ensam curl. Kandidatadressen hålls bara i processminnet och returneras
+    # eller loggas aldrig.
+    panel_poll_lock = threading.Lock()
+    panel_poll_candidate_host = None
+    panel_poll_candidate_at = None
+    panel_poll_candidate_count = 0
+    panel_last_seen_at = None
+    panel_last_seen_route = None
+    panel_confirm_window_s = 10.0
+    panel_fresh_s = 15.0
     json_body_timeout_s = JSON_BODY_TIMEOUT_S
 
     def _send(self, code, payload):
@@ -2151,6 +2319,52 @@ class Handler(BaseHTTPRequestHandler):
         mapped = getattr(address, "ipv4_mapped", None)
         return bool(mapped.is_loopback if mapped is not None
                     else address.is_loopback)
+
+    def _record_panel_poll(self):
+        """Confirm a live panel without trusting one anonymous LAN request."""
+        if not getattr(self, "client_address", None):
+            return
+        if self._is_loopback():
+            return
+        host = self.client_address[0] if self.client_address else None
+        if not isinstance(host, str) or not host:
+            return
+        now = time.monotonic()
+        cls = type(self)
+        became_ready = False
+        with cls.panel_poll_lock:
+            if (cls.panel_poll_candidate_host == host and
+                    cls.panel_poll_candidate_at is not None and
+                    now - cls.panel_poll_candidate_at <=
+                    cls.panel_confirm_window_s):
+                cls.panel_poll_candidate_count += 1
+            else:
+                cls.panel_poll_candidate_host = host
+                cls.panel_poll_candidate_count = 1
+            cls.panel_poll_candidate_at = now
+            if cls.panel_poll_candidate_count >= 2:
+                was_fresh = (cls.panel_last_seen_at is not None and
+                             now - cls.panel_last_seen_at <= cls.panel_fresh_s)
+                cls.panel_last_seen_at = now
+                cls.panel_last_seen_route = self.path
+                became_ready = not was_fresh
+        if became_ready:
+            log.info("startup-health: panelkontakt READY via %s", self.path)
+
+    @classmethod
+    def _panel_health_snapshot(cls):
+        now = time.monotonic()
+        with cls.panel_poll_lock:
+            seen = cls.panel_last_seen_at
+            route = cls.panel_last_seen_route
+        if seen is None:
+            return {"status": "waiting"}
+        age_s = max(0, int(now - seen))
+        return {
+            "status": "ready" if age_s <= cls.panel_fresh_s else "stale",
+            "ageS": age_s,
+            "route": route,
+        }
 
     def _header_values(self, name):
         get_all = getattr(self.headers, "get_all", None)
@@ -2536,6 +2750,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
     def do_GET(self):
+        if self.path in ("/api/tokens", "/api/agent-status",
+                         "/api/max-tracker", "/api/github"):
+            self._record_panel_poll()
         if self.path == "/api/tokens":
             self._reply(lambda: get_snapshot(
                 self.projects_dir,
@@ -2571,6 +2788,8 @@ class Handler(BaseHTTPRequestHandler):
                            if self.github_monitor is not None
                            else disabled_snapshot()),
                 "claudeProbe": _probe_status,
+                "claudeCredential": dict(_claude_credential),
+                "claudeLocalUsage": _claude_plan_usage_status,
                 "ratelimitHeaders": _probe_headers,
                 "unknownRateLimitBuckets": _probe_unknown_buckets,
                 # GET / parsas aldrig av skärmen — fält kan läggas till
@@ -2597,6 +2816,7 @@ class Handler(BaseHTTPRequestHandler):
                            if self.agent_status_relay_reason is not None
                            else {}),
                     }),
+                    "panel": self._panel_health_snapshot(),
                     "transport": (
                         "lan+encrypted-relay"
                         if (self.interaction_relay_status == "ready" or

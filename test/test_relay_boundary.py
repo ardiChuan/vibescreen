@@ -149,7 +149,7 @@ assert "default n" in status_option.split("endmenu", 1)[0]
 # do not belong in a visible, stale process command line.
 plist = plistlib.loads(mac_service.encode("utf-8"))
 assert plist["ProgramArguments"] == [
-    "/usr/bin/python3", "-u", "tokenserver.py"
+    "/Users/niclasvestlund/Torget/.venv/bin/python", "-u", "tokenserver.py"
 ]
 for source, name in ((mac_service, "macOS launchd template"),
                      (windows_service, "Windows Task Scheduler installer")):

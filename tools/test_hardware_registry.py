@@ -888,7 +888,7 @@ class RepositoryRegistryTests(unittest.TestCase):
         }
         self.assertEqual(
             verified_ids,
-            {"display.amoled", "radio.wifi-24"},
+            {"display.amoled", "touch.controller", "radio.wifi-24"},
         )
         for capability_id in verified_ids:
             with self.subTest(capability=capability_id):
@@ -902,7 +902,12 @@ class RepositoryRegistryTests(unittest.TestCase):
                     finding["source"] for finding in capability["evidence"]
                     if finding["field"] == "unit_verified"
                 }
-                self.assertEqual(sources, {"torget-physical-2026-08-06"})
+                expected_source = (
+                    "torget-physical-2026-08-27-vibepulse"
+                    if capability_id == "touch.controller"
+                    else "torget-physical-2026-08-06"
+                )
+                self.assertEqual(sources, {expected_source})
 
     def test_repository_required_truth_distinctions(self):
         registry = self.load_repository_registry()
@@ -984,6 +989,15 @@ class RepositoryRegistryTests(unittest.TestCase):
             "wifi-channel-13-scan-and-connect-2026-08-06",
         ])
 
+        vibepulse = registry.sources[
+            "torget-physical-2026-08-27-vibepulse"
+        ]
+        self.assertEqual(vibepulse.get("unit"), "torget-home-01")
+        self.assertEqual(vibepulse.get("tests"), [
+            "vibepulse-codex-approve-roundtrip-2026-08-27",
+            "localized-project-font-physical-render-2026-08-27",
+        ])
+
     def test_repository_firmware_source_records_buddy_companion(self):
         registry = self.load_repository_registry()
         source = registry.sources["torget-main-1fad449"]
@@ -1014,7 +1028,7 @@ class RepositoryRegistryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             result.stdout,
-            "OK: 30 capabilities, 9 sources, 1 units\n",
+            "OK: 30 capabilities, 10 sources, 1 units\n",
         )
 
     def test_repository_registry_loads(self):
@@ -1082,6 +1096,11 @@ class RepositoryRegistryTests(unittest.TestCase):
                 self.assertTrue(expected_fields.issubset(evidenced_fields))
 
         expected_sources = {
+            "torget-physical-2026-08-27-vibepulse": (
+                "physical-test", 1,
+                "findings-2026-08-27; unit=torget-home-01; "
+                "firmware=v0.7.0-5-ge6feb29-dirty",
+            ),
             "torget-physical-2026-08-06": (
                 "physical-test", 1,
                 "findings-2026-08-06; unit=torget-home-01",
@@ -1134,7 +1153,7 @@ class RepositoryRegistryTests(unittest.TestCase):
             registry.capabilities["touch.controller"]["states"][
                 "unit_verified"
             ],
-            "unknown",
+            "yes",
         )
         self.assertEqual(
             registry.capabilities["audio.speaker-output"]["states"][
@@ -1172,7 +1191,7 @@ class RepositoryRegistryTests(unittest.TestCase):
             "battery": "not_fitted",
             "microsd": "unknown",
             "antenna": "onboard",
-            "installed_firmware": "unknown-after-next-flash",
-            "last_physical_verification": "2026-08-06",
+            "installed_firmware": "v0.7.0-5-ge6feb29-dirty",
+            "last_physical_verification": "2026-08-27",
             "secrets": False,
         })
