@@ -59,7 +59,7 @@ _CODEX_VERSION = re.compile(
     r"\A(?:codex|codex-cli) [0-9]+\.[0-9]+\.[0-9]+"
     r"(?:-[0-9A-Za-z.-]+)?\n?\Z")
 _PYTHON_PROBE = (
-    "import sys; print('vibepulse-python-3.11+' "
+    "import sys; print('vibepulse-python-3.11+'"
     "if sys.version_info >= (3, 11) else 'unsupported')")
 
 

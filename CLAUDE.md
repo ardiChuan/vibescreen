@@ -33,7 +33,7 @@ authorization for the physical install.
 periodic comb routine — follow it when asked to comb, audit, or investigate
 logs or odd behavior. Findings go to `docs/observability-backlog.md`. Read
 `docs/lessons.md` before touching pollers, parsers, staleness logic, or the
-launchd setup: most sharp edges here have a story, and fixes with a
+host-service setup: most sharp edges here have a story, and fixes with a
 root-cause story add an entry there.
 
 ## Hardware-aware work

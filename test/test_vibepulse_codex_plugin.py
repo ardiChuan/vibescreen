@@ -1346,6 +1346,17 @@ class PluginPackageTests(unittest.TestCase):
 
 
 class SetupPlanTests(unittest.TestCase):
+    def test_real_python_probe_has_the_exact_cross_platform_sentinel(self):
+        """A stray space made healthy Python 3.12 fail doctor on Windows."""
+        setup = load_setup()
+        completed = subprocess.run(
+            [sys.executable, "-c", setup._PYTHON_PROBE],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, "vibepulse-python-3.11+\n")
+        self.assertEqual(completed.stderr, "")
+
     def test_disable_preserves_unrelated_switches_and_clears_legacy_with_claude(self):
         setup = load_setup()
         saved = setup.VibePulseConfig(

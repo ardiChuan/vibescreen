@@ -24,7 +24,7 @@ Designsystemet: **spec/ui-spec.md**. Hårdvarusanningen routas under
 `Hardware-aware work` nedan; läs den kanoniska femfilslistan där före
 hårdvaruarbete.
 
-## Status (2026-08-23, v0.7.0)
+## Status (2026-08-27, v0.7.1)
 
 Plattformen bröts ut ur underhållarens tidigare solcells-firmware (den
 historiken ligger i ett privat repo och är inget du behöver) och stöptes om
@@ -100,7 +100,7 @@ tokenserver stdout/launchd file, `GET /` diagnostics, state files, the screen
 itself) and contains the periodic comb routine — follow it when asked to
 comb, audit, or investigate logs or odd behavior. Findings go to
 `docs/observability-backlog.md`. Read `docs/lessons.md` before touching
-pollers, parsers, staleness logic, or the launchd setup; fixes with a
+pollers, parsers, staleness logic, or the host-service setup; fixes with a
 root-cause story add an entry there.
 
 ## Hårdvarufällorna i kortform (detaljer i spec/hardware.md)
