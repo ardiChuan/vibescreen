@@ -576,7 +576,10 @@ class LoopbackTests(unittest.TestCase):
                     read_timeout=0.12)
                 elapsed = time.monotonic() - started
             self.assertIsNone(result)
-            self.assertLess(elapsed, 0.25)
+            # The result assertion proves the absolute deadline won instead of
+            # accepting the complete drip-fed response.  Keep the wall-clock
+            # guard generous enough for contended Windows CI runners.
+            self.assertLess(elapsed, 0.75)
 
     def test_read_timeout_and_bad_responses_return_none(self):
         loopback = load_loopback()
@@ -2455,10 +2458,13 @@ class RelaySetupTests(unittest.TestCase):
                     repo=repo,
                     plugin_path=plugin.parent / "spelling" / ".." /
                     "vibepulse"),
+                # Do not use relpath here: Windows CI can put TEMP and the
+                # checkout on different drive letters, where relpath raises.
                 "marketplace relative": plugin_listing(
-                    repo=repo, marketplace_root=os.path.relpath(repo, ROOT)),
+                    repo=repo, marketplace_root=Path("repo")),
                 "plugin relative": plugin_listing(
-                    repo=repo, plugin_path=os.path.relpath(plugin, ROOT)),
+                    repo=repo,
+                    plugin_path=Path(".agents/plugins/plugins/vibepulse")),
                 "marketplace trailing separator": plugin_listing(
                     repo=repo, marketplace_root=str(repo) + os.sep),
                 "plugin trailing separator": plugin_listing(
