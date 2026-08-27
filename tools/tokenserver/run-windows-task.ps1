@@ -10,6 +10,8 @@ param(
     [string]$Python,
     [Parameter(Mandatory = $true)]
     [string]$Server,
+    [string]$CodexBinDir = "",
+    [string]$CodexHome = "",
     [string]$PublishUrl = "",
     [string]$PublishName = ""
 )
@@ -23,6 +25,21 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $Server -PathType Leaf)) {
     throw "VibePulse tokenserver is missing: $Server"
+}
+if ($CodexBinDir) {
+    $Codex = Join-Path $CodexBinDir "codex.exe"
+    $CodexCmd = Join-Path $CodexBinDir "codex.cmd"
+    if (-not (Test-Path -LiteralPath $Codex -PathType Leaf) -and
+            -not (Test-Path -LiteralPath $CodexCmd -PathType Leaf)) {
+        throw "VibePulse Codex bin directory is invalid"
+    }
+    $env:Path = $CodexBinDir + [IO.Path]::PathSeparator + $env:Path
+}
+if ($CodexHome) {
+    if (-not (Test-Path -LiteralPath $CodexHome -PathType Container)) {
+        throw "VibePulse Codex home directory is invalid"
+    }
+    $env:CODEX_HOME = $CodexHome
 }
 
 $LocalAppData = $env:LOCALAPPDATA
@@ -95,7 +112,12 @@ try {
     $ExitCode = $LASTEXITCODE
     $ErrorActionPreference = $PreviousErrorActionPreference
     if ($null -eq $ExitCode) { $ExitCode = 1 }
-    exit $ExitCode
+    # A force-stopped Windows child commonly reports -1, which PowerShell
+    # forwards as 0xFFFFFFFF. Task Scheduler does not reliably apply
+    # RestartOnFailure to that sentinel. Normalize every native failure to
+    # the conventional process exit code 1.
+    if ($ExitCode -ne 0) { exit 1 }
+    exit 0
 } catch {
     $ErrorActionPreference = "Stop"
     $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"

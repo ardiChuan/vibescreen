@@ -21,19 +21,32 @@ point at the backlog item.
 
 ---
 
-## 2026-08-27 · CI parsed a Task Scheduler value the real PC rejected
+## 2026-08-27 · Windows boundaries disagreed with portable-looking tests
 
-**What happened:** the installer parsed and `-ValidateOnly` passed in CI, but
-the first real installation stopped before task registration. **Root cause:**
-`-MultipleInstances StopExisting` is valid in the Task Scheduler schema but
-is not a member of Windows 10's ScheduledTasks PowerShell enum, which exposes
-only `Parallel`, `Queue`, and `IgnoreNew`. **The rule:** parser success proves
-syntax, not runtime compatibility; every service definition needs a real-host
-install/update/start cycle. **Guards:** the installer now explicitly stops its
-own running task during an update and uses the broadly supported `IgnoreNew`
-policy; the boundary test locks both behaviors and the Windows release gate
-requires the real lifecycle. **Watch for:** parameters that exist in XML or
-newer documentation but not in the target OS module.
+**What happened:** setup doctor rejected Python 3.12, Unicode hook JSON used
+the active Windows code page, and the task installer passed parser validation
+but failed before registration. **Root cause:** the production reader preserved
+`\r\n`, text-mode hook output inherited a code page, and the Task Scheduler
+XML value `StopExisting` was passed to a PowerShell cmdlet that only accepts
+`Parallel`, `Queue`, or `IgnoreNew`; its restart count was also 999
+although the schema limit is 255. **The rule:** test machine protocols through
+the production boundary on every claimed host OS, write explicit UTF-8, and
+keep scheduler values inside the XML schema even if a cmdlet accepts more.
+Execute non-mutating object construction in `-ValidateOnly`. **Guards:**
+Windows setup integration CI, strict LF/CRLF and Unicode tests, three-script
+parsing, runner tests, portable task settings, and a real forced-process
+restart. Native failures are normalized to exit 1 because Task Scheduler did
+not retry the long-lived action reliably even after PowerShell's forwarded
+`-1`/`0xFFFFFFFF` was normalized. A five-minute repeating trigger is the
+explicit watchdog; `IgnoreNew` prevents duplicates while healthy. **Watch
+for:** schema values PowerShell omits or fails to constrain, and assuming
+RestartOnFailure covers a successfully started long-lived action on every
+Windows release. Task Scheduler also has a smaller PATH than an interactive
+shell, so the installer verifies the optional Codex executable and passes only
+its bin directory to the wrapper. Its service can also retain a pre-login
+environment snapshot, so an existing custom `CODEX_HOME` is passed explicitly
+to the child without changing it. Never infer background CLI readiness from the
+installer's interactive environment alone.
 
 ## 2026-08-27 · A visible Windows Codex command was not a runnable CLI
 

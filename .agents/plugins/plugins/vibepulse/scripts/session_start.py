@@ -37,8 +37,11 @@ def main():
         }}
         if len(CONTEXT) > 1400:
             return 0
-        sys.stdout.write(json.dumps(
-            result, ensure_ascii=False, separators=(",", ":")) + "\n")
+        encoded = (json.dumps(
+            result, ensure_ascii=False, separators=(",", ":")) +
+            "\n").encode("utf-8")
+        sys.stdout.buffer.write(encoded)
+        sys.stdout.buffer.flush()
     except Exception:
         pass
     return 0
