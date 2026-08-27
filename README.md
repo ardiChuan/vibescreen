@@ -39,18 +39,17 @@ the room, no window to switch to, no menu bar to squint at.
 > opening it up now rather than when it feels "done". Expect rough edges and
 > frequent commits.
 
-## Latest release: v0.7.0
+## Latest release: v0.7.1
 
-The 23 August release closes the loop for both providers: supported Claude
-Code **and Codex** questions can be answered from the panel, the screen can be
-moved to a new 2.4 GHz network from a phone, and the host service now runs on
-Windows as well as macOS. Optional, separately controlled encrypted relays can
-carry Needs You decisions and live agent rows when the panel and computer are
-on unrelated WiFi.
+The 27 August reliability release warns before the Claude credential readable
+by VibePulse expires, proves whether the physical panel is actually polling,
+keeps startup responsive while relay history is scanned, fixes mixed-case and
+localized project-name glyphs, and standardizes one strict Codex panel smoke
+test. Silence and computer fallback are never treated as approval.
 
-[Read the illustrated v0.7.0 notes](docs/releases/2026-08-23-codex-and-any-wifi.md)
+[Read the v0.7.1 notes](docs/releases/2026-08-27-health-and-panel-reliability.md)
 · [Full changelog](CHANGELOG.md)
-· [Compare v0.6.0...v0.7.0](https://github.com/niclasvestlund-YT/vibepulse/compare/v0.6.0...v0.7.0)
+· [Compare v0.7.0...v0.7.1](https://github.com/niclasvestlund-YT/vibepulse/compare/v0.7.0...v0.7.1)
 
 ## What's on screen
 

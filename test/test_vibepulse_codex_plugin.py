@@ -1293,7 +1293,7 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("A green build from an old tree hid the panel test",
                       lessons)
 
-    def test_v071_release_candidate_is_upgradeable_safe_and_evidence_backed(self):
+    def test_v071_release_is_upgradeable_safe_and_evidence_backed(self):
         release = (ROOT / "docs/releases/"
                    "2026-08-27-health-and-panel-reliability.md").read_text(
                        encoding="utf-8")
@@ -1307,7 +1307,12 @@ class PluginPackageTests(unittest.TestCase):
             self.assertIn(required, release)
         self.assertIn("v0.7.1 — health and panel reliability", changelog)
         self.assertIn("plugin is `0.1.1`", changelog)
-        self.assertNotIn("## v0.7.1 —", changelog)
+        self.assertIn("## v0.7.1 — 2026-08-27", changelog)
+        self.assertNotIn("eventual `v0.7.1` tag", release)
+
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("## Latest release: v0.7.1", readme)
+        self.assertIn("Compare v0.7.0...v0.7.1", readme)
 
     def test_default_runner_invokes_plugin_suite_once(self):
         runner = (ROOT / "test/run.sh").read_text(encoding="utf-8")
