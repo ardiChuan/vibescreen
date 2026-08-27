@@ -1243,16 +1243,47 @@ def _is_exact_existing_directory(value, expected: Path) -> bool:
         return False
 
 
+def _is_canonical_existing_directory(value) -> bool:
+    """Accept only an absolute, unaliased spelling of an existing directory."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        candidate = Path(value)
+        canonical = candidate.resolve(strict=True)
+        return all((
+            candidate.is_absolute(),
+            value == str(candidate),
+            value == str(canonical),
+            candidate.is_dir(),
+            not _has_symlink_component(candidate),
+        ))
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _owned_plugin_item(item, repo_root: Path) -> bool:
     if not isinstance(item, dict):
         return False
+    legacy_keys = {
+        "pluginId", "name", "marketplaceName", "installed", "enabled",
+        "source", "marketplaceSource",
+    }
+    cached_marketplace_keys = legacy_keys | {
+        "version", "installPolicy", "authPolicy",
+    }
+    item_keys = set(item)
+    cached_marketplace = item_keys == cached_marketplace_keys
     source = item.get("source")
     marketplace_source = item.get("marketplaceSource")
-    if (item.get("pluginId") != "vibepulse@torget" or
+    if (item_keys not in (legacy_keys, cached_marketplace_keys) or
+            item.get("pluginId") != "vibepulse@torget" or
             item.get("name") != "vibepulse" or
             item.get("marketplaceName") != "torget" or
             item.get("installed") is not True or
             item.get("enabled") is not True or
+            (cached_marketplace and any(
+                not isinstance(item.get(key), str) or not item.get(key)
+                for key in ("version", "installPolicy", "authPolicy"))) or
             not isinstance(source, dict) or
             set(source) != {"source", "path"} or
             source.get("source") != "local" or
@@ -1271,8 +1302,10 @@ def _owned_plugin_item(item, repo_root: Path) -> bool:
     return all((
         expected_root.is_dir(),
         expected_plugin.is_dir(),
-        _is_exact_existing_directory(
-            marketplace_source.get("source"), expected_root),
+        (_is_canonical_existing_directory(marketplace_source.get("source"))
+         if cached_marketplace else
+         _is_exact_existing_directory(
+             marketplace_source.get("source"), expected_root)),
         _is_exact_existing_directory(source.get("path"), expected_plugin),
     ))
 
@@ -1322,6 +1355,12 @@ def _marketplace_state(text: str, repo_root: Path) -> bool | None:
     if len(matches) != 1:
         return None
     item = matches[0]
+    if set(item) == {"name", "root"}:
+        try:
+            expected = Path(repo_root).resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return _is_exact_existing_directory(item.get("root"), expected)
     source = item.get("marketplaceSource")
     if (set(item) != {"name", "root", "marketplaceSource"} or
             not isinstance(source, dict) or

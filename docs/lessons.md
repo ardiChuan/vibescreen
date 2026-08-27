@@ -21,6 +21,21 @@ point at the backlog item.
 
 ---
 
+## 2026-08-27 · Codex CLI provenance changed shape without changing owner
+
+**What happened:** Windows setup registered the exact release checkout with
+Codex CLI 0.150.1, then rolled back because its own post-install verification
+classified the plugin and marketplace as foreign. **Root cause:** the newer CLI
+omits `marketplaceSource` from marketplace-list rows and reports the plugin's
+local marketplace cache as its source, while the executable plugin path and
+marketplace root still identify the requested checkout exactly. **The rule:**
+version external JSON contracts by observed shape and keep ownership checks on
+the fields that still name executable code and the registered root. **Guards:**
+both strict legacy and 0.150 schemas have provenance tests; unexpected fields,
+foreign roots, and foreign plugin paths remain fail-closed. **Watch for:** a
+future Codex CLI schema adding another shape without a fixture from the real
+Windows boundary.
+
 ## 2026-08-27 · Windows boundaries disagreed with portable-looking tests
 
 **What happened:** setup doctor rejected Python 3.12, Unicode hook JSON used

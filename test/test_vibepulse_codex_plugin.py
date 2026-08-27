@@ -2475,6 +2475,53 @@ class RelaySetupTests(unittest.TestCase):
                     self.assertFalse(setup._plugin_installed(
                         json.dumps(listing), repo))
 
+    def test_plugin_provenance_accepts_codex_0150_cached_marketplace(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "repo"
+            plugin = repo / ".agents/plugins/plugins/vibepulse"
+            plugin.mkdir(parents=True)
+            cache = base / "codex-marketplace-cache"
+            cache.mkdir()
+            listing = plugin_listing(repo=repo, marketplace_root=cache)
+            listing["installed"][0].update({
+                "version": "1.0.0",
+                "installPolicy": "project",
+                "authPolicy": "none",
+            })
+
+            self.assertTrue(setup._plugin_installed(
+                json.dumps(listing), repo))
+
+            listing["installed"][0]["source"]["path"] = str(
+                base / "foreign-plugin")
+            self.assertFalse(setup._plugin_installed(
+                json.dumps(listing), repo))
+
+    def test_marketplace_state_accepts_codex_0150_root_only_schema(self):
+        setup = load_setup()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            current = {"marketplaces": [{
+                "name": "torget", "root": str(repo.resolve()),
+            }]}
+            foreign = {"marketplaces": [{
+                "name": "torget", "root": str(repo.parent.resolve()),
+            }]}
+            extra = {"marketplaces": [{
+                "name": "torget", "root": str(repo.resolve()),
+                "unexpected": True,
+            }]}
+
+            self.assertIs(setup._marketplace_state(
+                json.dumps(current), repo), True)
+            self.assertFalse(setup._marketplace_state(
+                json.dumps(foreign), repo))
+            self.assertIsNone(setup._marketplace_state(
+                json.dumps(extra), repo))
+
     def test_doctor_rejects_every_plugin_false_green_transcript(self):
         setup = load_setup()
         with tempfile.TemporaryDirectory() as tmp:
