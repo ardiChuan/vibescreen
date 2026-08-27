@@ -8,6 +8,11 @@ deeper documentation is Swedish, which is fine to read as-is.
 Work through **Preflight** first — half of all setup failures are decided
 there.
 
+For a Windows host, keep
+[Windows host setup and recovery](windows-setup.md) open beside this hardware
+runbook. It covers the standalone Codex CLI, Task Scheduler, Private firewall,
+startup health, lifecycle proof, and the exact public evidence boundary.
+
 ## What is not part of this repo
 
 `AGENTS.md`, `README.sv.md` and some code comments refer to things the
@@ -209,6 +214,9 @@ Optional plan badges: `--claude-plan {pro,max5x,max20x}`, `--codex-plan
 {plus,pro}`. Cosmetic labels only, never used in any percentage maths.
 
 For autostart on login, see [../tools/tokenserver/README.md](../tools/tokenserver/README.md).
+Windows installers should follow the complete
+[Windows host runbook](windows-setup.md), not copy a Task Scheduler command in
+isolation.
 
 ## Step 5 — end-to-end
 

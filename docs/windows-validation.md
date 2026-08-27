@@ -4,6 +4,11 @@ This is the release gate for VibePulse's Windows **host service**. It does not
 flash the ESP32 and must not print credentials, session contents, prompts, or
 other secrets into the report.
 
+New installations should first complete
+[Windows host setup and recovery](windows-setup.md). This document is the
+stricter certification pass: it deliberately repeats critical checks against
+an exact clean candidate and adds lifecycle plus physical evidence.
+
 Run the procedure from PowerShell as the Windows user who actually runs Codex
 or Claude Code. The tokenserver reads that user's profile, so testing as
 Administrator or SYSTEM proves the wrong installation.
@@ -65,8 +70,9 @@ $Errors
 ```
 
 The parser must return no errors. `-ValidateOnly` must report the exact checkout
-and a Python 3.11+ interpreter, and must say that it made no Task Scheduler
-changes.
+and a Python 3.11+ interpreter, construct the action, trigger, and settings
+through the host's real ScheduledTasks module, and say that it made no Task
+Scheduler changes.
 
 ## 5. Exercise the real local sources on a temporary port
 
