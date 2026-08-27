@@ -167,18 +167,6 @@ $WatchdogTrigger = New-ScheduledTaskTrigger -Once `
     -At (Get-Date).AddMinutes(1) `
     -RepetitionInterval (New-TimeSpan -Minutes 5)
 
-if ($ValidateOnly) {
-    $Version = & $PythonConsole -c `
-        "import sys; print('.'.join(map(str, sys.version_info[:3])))"
-    Write-Host "VibePulse Windows installer validation: OK"
-    Write-Host "  repo:    $RepoRoot"
-    Write-Host "  server:  $Server"
-    Write-Host "  runner:  $Runner"
-    Write-Host "  python:  $PythonConsole ($Version)"
-    Write-Host "  action:  no Task Scheduler changes were made"
-    exit 0
-}
-
 $RunnerArgs = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass" +
     " -File `"$Runner`" -Python `"$PythonConsole`" -Server `"$Server`""
 if ($CodexBinDir) {
@@ -194,6 +182,23 @@ if ($PublishUrl) {
 
 $Action = New-ScheduledTaskAction -Execute $PowerShell -Argument $RunnerArgs `
     -WorkingDirectory $RepoRoot
+
+# ValidateOnly deliberately constructs every ScheduledTasks object before it
+# exits. PowerShell parser success did not catch a real-host enum mismatch;
+# this dry run now exercises the module's runtime parameter conversion while
+# still avoiding task lookup, registration, start, stop, or removal.
+if ($ValidateOnly) {
+    $Version = & $PythonConsole -c `
+        "import sys; print('.'.join(map(str, sys.version_info[:3])))"
+    Write-Host "VibePulse Windows installer validation: OK"
+    Write-Host "  repo:    $RepoRoot"
+    Write-Host "  server:  $Server"
+    Write-Host "  runner:  $Runner"
+    Write-Host "  python:  $PythonConsole ($Version)"
+    Write-Host "  task objects: runtime construction passed"
+    Write-Host "  action:  no Task Scheduler changes were made"
+    exit 0
+}
 
 $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($ExistingTask -and $ExistingTask.State -eq "Running") {

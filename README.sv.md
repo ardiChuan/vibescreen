@@ -154,6 +154,13 @@ eftersom Claude Desktop kan fortsätta vara inloggad efter att den separata
 credential VibePulse får läsa har blivit för gammal; gammal Fable-data märks
 alltid som stale.
 
+På Windows finns en komplett publik
+[installations- och återställningsguide](docs/windows-setup.md) för den
+fristående Codex CLI:n, hookgranskning, Task Scheduler, Private-brandvägg,
+startup-hälsa och den fysiska slutgrinden. Den är skriven så att en ny
+utvecklare eller kodagent kan göra installationen utan underhållarens lokala
+historik.
+
 Efter firmware- eller Codex-bridgeändringar ska den fysiska rökkontrollen i
 [agent-setup](docs/agent-setup.md#post-flash-physical-codex-smoke-test) köras.
 Godkänt kräver synlig **APPROVE**, ett verkligt tryck på panelen och samma svar

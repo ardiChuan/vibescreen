@@ -48,6 +48,21 @@ environment snapshot, so an existing custom `CODEX_HOME` is passed explicitly
 to the child without changing it. Never infer background CLI readiness from the
 installer's interactive environment alone.
 
+## 2026-08-27 · A visible Windows Codex command was not a runnable CLI
+
+**What happened:** Codex worked in the Windows desktop app and `Get-Command`
+could resolve `codex`, but the VibePulse background read failed and a local
+wrapper reported that the CLI was missing. **Root cause:** Windows exposed a
+Store-managed `WindowsApps` alias that was not executable from the scheduled
+background context; Task Scheduler also inherits a smaller `PATH` than an
+interactive shell. **The rule:** Windows provider validation must execute the
+standalone CLI from its stable per-user path and prove the app-server quota
+read, not merely resolve a command name. **Guards:** executable discovery now
+prefers `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`, ignores
+`WindowsApps`, doctor tests execution, and the public Windows runbook separates
+desktop login, CLI execution, and fresh quota evidence. **Watch for:** wrappers
+or scheduled tasks that reintroduce interactive-`PATH` assumptions.
+
 ## 2026-08-27 · A green build from an old tree hid the panel test
 
 **What happened:** the panel first showed **UPDATE READY**, then questions with

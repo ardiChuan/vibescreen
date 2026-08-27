@@ -27,6 +27,12 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ### Fixed
 
+- Windows Task Scheduler installation now uses the Windows 10-compatible
+  `IgnoreNew` instance policy and explicitly stops only its own running task
+  during an idempotent update; the previous `StopExisting` enum value parsed
+  but failed before registration on a real Windows 10 host.
+- Add a public Windows host installation, startup-health, troubleshooting,
+  recovery, and physical-validation runbook for developers and coding agents.
 - Windows Codex discovery now prefers OpenAI's standalone per-user CLI and
   rejects Store-managed `WindowsApps` aliases that can resolve successfully
   but fail with Access Denied under Task Scheduler or other background hosts.

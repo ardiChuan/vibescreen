@@ -219,6 +219,9 @@ assert "Stop-ScheduledTask -TaskName $TaskName" in windows_service
 assert "$RestartCount = 255" in windows_service
 assert "$WatchdogTrigger = New-ScheduledTaskTrigger -Once" in windows_service
 assert "-RepetitionInterval (New-TimeSpan -Minutes 5)" in windows_service
+assert windows_service.index("New-ScheduledTaskSettingsSet") < \
+    windows_service.index("if ($ValidateOnly) {")
+assert "task objects: runtime construction passed" in windows_service
 assert "Validate the Windows Task Scheduler installer without installing" in ci
 assert ".\\tools\\tokenserver\\install-windows-task.ps1 -ValidateOnly" in ci
 assert ".\\test\\windows-task-runner.ps1" in ci
