@@ -1272,12 +1272,16 @@ class CodexLimitLogTests(unittest.TestCase):
             tokenserver._codex_refreshing = True
             with mock.patch.object(
                     tokenserver, "_read_codex_app_server_limits",
-                    return_value={"codexWeekPct": 62.0}), \
+                    return_value={"codexWeekPct": 62.0}) as app_server, \
                     mock.patch.object(
                         tokenserver, "_scan_codex_limits",
                         return_value={"codexWeekPct": 58.0}):
                 tokenserver._refresh_codex_limits()
 
+            app_server.assert_called_once_with(
+                timeout_s=tokenserver.CODEX_APP_SERVER_TIMEOUT_S)
+            self.assertGreaterEqual(
+                tokenserver.CODEX_APP_SERVER_TIMEOUT_S, 15)
             self.assertEqual(
                 tokenserver._last_codex_limits["codexWeekPct"], 62.0)
         finally:

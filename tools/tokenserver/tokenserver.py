@@ -1334,6 +1334,7 @@ def get_limits():
 
 CODEX_SESSIONS = Path(os.path.expanduser("~/.codex/sessions"))
 CODEX_LIMITS_EVERY_S = 30
+CODEX_APP_SERVER_TIMEOUT_S = 15
 CODEX_LIMIT_SCAN_BYTES = 1024 * 1024
 CODEX_WEEK_MINUTES = 10080
 _codex_limits_lock = threading.Lock()
@@ -1504,7 +1505,7 @@ def _pump_lines(stream):
     return lines
 
 
-def _read_codex_app_server_limits(timeout_s=5):
+def _read_codex_app_server_limits(timeout_s=CODEX_APP_SERVER_TIMEOUT_S):
     """Read Codex's current quota snapshot through its local app protocol."""
     executable = _codex_app_server_command()
     if executable is None:
@@ -1732,7 +1733,8 @@ def _scan_codex_limits():
 def _refresh_codex_limits():
     global _last_codex_limits, _last_codex_read, _codex_refreshing
     try:
-        refreshed = _read_codex_app_server_limits()
+        refreshed = _read_codex_app_server_limits(
+            timeout_s=CODEX_APP_SERVER_TIMEOUT_S)
         if not refreshed:
             refreshed = _scan_codex_limits()
     except Exception:
