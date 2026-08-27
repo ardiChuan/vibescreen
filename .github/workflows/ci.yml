@@ -117,26 +117,29 @@ jobs:
           # now one list exists and run.sh guards its completeness.
           python -m unittest \
             $(tr -d '\r' < test/tokenserver-suite.txt | grep -v '^#') -v
+      - name: Run setup integration tests on Windows
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: python test/test_vibepulse_codex_plugin.py
       - name: Validate the Windows Task Scheduler installer without installing
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          $tokens = $null
-          $parseErrors = $null
           $allErrors = @()
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path 'tools\tokenserver\install-windows-task.ps1'),
-            [ref]$tokens,
-            [ref]$parseErrors
-          ) | Out-Null
-          $allErrors += $parseErrors
-          $parseErrors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path 'tools\tokenserver\run-windows-task.ps1'),
-            [ref]$tokens,
-            [ref]$parseErrors
-          ) | Out-Null
-          $allErrors += $parseErrors
+          foreach ($script in @(
+            'tools\tokenserver\install-windows-task.ps1',
+            'tools\tokenserver\run-windows-task.ps1',
+            'test\windows-task-runner.ps1'
+          )) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref]$tokens,
+              [ref]$parseErrors
+            ) | Out-Null
+            $allErrors += $parseErrors
+          }
           if ($allErrors.Count -gt 0) {
             $allErrors | ForEach-Object { Write-Error $_.Message }
             exit 1

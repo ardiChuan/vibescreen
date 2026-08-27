@@ -29,8 +29,9 @@ Designval, i linje med resten av repot:
   not interaction-provider choices.
 - Ingen hemlighet i den registrerade kommandoraden utom relä-URL:en, som
   användaren själv valt att ge — samma exponeringsnivå som secrets.h.
-- Starta om vid fel, var 5:e minut, utan tak — en hyllservice ska resa
-  sig själv, precis som launchd-plisten gör på macOS.
+- En logon-trigger startar tjänsten och en femminuters-watchdog startar den
+  igen om processen har dött. `IgnoreNew` gör watchdoggen ofarlig när den
+  redan kör — en hyllservice ska resa sig själv, precis som launchd-plisten.
 #>
 param(
     [string]$PublishUrl = "",
@@ -82,6 +83,62 @@ function Resolve-VibePulsePython {
     throw "VibePulse requires Python 3.11 or newer. Install it, reopen PowerShell, and rerun this installer."
 }
 
+function Resolve-VibePulseCodexBinDir {
+    $Candidates = @()
+    if ($env:LOCALAPPDATA) {
+        $Standalone = Join-Path $env:LOCALAPPDATA `
+            "Programs\OpenAI\Codex\bin\codex.exe"
+        if (Test-Path -LiteralPath $Standalone -PathType Leaf) {
+            $Candidates += $Standalone
+        }
+    }
+    foreach ($Name in @("codex.exe", "codex.cmd")) {
+        $Command = Get-Command $Name -ErrorAction SilentlyContinue
+        if ($Command -and $Command.Source) {
+            $Candidates += $Command.Source
+        }
+    }
+    foreach ($Candidate in $Candidates | Select-Object -Unique) {
+        try {
+            & $Candidate --version *> $null
+            if ($LASTEXITCODE -eq 0) {
+                return Split-Path -Parent $Candidate
+            }
+        } catch {
+            # Codex is optional; keep checking candidates.
+        }
+    }
+    return ""
+}
+
+function Resolve-VibePulseCodexHome {
+    $Candidate = $env:CODEX_HOME
+    if (-not $Candidate) {
+        $Candidate = [Environment]::GetEnvironmentVariable(
+            "CODEX_HOME", "User")
+    }
+    if ($Candidate -and
+            (Test-Path -LiteralPath $Candidate -PathType Container)) {
+        return (Resolve-Path -LiteralPath $Candidate).Path
+    }
+    return ""
+}
+
+function New-VibePulseTaskSettings {
+    # The Task Scheduler XML schema supports StopExisting, but Microsoft's
+    # ScheduledTasks PowerShell cmdlet exposes only Parallel, Queue, and
+    # IgnoreNew. Stop the one owned task explicitly before replacement and
+    # use the portable IgnoreNew policy for later duplicate starts.
+    # RestartOnFailure/Count is an unsigned byte in the Task Scheduler
+    # schema. Values above 255 can register but are not executed reliably.
+    $RestartCount = 255
+    return New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -RestartCount $RestartCount -RestartInterval (New-TimeSpan -Minutes 5) `
+        -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
+        -MultipleInstances IgnoreNew
+}
+
 if ($Uninstall) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     Write-Host "Uppgiften '$TaskName' borttagen. Processen som redan kör påverkas inte;"
@@ -99,9 +156,16 @@ $Runner = Join-Path $RepoRoot "tools\tokenserver\run-windows-task.ps1"
 if (-not (Test-Path $Runner)) { throw "hittar inte $Runner" }
 
 $PythonConsole = Resolve-VibePulsePython
+$CodexBinDir = Resolve-VibePulseCodexBinDir
+$CodexHome = Resolve-VibePulseCodexHome
 # Task Scheduler starts a hidden PowerShell wrapper. Keep python.exe rather
 # than pythonw.exe so stdout/stderr can be captured in the durable log.
 $PowerShell = (Get-Command powershell.exe -ErrorAction Stop).Source
+$Settings = New-VibePulseTaskSettings
+$LogonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$WatchdogTrigger = New-ScheduledTaskTrigger -Once `
+    -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5)
 
 if ($ValidateOnly) {
     $Version = & $PythonConsole -c `
@@ -117,6 +181,12 @@ if ($ValidateOnly) {
 
 $RunnerArgs = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass" +
     " -File `"$Runner`" -Python `"$PythonConsole`" -Server `"$Server`""
+if ($CodexBinDir) {
+    $RunnerArgs += " -CodexBinDir `"$CodexBinDir`""
+}
+if ($CodexHome) {
+    $RunnerArgs += " -CodexHome `"$CodexHome`""
+}
 if ($PublishUrl) {
     $RunnerArgs += " -PublishUrl `"$PublishUrl`""
     if ($PublishName) { $RunnerArgs += " -PublishName `"$PublishName`"" }
@@ -124,15 +194,23 @@ if ($PublishUrl) {
 
 $Action = New-ScheduledTaskAction -Execute $PowerShell -Argument $RunnerArgs `
     -WorkingDirectory $RepoRoot
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$Settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 5) `
-    -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
-    -MultipleInstances StopExisting
+
+$ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($ExistingTask -and $ExistingTask.State -eq "Running") {
+    Stop-ScheduledTask -TaskName $TaskName
+    $Deadline = (Get-Date).AddSeconds(15)
+    do {
+        Start-Sleep -Milliseconds 100
+        $ExistingTask = Get-ScheduledTask -TaskName $TaskName
+    } while ($ExistingTask.State -eq "Running" -and (Get-Date) -lt $Deadline)
+    if ($ExistingTask.State -eq "Running") {
+        throw "The existing VibePulse tokenserver task did not stop safely"
+    }
+}
 
 Register-ScheduledTask -TaskName $TaskName -Action $Action `
-    -Trigger $Trigger -Settings $Settings -Force | Out-Null
+    -Trigger @($LogonTrigger, $WatchdogTrigger) `
+    -Settings $Settings -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
 
 Write-Host "Uppgiften '$TaskName' registrerad och startad."

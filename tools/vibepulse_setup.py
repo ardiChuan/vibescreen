@@ -1342,8 +1342,9 @@ def _python_probe_ok(python: Path | None, run) -> bool:
     if python is None:
         return False
     probe = _invoke([str(Path(python).resolve()), "-c", _PYTHON_PROBE], run)
+    sentinel = "vibepulse-python-3.11+"
     return (probe is not None and probe.returncode == 0 and
-            probe.stdout == "vibepulse-python-3.11+\n" and
+            probe.stdout in (sentinel + "\n", sentinel + "\r\n") and
             probe.stderr == "")
 
 

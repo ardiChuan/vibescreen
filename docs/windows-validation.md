@@ -53,20 +53,35 @@ acceptable only when its reason is platform-specific and named in the output.
 ## 4. Validate the Task Scheduler installer without installing
 
 ```powershell
-$Tokens = $null
-$Errors = $null
-[System.Management.Automation.Language.Parser]::ParseFile(
-  (Resolve-Path tools\tokenserver\install-windows-task.ps1),
-  [ref]$Tokens,
-  [ref]$Errors
-) | Out-Null
-$Errors
+$AllErrors = @()
+foreach ($Script in @(
+  'tools\tokenserver\install-windows-task.ps1',
+  'tools\tokenserver\run-windows-task.ps1',
+  'test\windows-task-runner.ps1'
+)) {
+  $Tokens = $null
+  $Errors = $null
+  [System.Management.Automation.Language.Parser]::ParseFile(
+    (Resolve-Path $Script),
+    [ref]$Tokens,
+    [ref]$Errors
+  ) | Out-Null
+  $AllErrors += $Errors
+}
+$AllErrors
 .\tools\tokenserver\install-windows-task.ps1 -ValidateOnly
+.\test\windows-task-runner.ps1
 ```
 
-The parser must return no errors. `-ValidateOnly` must report the exact checkout
-and a Python 3.11+ interpreter, and must say that it made no Task Scheduler
-changes.
+The parser must return no errors for all three scripts. `-ValidateOnly` must
+report the exact checkout, a Python 3.11+ interpreter, and a supported Task
+Scheduler settings object, and must say that it made no Task Scheduler changes.
+The runner test must pass stdout/stderr capture, log rotation, and paths
+containing spaces and non-ASCII characters. When Codex is installed, the
+scheduled process must receive its verified bin directory without changing the
+user's global PATH. If the user already has a custom `CODEX_HOME`, the task
+must receive that verified directory process-locally without editing Codex
+settings or authentication.
 
 ## 5. Exercise the real local sources on a temporary port
 
@@ -154,7 +169,8 @@ Verify all of these and record timestamps:
 
 1. the task starts immediately;
 2. it starts again after sign-out/sign-in;
-3. it restarts after the process is terminated once;
+3. after the tokenserver process is terminated once, the five-minute
+   watchdog starts a new process with the same release revision;
 4. it returns after sleep/resume;
 5. one full Windows reboot does not leave the panel stale.
 

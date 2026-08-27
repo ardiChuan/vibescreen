@@ -66,6 +66,17 @@ def compact(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def directory_symlink_or_skip(link, target):
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            raise unittest.SkipTest(
+                "Windows directory symlinks require Developer Mode or "
+                "SeCreateSymbolicLinkPrivilege") from exc
+        raise
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -100,14 +111,20 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         first = behavior.get("first_bytes")
         if first is not None:
-            self.wfile.write(payload[:first])
-            self.wfile.flush()
-            time.sleep(behavior.get("delay_body", 0))
-            self.wfile.write(payload[first:])
+            try:
+                self.wfile.write(payload[:first])
+                self.wfile.flush()
+                time.sleep(behavior.get("delay_body", 0))
+                self.wfile.write(payload[first:])
+            except OSError:
+                return
         else:
             if behavior.get("delay_body"):
                 time.sleep(behavior["delay_body"])
-            self.wfile.write(payload)
+            try:
+                self.wfile.write(payload)
+            except OSError:
+                return
 
     def log_message(self, _format, *_args):
         pass
@@ -625,6 +642,26 @@ class PermissionHookTests(unittest.TestCase):
                 self.assertEqual(path, "/api/codex/permission")
                 self.assertEqual(headers["Content-Type"], "application/json")
                 self.assertEqual(json.loads(body), PERMISSION)
+
+    def test_unicode_decision_is_emitted_as_utf8(self):
+        decision = {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {
+                    "behavior": "deny",
+                    "message": "Nekad från VibePulse – försök på datorn",
+                },
+            },
+        }
+        with LocalServer(body=compact(decision).encode("utf-8")) as server:
+            completed = run_script(
+                "permission_hook.py", compact(PERMISSION).encode("utf-8"),
+                port=server.port)
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(
+            json.loads(completed.stdout.decode("utf-8", errors="strict")),
+            decision)
+        self.assertEqual(completed.stderr, b"")
 
     def test_invalid_port_fails_silent_without_using_default(self):
         for port in ("", "0", "65536", "+8737", " 8737", "eight"):
@@ -1369,6 +1406,31 @@ class SetupPlanTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0)
         self.assertEqual(completed.stdout, "vibepulse-python-3.11+\n")
         self.assertEqual(completed.stderr, "")
+        self.assertTrue(setup._python_probe_ok(
+            Path(sys.executable), setup._AUTO))
+
+    def test_python_probe_accepts_only_native_line_endings(self):
+        setup = load_setup()
+        sentinel = "vibepulse-python-3.11+"
+        for ending in ("\n", "\r\n"):
+            with self.subTest(ending=repr(ending)):
+                runner = FakeRunner([result(stdout=sentinel + ending)])
+                self.assertTrue(setup._python_probe_ok(
+                    Path(sys.executable), runner))
+
+        for stdout in (
+                sentinel + " \n", sentinel + "\nextra\n", sentinel, ""):
+            with self.subTest(stdout=repr(stdout)):
+                runner = FakeRunner([result(stdout=stdout)])
+                self.assertFalse(setup._python_probe_ok(
+                    Path(sys.executable), runner))
+
+        self.assertFalse(setup._python_probe_ok(
+            Path(sys.executable),
+            FakeRunner([result(returncode=1, stdout=sentinel + "\n")])))
+        self.assertFalse(setup._python_probe_ok(
+            Path(sys.executable),
+            FakeRunner([result(stdout=sentinel + "\n", stderr="warning")])))
 
     def test_disable_preserves_unrelated_switches_and_clears_legacy_with_claude(self):
         setup = load_setup()
@@ -1415,22 +1477,25 @@ class SetupPlanTests(unittest.TestCase):
 
     def test_install_plan_is_exact_and_paths_with_spaces_stay_one_argv(self):
         setup = load_setup()
+        repo = Path("/repo with spaces")
+        python = Path("/python with spaces")
+        codex = Path("/codex")
+        repo_path = str(repo.resolve())
+        python_path = str(python.resolve())
+        codex_path = str(codex.resolve())
         commands = setup.plan_codex_install(
-            repo_root=Path("/repo with spaces"),
-            python=Path("/python with spaces"), codex=Path("/codex"),
+            repo_root=repo, python=python, codex=codex,
             marketplace_name="torget")
         self.assertEqual(commands, [
-            ["/codex", "plugin", "marketplace", "add",
-             "/repo with spaces"],
-            ["/codex", "plugin", "add", "vibepulse@torget"],
-            ["/codex", "mcp", "remove", "vibepulse"],
-            ["/codex", "mcp", "add", "vibepulse", "--",
-             "/python with spaces",
-             "/repo with spaces/.agents/plugins/plugins/vibepulse/scripts/"
-             "mcp_server.py"],
+            [codex_path, "plugin", "marketplace", "add", repo_path],
+            [codex_path, "plugin", "add", "vibepulse@torget"],
+            [codex_path, "mcp", "remove", "vibepulse"],
+            [codex_path, "mcp", "add", "vibepulse", "--", python_path,
+             str(repo.resolve() /
+                 ".agents/plugins/plugins/vibepulse/scripts/mcp_server.py")],
         ])
         self.assertNotEqual(
-            commands[0][-1], "/repo with spaces/.agents/plugins")
+            commands[0][-1], str(repo.resolve() / ".agents/plugins"))
 
     def test_provider_choices_and_detail_are_separate_explicit_opt_ins(self):
         setup = load_setup()
@@ -1590,7 +1655,8 @@ class RelaySetupTests(unittest.TestCase):
         token = root / "home/.vibepulse-interaction-relay-token"
         secrets = root / "repo/secrets.h"
         service = root / "repo/tools/interaction-relay"
-        wrangler = service / "node_modules/.bin/wrangler"
+        wrangler = service / "node_modules/.bin" / (
+            "wrangler.cmd" if os.name == "nt" else "wrangler")
         wrangler.parent.mkdir(parents=True)
         wrangler.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
         wrangler.chmod(0o700)
@@ -2142,10 +2208,11 @@ class RelaySetupTests(unittest.TestCase):
                 ["uninstall", "codex"], config_path=config,
                 codex=Path("/codex"), run=runner,
                 stdout=io.StringIO()), 0)
+            codex_path = str(Path("/codex").resolve())
             self.assertEqual([call[0] for call in runner.calls[3:6]], [
-                ["/codex", "mcp", "remove", "vibepulse"],
-                ["/codex", "plugin", "remove", "vibepulse@torget"],
-                ["/codex", "plugin", "marketplace", "remove", "torget"],
+                [codex_path, "mcp", "remove", "vibepulse"],
+                [codex_path, "plugin", "remove", "vibepulse@torget"],
+                [codex_path, "plugin", "marketplace", "remove", "torget"],
             ])
             self.assertEqual(setup.load_config(config), setup.VibePulseConfig(
                 claude_interactions=True, codex_interactions=False,
@@ -2186,7 +2253,8 @@ class RelaySetupTests(unittest.TestCase):
                 codex=Path("/codex"), run=failed,
                 stdout=io.StringIO()), 1)
             self.assertIn(
-                ["/codex", "plugin", "marketplace", "remove", "torget"],
+                [str(Path("/codex").resolve()), "plugin", "marketplace",
+                 "remove", "torget"],
                 [call[0] for call in failed.calls])
             self.assertTrue(setup.load_config(path).codex_interactions)
 
@@ -2328,7 +2396,9 @@ class RelaySetupTests(unittest.TestCase):
             # but a symlink to dash on Debian-family CI runners.
             self.assertEqual(runner.calls[0][0][0:2],
                              [str(Path("/bin/sh").resolve()), "-c"])
-            self.assertEqual(runner.calls[1][0], ["/codex", "--version"])
+            self.assertEqual(
+                runner.calls[1][0],
+                [str(Path("/codex").resolve()), "--version"])
             self.assertTrue(all(call[1]["timeout"] <= 15
                                 and call[1]["shell"] is False
                                 for call in runner.calls))
@@ -2358,11 +2428,11 @@ class RelaySetupTests(unittest.TestCase):
             (plugin.parent / "spelling").mkdir()
 
             repo_alias = base / "repo-alias"
-            repo_alias.symlink_to(repo, target_is_directory=True)
+            directory_symlink_or_skip(repo_alias, repo)
             plugin_alias = base / "plugin-alias"
-            plugin_alias.symlink_to(plugin, target_is_directory=True)
+            directory_symlink_or_skip(plugin_alias, plugin)
             parent_alias = base / "parent-alias"
-            parent_alias.symlink_to(base, target_is_directory=True)
+            directory_symlink_or_skip(parent_alias, base)
             parent_repo = parent_alias / "repo"
             parent_plugin = (
                 parent_repo / ".agents/plugins/plugins/vibepulse")
@@ -2406,10 +2476,9 @@ class RelaySetupTests(unittest.TestCase):
             foreign_plugin = foreign / "plugin"
             foreign_plugin.mkdir(parents=True)
             foreign_link = Path(tmp) / "foreign-link"
-            foreign_link.symlink_to(foreign, target_is_directory=True)
+            directory_symlink_or_skip(foreign_link, foreign)
             foreign_plugin_link = Path(tmp) / "foreign-plugin-link"
-            foreign_plugin_link.symlink_to(
-                foreign_plugin, target_is_directory=True)
+            directory_symlink_or_skip(foreign_plugin_link, foreign_plugin)
 
             missing_source = plugin_listing()
             missing_source["installed"][0].pop("source")
@@ -2588,10 +2657,11 @@ class RelaySetupTests(unittest.TestCase):
                           result(stdout="not-json\n"),
                           json_result(marketplace_listing())],
         }
+        codex_path = str(Path("/codex").resolve())
         expected_preflight = [
-            ["/codex", "mcp", "list", "--json"],
-            ["/codex", "plugin", "list", "--json"],
-            ["/codex", "plugin", "marketplace", "list", "--json"],
+            [codex_path, "mcp", "list", "--json"],
+            [codex_path, "plugin", "list", "--json"],
+            [codex_path, "plugin", "marketplace", "list", "--json"],
         ]
         with tempfile.TemporaryDirectory() as tmp:
             for label, responses in cases.items():
@@ -2843,7 +2913,7 @@ class RelaySetupTests(unittest.TestCase):
         self.assertIsNone(setup._invoke(invalid, setup._AUTO))
         completed = setup._invoke(valid, setup._AUTO)
         self.assertIsNotNone(completed)
-        self.assertEqual(completed.stdout, "ok\n")
+        self.assertEqual(completed.stdout, "ok" + os.linesep)
         self.assertFalse(any(thread.name.startswith("vibepulse-drain-")
                              for thread in threading.enumerate()))
 
@@ -3273,7 +3343,7 @@ class RelaySetupTests(unittest.TestCase):
         completed = setup._invoke(
             [sys.executable, "-c", "print('recovered')"], setup._AUTO)
         self.assertIsNotNone(completed)
-        self.assertEqual(completed.stdout, "recovered\n")
+        self.assertEqual(completed.stdout, "recovered" + os.linesep)
         self.assertFalse(any(thread.name.startswith("vibepulse-drain-")
                              for thread in threading.enumerate()))
 
@@ -3303,7 +3373,7 @@ class RelaySetupTests(unittest.TestCase):
             stderr = io.BytesIO()
 
             def wait(self, timeout=None):
-                return 1
+                raise KeyboardInterrupt()
 
             def poll(self):
                 raise KeyboardInterrupt()

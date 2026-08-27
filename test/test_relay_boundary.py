@@ -214,13 +214,25 @@ assert "$LogCapBytes = 5MB" in windows_runner
 assert "$LogTailBytes = 256KB" in windows_runner
 assert "Write-VibePulseLogLine" in windows_runner
 assert "run-windows-task.ps1" in windows_service
-assert "-MultipleInstances StopExisting" in windows_service
+assert "-MultipleInstances IgnoreNew" in windows_service
+assert "Stop-ScheduledTask -TaskName $TaskName" in windows_service
+assert "$RestartCount = 255" in windows_service
+assert "$WatchdogTrigger = New-ScheduledTaskTrigger -Once" in windows_service
+assert "-RepetitionInterval (New-TimeSpan -Minutes 5)" in windows_service
 assert "Validate the Windows Task Scheduler installer without installing" in ci
 assert ".\\tools\\tokenserver\\install-windows-task.ps1 -ValidateOnly" in ci
 assert ".\\test\\windows-task-runner.ps1" in ci
+assert "'test\\windows-task-runner.ps1'" in ci
+assert "Run setup integration tests on Windows" in ci
+assert "python test/test_vibepulse_codex_plugin.py" in ci
 assert "VibePulse runner å" in windows_runner_test
 assert "stdout was not captured" in windows_runner_test
 assert "stderr was not captured" in windows_runner_test
+assert "negative child exit was not normalized to 1" in windows_runner_test
+assert "Codex bin directory was not prepended to PATH" in windows_runner_test
+assert "Codex home was not passed to the child process" in windows_runner_test
+assert "Resolve-VibePulseCodexBinDir" in windows_service
+assert "Resolve-VibePulseCodexHome" in windows_service
 assert "Ubuntu" in readme and "not a support claim" in readme
 assert "778 tests" in windows_host_report
 assert "Panel end to end | FAIL" in windows_host_report
