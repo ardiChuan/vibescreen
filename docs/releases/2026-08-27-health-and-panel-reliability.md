@@ -37,7 +37,7 @@ project-name glyphs, and records one exact end-to-end Codex panel test.
 
 ## Upgrade
 
-Pull or check out the eventual `v0.7.1` tag, then restart the tokenserver so
+Pull or check out the `v0.7.1` tag, then restart the tokenserver so
 the new root diagnostics and startup behavior are active:
 
 ```sh
@@ -60,9 +60,9 @@ relay, or any other setting.
 
 The host-side credential/startup fixes do not require a firmware flash. The
 project-name glyph fix does. Use the normal consent-gated OTA flow only after
-the release tag has green CI and the built image version matches the intended
+the tagged source has green CI and the built image version matches the intended
 checkout. Then run the canonical physical smoke test in
-[`docs/agent-setup.md`](../agent-setup.md#post-flash-physical-codex-smoke-test).
+[`docs/agent-setup.md`](https://github.com/niclasvestlund-YT/vibepulse/blob/v0.7.1/docs/agent-setup.md#post-flash-physical-codex-smoke-test).
 
 VibePulse deliberately does not call an undocumented refresh endpoint or
 mutate Claude's refresh token. When the readable credential is expiring or
@@ -77,9 +77,11 @@ supported client refreshes its own credential and VibePulse notices locally.
   Codex question/touch/answer round trip on `torget-home-01` using the
   pre-tag build `v0.7.0-5-ge6feb29-dirty`. The exact evidence and recovery
   table are in the
-  [2026-08-27 physical review](../superpowers/reviews/2026-08-27-vibepulse-codex-physical-end-to-end.md).
-- A clean `v0.7.1` tag still requires its own green CI before publication.
-  This physical evidence does not authorize an unattended flash.
+  [2026-08-27 physical review](https://github.com/niclasvestlund-YT/vibepulse/blob/v0.7.1/docs/superpowers/reviews/2026-08-27-vibepulse-codex-physical-end-to-end.md).
+- The exact `v0.7.1` source tree passed green CI before publication: the full
+  host gate, both relay suites, tokenserver tests on Ubuntu, macOS and Windows,
+  and the ESP32-S3 firmware build. This physical evidence does not authorize
+  an unattended flash.
 
 This release remains source-only. Do not attach `torget.bin`: a locally built
 image contains the installer's Wi-Fi credentials and device key.

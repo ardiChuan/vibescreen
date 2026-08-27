@@ -5,7 +5,9 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ## Unreleased
 
-Release candidate notes:
+## v0.7.1 — 2026-08-27
+
+Release notes:
 [v0.7.1 — health and panel reliability](docs/releases/2026-08-27-health-and-panel-reliability.md).
 
 ### Added

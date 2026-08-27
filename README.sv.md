@@ -11,8 +11,8 @@ kan bo i egna repon. En skärm = en binär = ett bygge här. MIT-licens.
 
 Utbruten ur [Solelkollen](https://solelkollen.se)s firmware. VibePulse-repot
 äger nu skärmens firmware; den första fysiska flashen och den statiska grinden
-passerade 2026-08-13, OTA-kedjan följde 2026-08-14 och v0.7.0 släpptes
-2026-08-23.
+passerade 2026-08-13, OTA-kedjan följde 2026-08-14, v0.7.0 släpptes
+2026-08-23 och v0.7.1:s hälso- och panelreliabilitetsfixar 2026-08-27.
 
 ## Arkitekturen i tre meningar
 
