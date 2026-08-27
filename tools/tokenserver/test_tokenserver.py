@@ -1130,6 +1130,14 @@ class CodexLimitLogTests(unittest.TestCase):
         self.assertEqual(reset_min, 60)
         self.assertEqual(window_min, 10080)
 
+    def test_app_server_uses_shared_codex_resolver(self):
+        expected = (
+            r"C:\Users\Tester\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe")
+        with mock.patch.object(
+                tokenserver, "resolve_codex_executable",
+                return_value=expected):
+            self.assertEqual(tokenserver._codex_app_server_command(), expected)
+
     def _fake_app_server(self, temp_dir, body):
         """Ett körbart som talar app-server-protokollet på stdin/stdout.
 

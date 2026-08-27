@@ -1346,6 +1346,19 @@ class PluginPackageTests(unittest.TestCase):
 
 
 class SetupPlanTests(unittest.TestCase):
+    def test_auto_executable_resolution_uses_shared_codex_resolver(self):
+        setup = load_setup()
+        expected = Path(
+            r"C:\Users\Tester\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe")
+        with mock.patch.object(
+                setup, "resolve_codex_executable",
+                return_value=str(expected)):
+            python, codex = setup._resolve_executables(
+                setup._AUTO, setup._AUTO)
+
+        self.assertEqual(python, Path(sys.executable))
+        self.assertEqual(codex, expected)
+
     def test_real_python_probe_has_the_exact_cross_platform_sentinel(self):
         """A stray space made healthy Python 3.12 fail doctor on Windows."""
         setup = load_setup()

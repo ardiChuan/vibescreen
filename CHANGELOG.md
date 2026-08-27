@@ -25,6 +25,14 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   document private reporting, secret handling, platform-claim discipline, and
   the difference between CI, real-host, and physical-panel validation.
 
+### Fixed
+
+- Windows Codex discovery now prefers OpenAI's standalone per-user CLI and
+  rejects Store-managed `WindowsApps` aliases that can resolve successfully
+  but fail with Access Denied under Task Scheduler or other background hosts.
+  The README and tokenserver guide include the official install and doctor
+  verification commands.
+
 ## v0.7.1 — 2026-08-27
 
 Release notes:
