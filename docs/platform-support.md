@@ -15,7 +15,7 @@ firmware from that operating system.
 | Host | Tokenserver | Autostart | Automated evidence | Real-host evidence | Public status |
 |---|---|---|---|---|---|
 | macOS | Yes | launchd | Tokenserver matrix + full host gate | Daily development and physical panel reviews | Supported |
-| Windows | Yes | Task Scheduler | Tokenserver matrix on `windows-latest`; installer/runner parser and `-ValidateOnly` gate | Windows host validation is required for each public support milestone | Supported; the new persistent-log path remains tracked in [#28](https://github.com/niclasvestlund-YT/vibepulse/issues/28) until it passes a real scheduled-task lifecycle |
+| Windows | Yes | Task Scheduler | Tokenserver matrix on `windows-latest`; installer/runner parser and `-ValidateOnly` gate | Host service, scheduled start, bounded log, and provider sources have partial real-PC evidence | Host supported; current post-v0.7.1 candidate is **PARTIAL**, not physical end to end. Persistent lifecycle completion remains tracked in [#28](https://github.com/niclasvestlund-YT/vibepulse/issues/28) |
 | Linux | Not on `main` | Not shipped | The Python suite runs on Ubuntu, but that alone does not exercise a supported Linux installation | No current-main release report | Not supported yet; tracked in [#2](https://github.com/niclasvestlund-YT/vibepulse/issues/2) |
 
 The v0.7.1 tokenserver matrix passed on Windows, macOS, and Ubuntu in the
@@ -29,6 +29,15 @@ source. It remained PARTIAL because that PC had no scheduled task, the
 app-owned Codex executable could not be invoked from the validation
 environment, external LAN reachability was not tested, and the panel never
 completed the physical loop.
+
+The newer
+[current-main checkpoint](superpowers/reviews/2026-08-28-windows-current-main-partial.md)
+records the fixes and additional real-PC evidence after v0.7.1. It confirms a
+running scheduled service with bounded logs and fresh Claude/Codex sources on
+an earlier merged candidate, plus a real-Windows Codex probe and green checks
+on current `main`. It remains PARTIAL because the exact final merge was not
+rerun through watchdog, firewall/LAN, session transitions, recent panel
+polling, and the physical answer loop.
 
 ## What “validated on Windows” means
 
@@ -89,4 +98,6 @@ parts rather than merging the stale branch wholesale.
   human touch → originating agent all completed with explicit evidence.
 
 Release notes and social posts should use the narrowest true claim. In
-particular, never turn “Ubuntu tests are green” into “Linux is supported.”
+particular, never turn “Ubuntu tests are green” into “Linux is supported,” or
+“the Windows host service is supported” into “this candidate passed the
+physical Windows loop.”

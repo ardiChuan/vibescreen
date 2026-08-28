@@ -180,8 +180,9 @@ Verify all of these and record timestamps:
 4. it returns after sleep/resume;
 5. one full Windows reboot does not leave the panel stale.
 
-The tagged v0.7.1 scheduler task has no persistent stdout/stderr log. The next
-candidate adds `%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log`; keep
+The tagged v0.7.1 scheduler task has no persistent stdout/stderr log.
+Post-v0.7.1 `main` adds
+`%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log`; keep
 [#28](https://github.com/niclasvestlund-YT/vibepulse/issues/28) open until the
 new wrapper, rotation, quoting, restart, and non-ASCII-profile path pass on a
 real scheduled task.
@@ -213,6 +214,13 @@ The first real-PC baseline for the tagged v0.7.1 release is recorded in
 [Windows v0.7.1 read-only validation](superpowers/reviews/2026-08-27-windows-v0.7.1-read-only.md).
 It is intentionally PARTIAL and must not be cited as a physical end-to-end
 pass.
+
+The later
+[current-main checkpoint](superpowers/reviews/2026-08-28-windows-current-main-partial.md)
+records post-v0.7.1 Task Scheduler, logging, provider, and Codex app-server
+evidence. It is also intentionally PARTIAL: an earlier commit's PASS does not
+automatically pass a later commit, and an unavailable PC turns unfinished rows
+into NOT TESTED rather than success.
 
 Record each row as PASS, FAIL, or NOT TESTED:
 

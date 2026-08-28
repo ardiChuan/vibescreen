@@ -334,7 +334,10 @@ reported as current.
   installation and recovery use the public
   **[Windows host runbook](docs/windows-setup.md)**, while release candidates
   use the reproducible
-  **[Windows validation gate](docs/windows-validation.md)**.
+  **[Windows validation gate](docs/windows-validation.md)**. “Host supported”
+  does not mean every later candidate has passed the physical Windows loop;
+  the latest sanitized checkpoint is explicitly
+  **[PARTIAL](docs/superpowers/reviews/2026-08-28-windows-current-main-partial.md)**.
 - **Claude Code and/or Codex.** Either alone is fine.
 - **2.4 GHz WiFi.** The ESP32-S3 can't see 5 GHz networks.
 
@@ -658,6 +661,9 @@ by default; set `PYTHON_BIN` to point at a different 3.11+ interpreter.
   checkout and Python 3.11+ interpreter without changing Task Scheduler. The
   complete install, hook-review, firewall, startup-health, physical-test, and
   recovery procedure is the [Windows host runbook](docs/windows-setup.md).
+  The host implementation is supported, while a release-level physical claim
+  still requires every row in the [Windows validation gate](docs/windows-validation.md)
+  to pass on the same exact candidate.
 - **Linux for the tokenserver?** Not yet —
   [#2](https://github.com/niclasvestlund-YT/vibepulse/issues/2). The Ubuntu
   tokenserver CI lane is portability evidence, not a support claim: current
