@@ -331,6 +331,16 @@ version and reset reason (OBS-01, done). **Watch for:** the plist's
 hardcoded `WorkingDirectory` is still the root cause waiting to recur —
 the guards make it visible, not impossible.
 
+**2026-08-28 recurrence:** the live tokenserver, Codex plugin, MCP registration,
+and marketplace had independently retained absolute paths to older checkouts.
+All could look installed while executing different revisions. Moving the
+plist required `bootout` + `bootstrap`; `kickstart` would have reused launchd's
+cached paths. The repair rule is now stricter: install all four integrations
+from one clean, durable checkout, run setup doctor, verify live `rev` and
+`srcFingerprint` with smoke against the actual port, and start a new Codex task.
+Historical tracebacks remain in the bounded log, so a post-repair verdict must
+also prove that no new error appeared after the new timestamp.
+
 ## 2026-08-13 · Stale data replayed as breaking news
 
 **What happened:** after a tokenserver outage, the revived agent feed's

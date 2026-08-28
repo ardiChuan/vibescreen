@@ -214,6 +214,13 @@ Optional plan badges: `--claude-plan {pro,max5x,max20x}`, `--codex-plan
 {plus,pro}`. Cosmetic labels only, never used in any percentage maths.
 
 For autostart on login, see [../tools/tokenserver/README.md](../tools/tokenserver/README.md).
+Treat the launchd plist, Codex plugin, MCP registration, and marketplace as four
+separate absolute-path integrations: setup being enabled is not enough. They
+must resolve to one clean, durable checkout. After a move, reload launchd with
+`bootout` + `bootstrap`, run doctor and smoke against the configured port, and
+start a new Codex task. The smoke result must identify the expected live
+revision and source fingerprint; old log warnings are not new failures unless
+their timestamps are after the reload.
 Windows installers should follow the complete
 [Windows host runbook](windows-setup.md), not copy a Task Scheduler command in
 isolation.
