@@ -21,6 +21,19 @@ point at the backlog item.
 
 ---
 
+## 2026-08-28 · Codex cancelled the panel before the panel deadline
+
+**What happened:** the canonical physical question reached the VibePulse MCP
+but returned computer fallback after roughly thirty seconds. **Root cause:**
+the bridge and permission hook allowed 125 seconds for the panel's bounded
+120-second hold, while `codex mcp add` left `tool_timeout_sec` unset and the
+CLI's shorter default won. **The rule:** every nested timeout must exceed the
+deadline it encloses, and setup must verify the persisted external value rather
+than its own constant. **Guards:** setup now atomically pins the owned MCP row
+to 130 seconds, doctor rejects the legacy missing value, and the Windows
+release runbook checks the real CLI listing. **Watch for:** Codex changing the
+MCP listing schema or maximum timeout.
+
 ## 2026-08-28 · USB-värden var inte panelens datavärd
 
 **What happened:** panelen flyttades från Macens USB-port till Windows och

@@ -221,6 +221,15 @@ def load_setup():
     return module
 
 
+def load_timeout_helper():
+    path = ROOT / "tools/codex_mcp_timeout.py"
+    spec = importlib.util.spec_from_file_location(
+        "vibepulse_codex_mcp_timeout_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class FakeRunner:
     def __init__(self, responses=()):
         self.responses = list(responses)
@@ -242,7 +251,7 @@ def result(returncode=0, stdout="", stderr=""):
 
 
 def owned_mcp(*, repo=ROOT, python=Path(sys.executable), enabled=True,
-              name="vibepulse", transport_extra=None):
+              name="vibepulse", transport_extra=None, tool_timeout=130):
     transport = {
         "type": "stdio",
         "command": str(Path(python).resolve()),
@@ -261,7 +270,7 @@ def owned_mcp(*, repo=ROOT, python=Path(sys.executable), enabled=True,
         "disabled_reason": None,
         "transport": transport,
         "startup_timeout_sec": None,
-        "tool_timeout_sec": None,
+        "tool_timeout_sec": tool_timeout,
         "auth_status": "unsupported",
     }
 
@@ -1385,7 +1394,84 @@ class PluginPackageTests(unittest.TestCase):
                           "unrelated Codex settings", prose)
 
 
+class CodexMcpTimeoutConfigTests(unittest.TestCase):
+    def test_adds_timeout_and_preserves_unrelated_toml(self):
+        helper = load_timeout_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            original = (
+                "model = \"gpt-test\"\n\n"
+                "[mcp_servers.peer]\ncommand = \"peer\"\n\n"
+                "[mcp_servers.vibepulse]\n"
+                "command = \"python\"\nargs = [\"mcp.py\"]\n")
+            path.write_text(original, encoding="utf-8")
+
+            helper.configure(path)
+
+            updated = path.read_text(encoding="utf-8")
+            self.assertIn("tool_timeout_sec = 130\n", updated)
+            self.assertIn("[mcp_servers.peer]\ncommand = \"peer\"", updated)
+            self.assertIn("model = \"gpt-test\"", updated)
+
+    def test_replaces_legacy_timeout_and_is_idempotent(self):
+        helper = load_timeout_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(
+                "[mcp_servers.vibepulse]\ncommand = \"python\"\n"
+                "tool_timeout_sec = 20\n",
+                encoding="utf-8")
+
+            helper.configure(path)
+            once = path.read_bytes()
+            helper.configure(path)
+
+            self.assertEqual(path.read_bytes(), once)
+            self.assertEqual(once.count(b"tool_timeout_sec = 130"), 1)
+
+    def test_missing_owned_section_fails_closed(self):
+        helper = load_timeout_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(
+                "[mcp_servers.peer]\ncommand = \"peer\"\n",
+                encoding="utf-8")
+            before = path.read_bytes()
+
+            with self.assertRaises(helper.TimeoutConfigError):
+                helper.configure(path)
+
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_config_symlink_is_refused(self):
+        helper = load_timeout_helper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.toml"
+            target.write_text(
+                "[mcp_servers.vibepulse]\ncommand = \"python\"\n",
+                encoding="utf-8")
+            link = root / "config.toml"
+            try:
+                link.symlink_to(target)
+            except OSError as exc:
+                if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("Windows symlinks require Developer Mode")
+                raise
+
+            with self.assertRaises(helper.TimeoutConfigError):
+                helper.configure(link)
+
+
 class SetupPlanTests(unittest.TestCase):
+    def test_legacy_missing_timeout_is_migratable_but_not_doctor_pass(self):
+        setup = load_setup()
+        legacy = compact([owned_mcp(tool_timeout=None)])
+        self.assertIsNone(setup._owned_mcp_state(
+            legacy, ROOT, Path(sys.executable)))
+        self.assertTrue(setup._owned_mcp_state(
+            legacy, ROOT, Path(sys.executable), allow_legacy_timeout=True))
+
     def test_auto_executable_resolution_uses_shared_codex_resolver(self):
         setup = load_setup()
         expected = Path(
@@ -1496,6 +1582,8 @@ class SetupPlanTests(unittest.TestCase):
             [codex_path, "mcp", "add", "vibepulse", "--", python_path,
              str(repo.resolve() /
                  ".agents/plugins/plugins/vibepulse/scripts/mcp_server.py")],
+            [python_path, str(repo.resolve() /
+                              "tools/codex_mcp_timeout.py")],
         ])
         self.assertNotEqual(
             commands[0][-1], str(repo.resolve() / ".agents/plugins"))
@@ -1523,9 +1611,9 @@ class SetupPlanTests(unittest.TestCase):
                 self.assertEqual((saved.claude_interactions,
                                   saved.codex_interactions), pair)
                 self.assertFalse(saved.interaction_detail)
-                self.assertEqual(len(runner.calls), 12)
+                self.assertEqual(len(runner.calls), 13)
                 self.assertEqual(
-                    [call[0] for call in runner.calls[5:9]],
+                    [call[0] for call in runner.calls[5:10]],
                     setup.plan_codex_install(
                         ROOT, Path(sys.executable), Path("/codex")))
                 self.assertTrue(all(isinstance(call[0], list)
@@ -2300,11 +2388,11 @@ class RelaySetupTests(unittest.TestCase):
                 repo_root=ROOT, config_path=path,
                 python=Path(sys.executable), codex=Path("/codex"),
                 run=runner, stdout=io.StringIO(), stdin_isatty=False), 0)
-            self.assertEqual(len(seen), 12)
+            self.assertEqual(len(seen), 13)
             self.assertTrue(all(saved == original for _, saved, _ in seen))
             self.assertEqual(setup.load_config(path), setup.VibePulseConfig(
                 codex_interactions=True))
-            self.assertEqual([entry[0] for entry in seen[5:9]],
+            self.assertEqual([entry[0] for entry in seen[5:10]],
                              setup.plan_codex_install(
                                  ROOT, Path(sys.executable), Path("/codex")))
             self.assertTrue(all(entry[2].get("shell") is False for entry in seen))
@@ -3226,7 +3314,8 @@ class RelaySetupTests(unittest.TestCase):
             ROOT, Path(sys.executable), Path("/codex"))
         self.assertEqual(setup._state_reconciliation_commands(
             absent, present, repo_root=ROOT, python=Path(sys.executable),
-            codex=Path("/codex")), [install[0], install[1], install[3]])
+            codex=Path("/codex")),
+            [install[0], install[1], install[3], install[4]])
 
     def test_success_requires_strict_observed_desired_external_state(self):
         setup = load_setup()

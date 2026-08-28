@@ -277,8 +277,10 @@ python3 tools/vibepulse_setup.py install
 Choose `off`, `claude`, `codex`, or `both`. Then choose whether bounded
 question/command detail may reach the local panel; the safe default is no.
 This saves the choices for the tokenserver and installs the optional Codex
-adapter. It does not start a cloud relay. A non-interactive install with no
-provider choice leaves both providers off.
+adapter. The installer also gives the VibePulse MCP tool a bounded 130-second
+deadline so Codex does not cancel the panel's 120-second answer window at its
+shorter default. It does not start a cloud relay. A non-interactive install
+with no provider choice leaves both providers off.
 
 Useful lifecycle commands:
 
