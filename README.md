@@ -36,9 +36,10 @@ the room, no window to switch to, no menu bar to squint at.
 
 > **Status:** v1.0.0. The core shelf-screen loop is real and physically
 > exercised on macOS and Windows: see quota, see an agent waiting, and answer
-> a supported prompt on the glass. The project is still active, optional
-> integrations remain opt-in, and every platform claim stays tied to its
-> recorded evidence.
+> a supported prompt on the glass. Windows core, physical answer loop, and
+> persistent sign-in/sleep/reboot lifecycle are verified. The project is still
+> active, optional integrations remain opt-in, and every platform claim stays
+> tied to its recorded evidence.
 
 ## Latest release: v1.0.0
 
@@ -51,7 +52,26 @@ hosts. The real Windows host also passed sign-out/sign-in, sleep/resume, and a
 full reboot without losing the scheduled service or leaving the panel stale.
 Silence and computer fallback are still never approval.
 
+### Windows v1 verification
+
+| Gate | Result |
+|---|---|
+| Clean host, complete tokenserver suite | **PASS** — 788 tests, 11 named skips, 0 failures/errors |
+| Task Scheduler, immediate start, exact-PID watchdog, bounded logs | **PASS** |
+| Real Claude/Codex sources, Private-only firewall, LAN and discovery | **PASS** |
+| Recent panel polling and **NEEDS YOU → APPROVE → Ja** | **PASS** |
+| Sign-out/sign-in, sleep/resume, full reboot | **PASS** |
+| Post-transition freshness | **PASS** — bounded convergence, then 12/12 fresh samples after sign-in and reboot |
+| Release/lifecycle PR CI and merged-main CI | **PASS** — 14/14 and 7/7 jobs |
+
+The tested host runtime was exact revision `bee5d8c`; tag `v1.0.0` resolves to
+`ab3ce92`, with documentation/tests only between them. The lifecycle evidence
+was merged to `main` at `4d1c47d`. This is exact-revision evidence: a future
+runtime change must pass the gate again.
+
 [Read the v1.0.0 notes](docs/releases/2026-08-28-windows-joins-the-shelf.md)
+· [Full Windows evidence](docs/superpowers/reviews/2026-08-28-windows-v1-full-lifecycle.md)
+· [Verified merged-main CI](https://github.com/niclasvestlund-YT/vibepulse/actions/runs/33214257872)
 · [Full changelog](CHANGELOG.md)
 · [Compare v0.7.1...v1.0.0](https://github.com/niclasvestlund-YT/vibepulse/compare/v0.7.1...v1.0.0)
 
@@ -340,8 +360,10 @@ reported as current.
   use the reproducible
   **[Windows validation gate](docs/windows-validation.md)**. “Host supported”
   does not mean every later candidate has passed the physical Windows loop;
-  the latest sanitized checkpoint is explicitly
-  **[PARTIAL](docs/superpowers/reviews/2026-08-28-windows-current-main-partial.md)**.
+  the v1 runtime's latest sanitized checkpoint is a
+  **[FULL PASS](docs/superpowers/reviews/2026-08-28-windows-v1-full-lifecycle.md)**,
+  while future runtime revisions require a fresh run rather than inheriting
+  that result.
 - **Claude Code and/or Codex.** Either alone is fine.
 - **2.4 GHz WiFi.** The ESP32-S3 can't see 5 GHz networks.
 
