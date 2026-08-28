@@ -34,22 +34,26 @@ Both answers already exist, buried in a terminal you're not looking at.
 VibePulse moves them onto a screen you can't miss: one glance from across
 the room, no window to switch to, no menu bar to squint at.
 
-> **Status:** work in progress. This is an ongoing project for me and plenty
-> of tweaks are still on the list, but enough people asked about it that I'm
-> opening it up now rather than when it feels "done". Expect rough edges and
-> frequent commits.
+> **Status:** v1.0.0. The core shelf-screen loop is real and physically
+> exercised on macOS and Windows: see quota, see an agent waiting, and answer
+> a supported prompt on the glass. The project is still active, optional
+> integrations remain opt-in, and every platform claim stays tied to its
+> recorded evidence.
 
-## Latest release: v0.7.1
+## Latest release: v1.0.0
 
-The 27 August reliability release warns before the Claude credential readable
-by VibePulse expires, proves whether the physical panel is actually polling,
-keeps startup responsive while relay history is scanned, fixes mixed-case and
-localized project-name glyphs, and standardizes one strict Codex panel smoke
-test. Silence and computer fallback are never treated as approval.
+The first major release makes Windows a first-class VibePulse host and records
+the real physical proof: clean source, full tests, Task Scheduler plus
+watchdog, bounded logs, real Claude/Codex sources, Private-LAN reachability,
+recent panel polling, and a human **NEEDS YOU → APPROVE → Ja** round trip.
+The same panel can discover and fail over between advertising Mac and Windows
+hosts. Silence and computer fallback are still never approval; persistent
+sign-in/sleep/reboot certification remains explicitly tracked rather than
+being guessed from one successful run.
 
-[Read the v0.7.1 notes](docs/releases/2026-08-27-health-and-panel-reliability.md)
+[Read the v1.0.0 notes](docs/releases/2026-08-28-windows-joins-the-shelf.md)
 · [Full changelog](CHANGELOG.md)
-· [Compare v0.7.0...v0.7.1](https://github.com/niclasvestlund-YT/vibepulse/compare/v0.7.0...v0.7.1)
+· [Compare v0.7.1...v1.0.0](https://github.com/niclasvestlund-YT/vibepulse/compare/v0.7.1...v1.0.0)
 
 Contributing or validating another host? Read
 [CONTRIBUTING.md](CONTRIBUTING.md), the
@@ -667,9 +671,13 @@ by default; set `PYTHON_BIN` to point at a different 3.11+ interpreter.
   checkout and Python 3.11+ interpreter without changing Task Scheduler. The
   complete install, hook-review, firewall, startup-health, physical-test, and
   recovery procedure is the [Windows host runbook](docs/windows-setup.md).
-  The host implementation is supported, while a release-level physical claim
-  still requires every row in the [Windows validation gate](docs/windows-validation.md)
-  to pass on the same exact candidate.
+  The v1.0 core service and physical answer loop passed on a real Windows PC;
+  see the [sanitized evidence](docs/superpowers/reviews/2026-08-28-windows-v1-core-physical.md).
+  Persistent sign-in, sleep/resume, and reboot certification remains tracked
+  in [#28](https://github.com/niclasvestlund-YT/vibepulse/issues/28), and a
+  complete release-level claim still requires every row in the
+  [Windows validation gate](docs/windows-validation.md) to pass on the same
+  exact candidate.
 - **Linux for the tokenserver?** Not yet —
   [#2](https://github.com/niclasvestlund-YT/vibepulse/issues/2). The Ubuntu
   tokenserver CI lane is portability evidence, not a support claim: current

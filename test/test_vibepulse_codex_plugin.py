@@ -1360,8 +1360,42 @@ class PluginPackageTests(unittest.TestCase):
         self.assertNotIn("eventual `v0.7.1` tag", release)
 
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("## Latest release: v0.7.1", readme)
-        self.assertIn("Compare v0.7.0...v0.7.1", readme)
+        self.assertIn("## Latest release: v1.0.0", readme)
+        self.assertIn("Compare v0.7.1...v1.0.0", readme)
+
+    def test_v100_release_is_major_windows_honest_and_source_only(self):
+        release = (ROOT / "docs/releases/"
+                   "2026-08-28-windows-joins-the-shelf.md").read_text(
+                       encoding="utf-8")
+        evidence = (ROOT / "docs/superpowers/reviews/"
+                    "2026-08-28-windows-v1-core-physical.md").read_text(
+                        encoding="utf-8")
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertFalse(release.lstrip().startswith("# "))
+        for required in (
+                "VibePulse v1.0.0", "Why 1.0", "Windows, for real",
+                "Ser du APPROVE?", "NEEDS YOU", "APPROVE",
+                "answered / option_index 0 / Ja", "788-test",
+                "Task Scheduler", "Private-profile-only", "source-only",
+                "Do not attach `torget.bin`", "v0.7.1...v1.0.0"):
+            self.assertIn(required, release)
+        for image in (
+                "vibepulse-codex-week.png",
+                "vibepulse-codex-needs-you.png",
+                "vibepulse-needs-you-codex-question.png"):
+            self.assertIn(
+                "https://raw.githubusercontent.com/"
+                "niclasvestlund-YT/vibepulse/v1.0.0/docs/img/" + image,
+                release)
+        for boundary in (
+                "PERSISTENT LIFECYCLE PARTIAL", "Sign-out/sign-in",
+                "Sleep/resume", "Reboot", "NOT TESTED"):
+            self.assertIn(boundary, evidence)
+        self.assertIn("## v1.0.0 — 2026-08-28", changelog)
+        self.assertIn("## Unreleased\n\n## v1.0.0", changelog)
+        for forbidden in ("oauth token:", "refresh token:",
+                          "account id:", "relay address:"):
+            self.assertNotIn(forbidden, release.lower())
 
     def test_default_runner_invokes_plugin_suite_once(self):
         runner = (ROOT / "test/run.sh").read_text(encoding="utf-8")
