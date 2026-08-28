@@ -49,11 +49,11 @@ Release notes:
 
 - VibePulse reaches `v1.0.0`: the core product promise—always-visible quota,
   live agent state, and an explicit human answer from the physical panel—is
-  now exercised on both macOS and a real Windows host. Windows sign-in,
-  sleep/resume, and reboot persistence remain a separately named lifecycle
-  certification gate rather than being inferred from a successful panel tap.
-- The Windows support matrix now distinguishes the verified core/physical
-  answer loop from the still-open persistent lifecycle rows tracked in #28.
+  now exercised on both macOS and a real Windows host. The same Windows
+  candidate subsequently passed real sign-out/sign-in, sleep/resume, and one
+  full reboot with the scheduled service and recent panel polling intact.
+- The Windows support matrix now records the completed core, physical, and
+  persistent-lifecycle gates while retaining their exact revision boundary.
 
 ### Fixed
 

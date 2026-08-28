@@ -47,9 +47,9 @@ the real physical proof: clean source, full tests, Task Scheduler plus
 watchdog, bounded logs, real Claude/Codex sources, Private-LAN reachability,
 recent panel polling, and a human **NEEDS YOU → APPROVE → Ja** round trip.
 The same panel can discover and fail over between advertising Mac and Windows
-hosts. Silence and computer fallback are still never approval; persistent
-sign-in/sleep/reboot certification remains explicitly tracked rather than
-being guessed from one successful run.
+hosts. The real Windows host also passed sign-out/sign-in, sleep/resume, and a
+full reboot without losing the scheduled service or leaving the panel stale.
+Silence and computer fallback are still never approval.
 
 [Read the v1.0.0 notes](docs/releases/2026-08-28-windows-joins-the-shelf.md)
 · [Full changelog](CHANGELOG.md)
@@ -671,13 +671,12 @@ by default; set `PYTHON_BIN` to point at a different 3.11+ interpreter.
   checkout and Python 3.11+ interpreter without changing Task Scheduler. The
   complete install, hook-review, firewall, startup-health, physical-test, and
   recovery procedure is the [Windows host runbook](docs/windows-setup.md).
-  The v1.0 core service and physical answer loop passed on a real Windows PC;
-  see the [sanitized evidence](docs/superpowers/reviews/2026-08-28-windows-v1-core-physical.md).
-  Persistent sign-in, sleep/resume, and reboot certification remains tracked
-  in [#28](https://github.com/niclasvestlund-YT/vibepulse/issues/28), and a
-  complete release-level claim still requires every row in the
-  [Windows validation gate](docs/windows-validation.md) to pass on the same
-  exact candidate.
+  The v1.0 core service, physical answer loop, sign-out/sign-in,
+  sleep/resume, and reboot all passed on a real Windows PC; see the
+  [full sanitized evidence](docs/superpowers/reviews/2026-08-28-windows-v1-full-lifecycle.md).
+  A later runtime revision still requires a fresh pass through the complete
+  [Windows validation gate](docs/windows-validation.md); release evidence is
+  never inherited across untested code.
 - **Linux for the tokenserver?** Not yet —
   [#2](https://github.com/niclasvestlund-YT/vibepulse/issues/2). The Ubuntu
   tokenserver CI lane is portability evidence, not a support claim: current

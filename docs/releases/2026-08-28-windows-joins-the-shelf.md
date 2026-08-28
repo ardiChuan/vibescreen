@@ -52,11 +52,18 @@ revision `bee5d8c9c9b47b761b5970c346cc0e641ac82485` passed:
 The sanitized evidence is preserved in the
 [Windows v1 core and physical report](https://github.com/niclasvestlund-YT/vibepulse/blob/v1.0.0/docs/superpowers/reviews/2026-08-28-windows-v1-core-physical.md).
 
-One boundary stays named: sign-out/sign-in, sleep/resume, and a full reboot
-were not performed in that pass. They remain the persistent lifecycle gate in
-[#28](https://github.com/niclasvestlund-YT/vibepulse/issues/28). The truthful
-v1 claim is **Windows core + physical answer loop verified**, not that three
-unrun transitions somehow passed.
+The first physical pass deliberately left sign-out/sign-in, sleep/resume, and
+a full reboot unclaimed. A subsequent continuation on the same installed
+runtime performed all three transitions for real. Task Scheduler ran after
+sign-in and boot, the service returned after sleep, Codex and Claude converged
+to fresh observations within the bounded readiness window, freshness then
+remained stable, and recent physical-panel polling survived the reboot. The
+sanitized continuation is the
+[Windows v1 full lifecycle report](https://github.com/niclasvestlund-YT/vibepulse/blob/main/docs/superpowers/reviews/2026-08-28-windows-v1-full-lifecycle.md).
+
+The resulting v1 claim is now **Windows core + physical answer loop +
+persistent lifecycle verified**. That claim remains pinned to the recorded
+v1 runtime and must not be inherited by a later untested runtime revision.
 
 ## One panel, Mac or Windows
 
