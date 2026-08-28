@@ -88,6 +88,9 @@ scheduled process must receive its verified bin directory without changing the
 user's global PATH. If the user already has a custom `CODEX_HOME`, the task
 must receive that verified directory process-locally without editing Codex
 settings or authentication.
+The installed VibePulse MCP row must report `tool_timeout_sec: 130`; a missing
+timeout lets Codex cancel the bridge before the panel's bounded 120-second
+answer window expires and is a failed interaction gate.
 
 ## 5. Exercise the real local sources on a temporary port
 
