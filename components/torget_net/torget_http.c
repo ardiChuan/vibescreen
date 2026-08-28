@@ -13,6 +13,7 @@
 #include "esp_timer.h"
 
 #include "net_source_policy.h"
+#include "service_discovery.h"
 
 static const char *TAG = "torget-http";
 
@@ -161,4 +162,44 @@ bool torget_http_get_failover(const char *lan_url, const char *relay_url,
   tg_net_source_note(&state, TG_NET_SOURCE_RELAY, ok, now);
   atomic_store(&s_relay_won, state.relay_won);
   return ok;
+}
+
+bool torget_http_get_service(const char *path, const char *configured_url,
+                             const char *relay_url, char *buf, size_t cap,
+                             size_t *len_out) {
+  char discovered[160];
+  tg_service_source source = TG_SERVICE_SOURCE_CONFIGURED;
+  if (!torget_service_endpoint_url(path, configured_url, discovered,
+                                   sizeof discovered, &source)) {
+    return false;
+  }
+  if (source == TG_SERVICE_SOURCE_CONFIGURED ||
+      strcmp(discovered, configured_url) == 0) {
+    return torget_http_get_failover(configured_url, relay_url,
+                                    buf, cap, len_out);
+  }
+
+  bool ok = http_get_timeout(discovered, buf, cap, len_out,
+                             TG_NET_REPROBE_TIMEOUT_MS, false);
+  torget_service_note_result(source, discovered, ok);
+  if (ok) return true;
+
+  /* The failed origin is now backed off. One immediate query may select a
+   * second advertising Mac/PC without waiting for the next poll interval. */
+  char alternate[160];
+  tg_service_source alternate_source = TG_SERVICE_SOURCE_CONFIGURED;
+  if (torget_service_endpoint_url(path, configured_url, alternate,
+                                  sizeof alternate, &alternate_source) &&
+      alternate_source == TG_SERVICE_SOURCE_DISCOVERED &&
+      strcmp(alternate, discovered) != 0 &&
+      strcmp(alternate, configured_url) != 0) {
+    ok = http_get_timeout(alternate, buf, cap, len_out,
+                          TG_NET_REPROBE_TIMEOUT_MS, false);
+    torget_service_note_result(alternate_source, alternate, ok);
+    if (ok) return true;
+  }
+
+  ESP_LOGI(TAG, "lokala VibePulse-värdar svarade inte, provar reservvägen");
+  return torget_http_get_failover(configured_url, relay_url,
+                                  buf, cap, len_out);
 }

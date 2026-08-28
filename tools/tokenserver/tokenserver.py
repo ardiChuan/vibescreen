@@ -67,6 +67,7 @@ except ImportError:  # macOS/Linux
     msvcrt = None
 
 if __package__:
+    from .discovery import DiscoveryAdvertiser
     from .agent_status import AgentStatusService
     from .codex_command import resolve_codex_executable
     from .codex_interactions import (
@@ -91,6 +92,7 @@ if __package__:
     )
     from . import codex_usage, interactions, value_meter
 else:  # direktkörning: python3 tools/tokenserver/tokenserver.py
+    from discovery import DiscoveryAdvertiser
     from agent_status import AgentStatusService
     from codex_command import resolve_codex_executable
     from codex_interactions import (
@@ -2263,6 +2265,8 @@ class Handler(BaseHTTPRequestHandler):
     interaction_relay_reason = None
     agent_status_relay_status = "off"
     agent_status_relay_reason = None
+    discovery_status = "off"
+    discovery_reason = None
     # Innehållsfritt närvarobevis för startup-hälsan. Den befintliga panelen
     # pollar /api/agent-status varje sekund. Två kända panel-GET från samma
     # icke-loopback-klient inom ett kort fönster är starkare evidens än en
@@ -2792,6 +2796,11 @@ class Handler(BaseHTTPRequestHandler):
                 "usageComputeFailingForS":
                     (int(time.monotonic() - failing_since)
                      if failing_since is not None else None),
+                "discovery": {
+                    "status": self.discovery_status,
+                    **({"reason": self.discovery_reason}
+                       if self.discovery_reason is not None else {}),
+                },
                 "interactions": {
                     "claude": bool(self.claude_interactions),
                     "codex": bool(self.codex_interactions),
@@ -3427,8 +3436,12 @@ def main():
     backfill_thread.start()
 
     srv = None
+    discovery = DiscoveryAdvertiser(log)
     try:
         srv = BoundedThreadingHTTPServer(("0.0.0.0", args.port), Handler)
+        discovery.start(args.port)
+        Handler.discovery_status = discovery.status
+        Handler.discovery_reason = discovery.reason
         log.info("serverar http://0.0.0.0:%d/api/tokens, "
                  "/api/agent-status, /api/max-tracker och /api/github "
                  "(LAN — exponera inte utåt)", args.port)
@@ -3436,6 +3449,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        discovery.stop()
         if interaction_relay_adapter is not None:
             interaction_relay_adapter.stop()
         if relay_publisher is not None:

@@ -20,4 +20,5 @@ tools.tokenserver.test_interaction_relay
 tools.tokenserver.test_interaction_relay_integration
 tools.tokenserver.test_interaction_relay_crypto
 tools.tokenserver.test_publisher
+tools.tokenserver.test_discovery
 tools.tokenserver.test_smoke

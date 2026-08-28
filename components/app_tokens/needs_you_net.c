@@ -23,6 +23,7 @@ static const char *TAG = "needs-you-net";
 #include "esp_http_client.h"
 
 #include "agent_monitor.h"
+#include "app_tokens.h"
 #include "agent_status.h"
 #include "needs_you_send_policy.h"
 #include "interaction_relay_policy.h"
@@ -97,8 +98,12 @@ static tk_ir_direct_result post_direct_verdict(const verdict_item *item) {
   char hmac_hex[TK_NEEDS_YOU_HMAC_HEX_CAP];
   char body[TK_NEEDS_YOU_BODY_CAP];
   char url[128];
+  char origin[64];
   const char *verdict_name = tk_needs_you_verdict_name(item->verdict);
-  if (!verdict_name) return TK_IR_DIRECT_HARD_REJECT;
+  if (!verdict_name ||
+      !tokens_agent_direct_origin(origin, sizeof origin)) {
+    return TK_IR_DIRECT_HARD_REJECT;
+  }
 
   if (item->panic) {
     if (tk_needs_you_canonical_message(message, sizeof message,
@@ -109,8 +114,7 @@ static tk_ir_direct_result post_direct_verdict(const verdict_item *item) {
     tk_needs_you_hmac_hex(hmac_hex, TK_VIBEPULSE_DEVICE_KEY, message);
     if (tk_needs_you_panic_body(body, sizeof body, item->ts, hmac_hex) < 0)
       return TK_IR_DIRECT_HARD_REJECT;
-    int written = snprintf(url, sizeof url, "%s/api/panic",
-                           TK_VIBEPULSE_BASE_URL);
+    int written = snprintf(url, sizeof url, "%s/api/panic", origin);
     if (written < 0 || (size_t)written >= sizeof url)
       return TK_IR_DIRECT_HARD_REJECT;
   } else {
@@ -144,7 +148,7 @@ static tk_ir_direct_result post_direct_verdict(const verdict_item *item) {
       }
     }
     int written = snprintf(url, sizeof url, "%s/api/interaction/%s",
-                           TK_VIBEPULSE_BASE_URL, item->context.request_id);
+                           origin, item->context.request_id);
     if (written < 0 || (size_t)written >= sizeof url)
       return TK_IR_DIRECT_HARD_REJECT;
   }

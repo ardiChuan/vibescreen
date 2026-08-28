@@ -58,7 +58,7 @@ assert re.search(
 ), "agent task start must sit next to the existing VibePulse task start"
 
 required_config = (
-    ".url = TK_AGENT_STATUS_URL",
+    ".url = client_url",
     ".timeout_ms = 2500",
     ".keep_alive_enable = true",
     ".keep_alive_idle = 5",
@@ -83,9 +83,12 @@ for operation in (
     "esp_http_client_close(",
 ):
     assert operation in source, f"bounded adapter must use {operation}"
-assert "esp_http_client_cleanup(" not in source, (
-    "the long-lived polling task must not destroy its client per poll"
+assert "strcmp(client_url, selected_url) != 0" in source
+assert "if (client) esp_http_client_cleanup(client);" in source, (
+    "the long-lived client must be replaced only when discovery changes host"
 )
+assert "torget_service_note_result(client_source, client_url, host_ok);" in source
+assert "remember_direct_origin(client_url);" in source
 assert re.search(
     r"tk_agent_source_note_lan\([^;]+;\s*"
     r"usage_screen_apply_agent\(snapshot, now_us\);", app, re.DOTALL
@@ -155,6 +158,7 @@ for binding_copy in (
     assert binding_copy in needs_you_net, f"missing queued binding: {binding_copy}"
 assert "tk_needs_you_canonical_message_v2(" in needs_you_net
 assert "tk_needs_you_answer_body_v2(" in needs_you_net
+assert "tokens_agent_direct_origin(origin, sizeof origin)" in needs_you_net
 assert re.search(
     r"context->provider\s*==\s*TK_AGENT_PROVIDER_CODEX\s*&&\s*"
     r"!context->has_view_sha256",

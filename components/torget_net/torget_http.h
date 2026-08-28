@@ -44,4 +44,11 @@ bool torget_http_get(const char *url, char *buf, size_t cap, size_t *len_out);
 bool torget_http_get_failover(const char *lan_url, const char *relay_url,
                               char *buf, size_t cap, size_t *len_out);
 
+/* Prefer a healthy _vibepulse._tcp service discovered on this LAN.  If mDNS
+ * is unavailable or every advertised host fails, preserve the exact existing
+ * configured-LAN then optional-relay behavior. */
+bool torget_http_get_service(const char *path, const char *configured_url,
+                             const char *relay_url, char *buf, size_t cap,
+                             size_t *len_out);
+
 #endif

@@ -165,6 +165,7 @@ capabilities:
       - torget-main-1fad449
       - waveshare-board-docs-2026-08-10
       - esp32s3-datasheet-2026-08-10
+      - espressif-mdns-1.11.3
     evidence:
       - {field: soc_capable, value: "yes", source: esp32s3-datasheet-2026-08-10}
       - {field: board_wired, value: "yes", source: waveshare-schematic-2026-08-10}

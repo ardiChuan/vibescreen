@@ -453,9 +453,19 @@ timmarna i den aktuella veckocykeln. Resultatet är antingen `collecting`,
 `unavailable`, beräknad procent vid reset (`at_reset`) eller beräknad tid då
 quotan tar slut (`exhausts`).
 
-Peka skärmen hit i reporotens `secrets.h`. På macOS är Bonjour-namnet bäst;
-på Windows används den aktiva LAN-adressen med en DHCP-reservation eftersom
-tjänsten inte annonserar mDNS där:
+Installera den valfria lokala upptäckten i samma Pythonmiljö som tjänsten:
+
+```sh
+python3 -m pip install -r requirements-discovery.txt
+```
+
+Tjänsten annonserar då `_vibepulse._tcp.local` utan kvoter, projektdata eller
+hemligheter. Aktuell firmware cachar en frisk Mac/PC och byter först efter ett
+begränsat fel. Utan paketet startar samma stdlib-tjänst och använder den
+kompilerade reservadressen exakt som tidigare.
+
+Peka därför fortfarande skärmens fallback hit i reporotens `secrets.h`. På
+macOS är Bonjour-namnet bäst; på Windows används en DHCP-reserverad LAN-adress:
 
 ```c
 #define TK_TOKENS_URL "http://<datorns-host-eller-lan-ip>:8737/api/tokens"

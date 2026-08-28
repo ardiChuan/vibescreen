@@ -1,9 +1,12 @@
 /*
- * Agentstatus från VibePulse-tjänsten. En enda HTTP-klient återanvänds av
- * den långlivade tasken; fel lämnar alltid den senaste goda UI-statusen.
+ * Agentstatus från VibePulse-tjänsten. En HTTP-klient återanvänds så länge
+ * samma upptäckta/configurerade värd gäller; fel lämnar senaste goda UI-status.
  */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+#include <stdio.h>
+#include <string.h>
 
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -13,6 +16,7 @@
 #include "app_tokens.h"
 #include "secrets.h"
 #include "torget.h"
+#include "service_discovery.h"
 
 static const char *TAG = "agent-net";
 
@@ -28,6 +32,43 @@ static const char *TAG = "agent-net";
 #ifdef TK_AGENT_STATUS_URL
 
 static tk_agent_http_response response;
+static portMUX_TYPE s_origin_lock = portMUX_INITIALIZER_UNLOCKED;
+static char s_direct_origin[64];
+
+static bool origin_from_url(const char *url, char *origin, size_t cap) {
+  if (!url || strncmp(url, "http://", 7) != 0 || !origin || cap == 0)
+    return false;
+  const char *path = strchr(url + 7, '/');
+  if (!path) return false;
+  size_t len = (size_t)(path - url);
+  if (len == 0 || len >= cap) return false;
+  memcpy(origin, url, len);
+  origin[len] = '\0';
+  return true;
+}
+
+static void remember_direct_origin(const char *url) {
+  char origin[sizeof s_direct_origin] = {0};
+  if (!origin_from_url(url, origin, sizeof origin)) return;
+  taskENTER_CRITICAL(&s_origin_lock);
+  memcpy(s_direct_origin, origin, sizeof s_direct_origin);
+  s_direct_origin[sizeof s_direct_origin - 1] = '\0';
+  taskEXIT_CRITICAL(&s_origin_lock);
+}
+
+bool tokens_agent_direct_origin(char *origin, size_t cap) {
+  if (!origin || cap == 0) return false;
+  char selected[sizeof s_direct_origin] = {0};
+  taskENTER_CRITICAL(&s_origin_lock);
+  memcpy(selected, s_direct_origin, sizeof selected);
+  taskEXIT_CRITICAL(&s_origin_lock);
+  if (!selected[0] &&
+      !origin_from_url(TK_AGENT_STATUS_URL, selected, sizeof selected)) {
+    return false;
+  }
+  int written = snprintf(origin, cap, "%s", selected);
+  return written >= 0 && (size_t)written < cap;
+}
 
 static esp_err_t status_http_event(esp_http_client_event_t *event) {
   /* ESP-IDF ignorerar callbackens returvärde för ON_DATA. Den bounded
@@ -102,25 +143,42 @@ static void agent_net_task(void *arg) {
   torget_net_wait();
   vTaskDelay(pdMS_TO_TICKS(3000));
 
-  esp_http_client_config_t cfg = {
-    .url = TK_AGENT_STATUS_URL,
-    .timeout_ms = 2500,
-    .keep_alive_enable = true,
-    .keep_alive_idle = 5,
-    .keep_alive_interval = 5,
-    .keep_alive_count = 3,
-    .event_handler = status_http_event,
-    .user_data = &response,
-  };
-  esp_http_client_handle_t client = esp_http_client_init(&cfg);
-  if (!client) {
-    ESP_LOGE(TAG, "agentstatus kunde inte skapa HTTP-klient");
-    vTaskDelete(NULL);
-    return;
-  }
+  esp_http_client_handle_t client = NULL;
+  char client_url[160] = {0};
+  tg_service_source client_source = TG_SERVICE_SOURCE_CONFIGURED;
 
   ESP_LOGI(TAG, "agentstatuspollning startad");
   for (;;) {
+    char selected_url[sizeof client_url];
+    tg_service_source selected_source = TG_SERVICE_SOURCE_CONFIGURED;
+    if (!torget_service_endpoint_url(
+            "/api/agent-status", TK_AGENT_STATUS_URL,
+            selected_url, sizeof selected_url, &selected_source)) {
+      vTaskDelay(pdMS_TO_TICKS(AGENT_POLL_MS));
+      continue;
+    }
+    if (!client || strcmp(client_url, selected_url) != 0) {
+      if (client) esp_http_client_cleanup(client);
+      snprintf(client_url, sizeof client_url, "%s", selected_url);
+      client_source = selected_source;
+      esp_http_client_config_t cfg = {
+        .url = client_url,
+        .timeout_ms = 2500,
+        .keep_alive_enable = true,
+        .keep_alive_idle = 5,
+        .keep_alive_interval = 5,
+        .keep_alive_count = 3,
+        .event_handler = status_http_event,
+        .user_data = &response,
+      };
+      client = esp_http_client_init(&cfg);
+      if (!client) {
+        ESP_LOGW(TAG, "agentstatus kunde inte skapa HTTP-klient");
+        client_url[0] = '\0';
+        vTaskDelay(pdMS_TO_TICKS(AGENT_POLL_MS));
+        continue;
+      }
+    }
     tk_agent_http_fetch_result fetch =
         tk_agent_http_fetch_bounded(client, &response, &status_http_io);
     esp_err_t err = fetch == TK_AGENT_HTTP_FETCH_OK ? ESP_OK : ESP_FAIL;
@@ -131,12 +189,23 @@ static void agent_net_task(void *arg) {
     if (transport_ok && response.status == 200 && !response.overflow) {
       parsed = tk_agent_status_parse(response.body, response.len, &snapshot);
     }
-    if (tk_agent_http_response_can_apply(&response, transport_ok, parsed)) {
+    bool accepted = tk_agent_http_response_can_apply(
+        &response, transport_ok, parsed);
+    bool host_ok = transport_ok && response.status == 200 &&
+                   !response.overflow;
+    torget_service_note_result(client_source, client_url, host_ok);
+    if (accepted) {
+      remember_direct_origin(client_url);
       torget_ui_lock();
       tokens_apply_agent_status(&snapshot);
       torget_ui_unlock();
     } else {
       log_rejection(err, parsed);
+      if (client_source == TG_SERVICE_SOURCE_DISCOVERED && !host_ok) {
+        esp_http_client_cleanup(client);
+        client = NULL;
+        client_url[0] = '\0';
+      }
     }
 
     vTaskDelay(pdMS_TO_TICKS(AGENT_POLL_MS));
@@ -151,6 +220,17 @@ void tokens_agent_net_start(void) {
 }
 
 #else
+
+bool tokens_agent_direct_origin(char *origin, size_t cap) {
+  if (!origin || cap == 0) return false;
+#ifdef TK_VIBEPULSE_BASE_URL
+  int written = snprintf(origin, cap, "%s", TK_VIBEPULSE_BASE_URL);
+  return written >= 0 && (size_t)written < cap;
+#else
+  origin[0] = '\0';
+  return false;
+#endif
+}
 
 void tokens_agent_net_start(void) {
   ESP_LOGW(TAG, "TK_AGENT_STATUS_URL saknas i secrets.h — agentstatus avstängd");
