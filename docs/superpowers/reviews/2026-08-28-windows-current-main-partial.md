@@ -40,11 +40,11 @@ private path, or LAN address is included here.
 | Exact-process automatic watchdog restart | NOT TESTED on current main | The pre-fix baseline failed; the watchdog fix is merged and tested in CI, but the final real-process repetition is still required |
 | Bounded scheduled-task log | PARTIAL on current main | The runner's capture/rotation checks passed and the real task created its log; the live file/rotation bounds were not re-measured in the final rerun |
 | Claude source | PASS | Safe probe status and fresh weekly/model observations were recorded on the exact current-main service |
-| Codex source | PASS | The task-pinned direct probe passed; the scheduled source became fresh with a numeric observation after its asynchronous app-server cycle completed |
+| Codex source | PASS | The task-pinned direct probe passed; the scheduled source became fresh with a numeric observation after its asynchronous app-server cycle completed. A later second-device LAN poll reproduced the temporary stale-to-fresh transition and ended fresh without restart or mutation |
 | Codex plugin/MCP registration | FAIL / unresolved | Final doctor reported both missing after the setup command had returned success; a later read-only CLI provenance query timed out. Neither state is called PASS |
 | Windows interaction device key | FAIL | The exact-current-main service reported that no device key was available, so Windows cannot accept a panel verdict |
-| Private-profile firewall | FAIL | No matching inbound Private TCP 8737 rule was present; the validation process was not elevated and did not change it |
-| Second-device LAN reachability | NOT TESTED | Private-address self-check passed; another LAN device was not used |
+| Private-profile firewall | FAIL configuration evidence / functionally reachable | No matching named inbound Private TCP 8737 rule was found and no elevation was used. Despite that, a second LAN computer reached the service successfully; the effective rule/path still needs attribution rather than assuming the named rule exists |
+| Second-device LAN reachability | PASS | A separate macOS computer resolved the Windows host over local mDNS, connected to TCP 8737, and received valid root, tokens, agent-status, and max-tracker schemas without using localhost or recording an address |
 | Recent panel polling | FAIL | Exact-current-main root health reported `waiting`, not `ready` |
 | Remote validation follow-ups | BLOCKED | The host remained online, but three consecutive bounded follow-up turns completed without message or tool output. No result was inferred, and no replacement task was created without explicit authorization. This is a validation-transport blocker, not a product PASS or product failure |
 | Canonical physical question and human answer | NOT TESTED | No visible **APPROVE**, human tap, and returned `answered / 0 / Ja` tuple on Windows |
