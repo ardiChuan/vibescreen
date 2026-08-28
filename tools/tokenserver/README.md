@@ -9,10 +9,9 @@
 > `--claude-plan {pro,max5x,max20x}` and/or `--codex-plan
 > {plus,pro}` to show a plan badge on the Max Tracker pages; both flags are
 > optional and purely cosmetic (a display label, never used in any
-> percentage math). Autostart on login: `cp se.torget.tokenserver.plist
-> ~/Library/LaunchAgents/ && launchctl load
-> ~/Library/LaunchAgents/se.torget.tokenserver.plist` (edit the path inside
-> if the repo isn't at `~/Torget`). Default privacy contract: only percentages
+> percentage math). For autostart on login, follow
+> [Autostart via launchd](#autostart-via-launchd) and verify the live revision;
+> do not copy an old plist between checkouts. Default privacy contract: only percentages
 > and counts are served. Optional local interactions can transiently serve
 > bounded detail, but prompts, commands and file contents are not stored.
 > Full details below in Swedish. Your agent translates.
@@ -467,9 +466,11 @@ Windows LAN-IP: `ipconfig`; reservera den valda IPv4-adressen i routern.
 
 ## Autostart via launchd
 
-```
+```sh
 cp se.torget.tokenserver.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/se.torget.tokenserver.plist
+plutil -lint ~/Library/LaunchAgents/se.torget.tokenserver.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/se.torget.tokenserver.plist 2>/dev/null || true
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/se.torget.tokenserver.plist
 ```
 
 Plisten antar att repot bor i `~/Torget`, att repots Python 3.11+-miljö finns
@@ -480,6 +481,26 @@ annars. Med krypterat interaktionsrelä aktiverat ska den miljön även ha
 omstart; servern roterar den själv vid start om den vuxit förbi ~5 MB, med
 svansen bevarad i `.old`). Raderna har tidsstämplar och loggar övergångar,
 inte tillstånd: en frisk vecka är några rader, inte tusen.
+
+Använd en ren, beständig checkout som inte ska raderas när en PR är klar.
+`ProgramArguments[0]` (Python) och `WorkingDirectory` måste peka på samma
+checkout. Om någon plist-rad ändras räcker inte `kickstart`: launchd behåller
+den redan inlästa konfigurationen. Kör `bootout` + `bootstrap` enligt ovan.
+Bevara privata argument och reläinställningar när bara sökvägen flyttas.
+
+Efter installation eller flytt ska tre lager peka på samma källa:
+
+1. `python3 tools/vibepulse_setup.py doctor` ska godkänna Codex-plugin, MCP
+   och tokenserver. Hook-trust granskas fortfarande manuellt i `/hooks`.
+2. `python3 tools/tokenserver/smoke.py --base-url http://127.0.0.1:8737`
+   ska rapportera den väntade `rev`, matchande källfingeravtryck och noll fel.
+   Ange den faktiskt konfigurerade porten om den inte är 8737.
+3. Starta en ny Codex-task efter att plugin/MCP har flyttats, så att den nya
+   processen verkligen laddas. Tystnad eller en gammal task är inte bevis.
+
+Röktestets totalsiffror för tracebacks och starter omfattar bevarad historik.
+Efter en reparation ska även tidsstämplarna kontrolleras: exakt en ny start och
+inga nya traceback/error-rader efter omladdningen är det friska resultatet.
 
 Snabbaste hälsokollen är röktestet — kamrutinens steg 1–4 som ett kommando:
 
