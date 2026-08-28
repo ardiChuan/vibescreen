@@ -5,6 +5,11 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ## Unreleased
 
+## v1.0.0 — 2026-08-28
+
+Release notes:
+[v1.0.0 — Windows joins the shelf](docs/releases/2026-08-28-windows-joins-the-shelf.md).
+
 ### Added
 
 - Optional `_vibepulse._tcp.local` discovery lets one panel stay pinned to a
@@ -31,6 +36,24 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 - A sanitized post-v0.7.1 Windows checkpoint pins every real-host observation
   to its exact commit and keeps firewall, lifecycle, recent-panel, and physical
   rows explicitly failed or not tested instead of inheriting an older pass.
+- A real Windows host now advertises `_vibepulse._tcp.local`, allowing the same
+  panel to move between healthy Mac and Windows tokenservers without changing
+  a compiled address. Discovery remains LAN-only and publishes no credential,
+  prompt, account, or quota data.
+- A sanitized exact-revision Windows report records a clean checkout, the full
+  tokenserver suite, Task Scheduler start and watchdog recovery, bounded logs,
+  real Claude/Codex source health, Private-only LAN reachability, recent panel
+  polling, and the canonical physical `NEEDS YOU` → `APPROVE` answer loop.
+
+### Changed
+
+- VibePulse reaches `v1.0.0`: the core product promise—always-visible quota,
+  live agent state, and an explicit human answer from the physical panel—is
+  now exercised on both macOS and a real Windows host. Windows sign-in,
+  sleep/resume, and reboot persistence remain a separately named lifecycle
+  certification gate rather than being inferred from a successful panel tap.
+- The Windows support matrix now distinguishes the verified core/physical
+  answer loop from the still-open persistent lifecycle rows tracked in #28.
 
 ### Fixed
 
@@ -45,6 +68,11 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   but fail with Access Denied under Task Scheduler or other background hosts.
   The README and tokenserver guide include the official install and doctor
   verification commands.
+- The optional Codex MCP bridge now gives a panel question the complete
+  120-second human-answer window instead of allowing Codex's shorter default
+  tool deadline to turn a healthy physical flow into computer fallback.
+- The ESP-IDF mDNS component is locked in the dependency manifest so clean
+  firmware builds reproduce the Mac/Windows discovery code used by the panel.
 
 ## v0.7.1 — 2026-08-27
 

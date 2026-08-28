@@ -33,12 +33,12 @@ redder than the release:
 ```powershell
 $ValidationRoot = Join-Path $env:TEMP ("vibepulse-validation-" + [guid]::NewGuid())
 git clone https://github.com/niclasvestlund-YT/vibepulse.git $ValidationRoot
-git -C $ValidationRoot checkout --detach v0.7.1
+git -C $ValidationRoot checkout --detach v1.0.0
 git -C $ValidationRoot describe --tags --always --dirty
 git -C $ValidationRoot status --short
 ```
 
-The description must be `v0.7.1` and status output must be empty. For a future
+The description must be `v1.0.0` and status output must be empty. For a future
 release, substitute the exact candidate tag or commit everywhere in this
 document.
 
@@ -185,12 +185,11 @@ Verify all of these and record timestamps:
 4. it returns after sleep/resume;
 5. one full Windows reboot does not leave the panel stale.
 
-The tagged v0.7.1 scheduler task has no persistent stdout/stderr log.
-Post-v0.7.1 `main` adds
-`%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log`; keep
+The v1.0.0 scheduler wrapper writes bounded stdout/stderr to
+`%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log` and retains one bounded
+`.old` tail. The tagged v0.7.1 task predated that log. Keep
 [#28](https://github.com/niclasvestlund-YT/vibepulse/issues/28) open until the
-new wrapper, rotation, quoting, restart, and non-ASCII-profile path pass on a
-real scheduled task.
+remaining sign-in, sleep/resume, and reboot rows pass on one exact candidate.
 
 ## 8. Close the physical loop
 
@@ -226,6 +225,12 @@ records post-v0.7.1 Task Scheduler, logging, provider, and Codex app-server
 evidence. It is also intentionally PARTIAL: an earlier commit's PASS does not
 automatically pass a later commit, and an unavailable PC turns unfinished rows
 into NOT TESTED rather than success.
+
+The subsequent
+[v1.0 core and physical checkpoint](superpowers/reviews/2026-08-28-windows-v1-core-physical.md)
+records the recovered real-host gates and the exact human panel answer on
+`bee5d8c`. It is the physical answer-loop proof, but not a substitute for the
+three still-unrun persistent lifecycle transitions.
 
 Record each row as PASS, FAIL, or NOT TESTED:
 
