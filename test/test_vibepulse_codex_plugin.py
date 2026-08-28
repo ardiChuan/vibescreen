@@ -1370,6 +1370,9 @@ class PluginPackageTests(unittest.TestCase):
         evidence = (ROOT / "docs/superpowers/reviews/"
                     "2026-08-28-windows-v1-core-physical.md").read_text(
                         encoding="utf-8")
+        lifecycle = (ROOT / "docs/superpowers/reviews/"
+                     "2026-08-28-windows-v1-full-lifecycle.md").read_text(
+                         encoding="utf-8")
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertFalse(release.lstrip().startswith("# "))
         for required in (
@@ -1391,11 +1394,19 @@ class PluginPackageTests(unittest.TestCase):
                 "PERSISTENT LIFECYCLE PARTIAL", "Sign-out/sign-in",
                 "Sleep/resume", "Reboot", "NOT TESTED"):
             self.assertIn(boundary, evidence)
+        for completed in (
+                "FULL WINDOWS v1 PASS", "Sign-out/sign-in", "Sleep entered",
+                "Full reboot occurred", "12 of 12", "Physical panel after reboot",
+                "bee5d8c9c9b47b761b5970c346cc0e641ac82485",
+                "ab3ce92a069b4cc66312b6043e3715829d1bb763"):
+            self.assertIn(completed, lifecycle)
+        self.assertIn("persistent lifecycle verified", release)
         self.assertIn("## v1.0.0 — 2026-08-28", changelog)
         self.assertIn("## Unreleased\n\n## v1.0.0", changelog)
         for forbidden in ("oauth token:", "refresh token:",
                           "account id:", "relay address:"):
             self.assertNotIn(forbidden, release.lower())
+            self.assertNotIn(forbidden, lifecycle.lower())
 
     def test_default_runner_invokes_plugin_suite_once(self):
         runner = (ROOT / "test/run.sh").read_text(encoding="utf-8")

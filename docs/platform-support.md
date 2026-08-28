@@ -15,7 +15,7 @@ firmware from that operating system.
 | Host | Tokenserver | Autostart | Automated evidence | Real-host evidence | Public status |
 |---|---|---|---|---|---|
 | macOS | Yes | launchd | Tokenserver matrix + full host gate | Daily development and physical panel reviews | Supported |
-| Windows | Yes | Task Scheduler | Tokenserver matrix on `windows-latest`; installer/runner parser and `-ValidateOnly` gate | Core service, watchdog, bounded log, providers, Private LAN, recent polling, and the physical answer loop passed on a real PC at `bee5d8c` | Host supported; v1 core + physical loop verified. Persistent sign-in/sleep/reboot certification remains tracked in [#28](https://github.com/niclasvestlund-YT/vibepulse/issues/28) |
+| Windows | Yes | Task Scheduler | Tokenserver matrix on `windows-latest`; installer/runner parser and `-ValidateOnly` gate | Core service, watchdog, bounded log, providers, Private LAN, recent polling, physical answer, sign-out/sign-in, sleep/resume, and reboot passed on a real PC at `bee5d8c` | Supported; v1 core, physical loop, and persistent lifecycle verified |
 | Linux | Not on `main` | Not shipped | The Python suite runs on Ubuntu, but that alone does not exercise a supported Linux installation | No current-main release report | Not supported yet; tracked in [#2](https://github.com/niclasvestlund-YT/vibepulse/issues/2) |
 
 The v0.7.1 tokenserver matrix passed on Windows, macOS, and Ubuntu in the
@@ -42,11 +42,11 @@ polling, and the physical answer loop.
 The final v1 host-code checkpoint at `bee5d8c` closes those core gaps: exact
 watchdog recovery, bounded live logs, the named Private-only firewall rule,
 real LAN reachability, fresh providers, recent panel polling, and the
-canonical human answer all passed. See the
-[sanitized v1 core and physical report](superpowers/reviews/2026-08-28-windows-v1-core-physical.md).
-Sign-out/sign-in, sleep/resume, and one reboot remain NOT TESTED; they are a
-persistent lifecycle boundary, not a reason to erase the physical PASS and
-not something the release may silently infer.
+canonical human answer all passed. A continuation on the same installed
+runtime then passed sign-out/sign-in, sleep/resume, and one full reboot. See
+the [sanitized v1 core report](superpowers/reviews/2026-08-28-windows-v1-core-physical.md)
+and the subsequent
+[full lifecycle report](superpowers/reviews/2026-08-28-windows-v1-full-lifecycle.md).
 
 ## What “validated on Windows” means
 

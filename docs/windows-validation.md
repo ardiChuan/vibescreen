@@ -187,9 +187,9 @@ Verify all of these and record timestamps:
 
 The v1.0.0 scheduler wrapper writes bounded stdout/stderr to
 `%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log` and retains one bounded
-`.old` tail. The tagged v0.7.1 task predated that log. Keep
-[#28](https://github.com/niclasvestlund-YT/vibepulse/issues/28) open until the
-remaining sign-in, sleep/resume, and reboot rows pass on one exact candidate.
+`.old` tail. The tagged v0.7.1 task predated that log. Allow a bounded source
+warm-up after a session or power transition, then require a continuous fresh
+window; a single transient success is not enough.
 
 ## 8. Close the physical loop
 
@@ -229,8 +229,11 @@ into NOT TESTED rather than success.
 The subsequent
 [v1.0 core and physical checkpoint](superpowers/reviews/2026-08-28-windows-v1-core-physical.md)
 records the recovered real-host gates and the exact human panel answer on
-`bee5d8c`. It is the physical answer-loop proof, but not a substitute for the
-three still-unrun persistent lifecycle transitions.
+`bee5d8c`. The later
+[v1.0 full lifecycle continuation](superpowers/reviews/2026-08-28-windows-v1-full-lifecycle.md)
+records real sign-out/sign-in, sleep/resume, and reboot against that same
+installed runtime. Together they close every required Windows row for v1.0.0;
+neither report is evidence for a later untested runtime revision.
 
 Record each row as PASS, FAIL, or NOT TESTED:
 
