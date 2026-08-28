@@ -1362,6 +1362,13 @@ class PluginPackageTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("## Latest release: v1.0.0", readme)
         self.assertIn("Compare v0.7.1...v1.0.0", readme)
+        self.assertIn("### Windows v1 verification", readme)
+        self.assertIn("788 tests, 11 named skips, 0 failures/errors", readme)
+        self.assertIn("14/14 and 7/7 jobs", readme)
+        self.assertIn("windows-v1-full-lifecycle.md", readme)
+        self.assertNotIn(
+            "latest sanitized checkpoint is explicitly\n"
+            "  **[PARTIAL]", readme)
 
     def test_v100_release_is_major_windows_honest_and_source_only(self):
         release = (ROOT / "docs/releases/"
