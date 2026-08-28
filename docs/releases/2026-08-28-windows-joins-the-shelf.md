@@ -65,6 +65,27 @@ The resulting v1 claim is now **Windows core + physical answer loop +
 persistent lifecycle verified**. That claim remains pinned to the recorded
 v1 runtime and must not be inherited by a later untested runtime revision.
 
+### Final Windows v1 verification ledger
+
+| Gate | Result |
+|---|---|
+| Clean real Windows host and complete tokenserver suite | **PASS** — 788 tests, 11 named skips, 0 failures/errors |
+| Task Scheduler, immediate start, exact-PID watchdog and bounded logs | **PASS** |
+| Real Claude/Codex sources, Private-only firewall, LAN and discovery | **PASS** |
+| Recent panel polling and **NEEDS YOU → APPROVE → Ja** | **PASS** |
+| Sign-out/sign-in, sleep/resume and full reboot | **PASS** |
+| Post-transition source freshness | **PASS** — bounded convergence, then 12/12 fresh samples after sign-in and reboot |
+| Lifecycle PR CI and merged-main CI | **PASS** — 14/14 and 7/7 jobs |
+
+The host runtime under test was exact revision `bee5d8c`; the immutable
+`v1.0.0` tag resolves to `ab3ce92`, with documentation and tests only between
+them. The lifecycle evidence was merged at `4d1c47d` and its
+[merged-main CI passed all 7 jobs](https://github.com/niclasvestlund-YT/vibepulse/actions/runs/33214257872).
+The subsequent README publication was merged at `bc639eb` and its
+[merged-main CI also passed all 7 jobs](https://github.com/niclasvestlund-YT/vibepulse/actions/runs/33216669247).
+These are exact-revision claims; any later runtime change must pass the gate
+again.
+
 ## One panel, Mac or Windows
 
 The panel can now discover `_vibepulse._tcp.local` advertisements and stay
