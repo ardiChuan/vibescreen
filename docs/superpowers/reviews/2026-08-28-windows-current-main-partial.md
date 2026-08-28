@@ -46,6 +46,7 @@ private path, or LAN address is included here.
 | Private-profile firewall | FAIL | No matching inbound Private TCP 8737 rule was present; the validation process was not elevated and did not change it |
 | Second-device LAN reachability | NOT TESTED | Private-address self-check passed; another LAN device was not used |
 | Recent panel polling | FAIL | Exact-current-main root health reported `waiting`, not `ready` |
+| Remote validation follow-ups | BLOCKED | The host remained online, but three consecutive bounded follow-up turns completed without message or tool output. No result was inferred, and no replacement task was created without explicit authorization. This is a validation-transport blocker, not a product PASS or product failure |
 | Canonical physical question and human answer | NOT TESTED | No visible **APPROVE**, human tap, and returned `answered / 0 / Ja` tuple on Windows |
 | Sign-out/sign-in | NOT TESTED | Requires a real user-session transition |
 | Sleep/resume | NOT TESTED | Requires the physical PC and panel |
