@@ -111,7 +111,7 @@ static bool select_result(mdns_result_t *results, char *origin, size_t cap,
   for (mdns_result_t *result = results; result; result = result->next) {
     if (!version_one(result) || result->port == 0) continue;
     for (mdns_ip_addr_t *addr = result->addr; addr; addr = addr->next) {
-      if (addr->addr.type != IPADDR_TYPE_V4) continue;
+      if (addr->addr.type != ESP_IPADDR_TYPE_V4) continue;
       char candidate[TG_DISCOVERY_ORIGIN_CAP];
       int written = snprintf(candidate, sizeof candidate, "http://" IPSTR ":%u",
                              IP2STR(&addr->addr.u_addr.ip4),
