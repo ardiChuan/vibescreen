@@ -1387,7 +1387,12 @@ class PluginPackageTests(unittest.TestCase):
                 "Ser du APPROVE?", "NEEDS YOU", "APPROVE",
                 "answered / option_index 0 / Ja", "788-test",
                 "Task Scheduler", "Private-profile-only", "source-only",
-                "Do not attach `torget.bin`", "v0.7.1...v1.0.0"):
+                "Do not attach `torget.bin`", "v0.7.1...v1.0.0",
+                "Final Windows v1 verification ledger",
+                "788 tests, 11 named skips, 0 failures/errors",
+                "14/14 and 7/7 jobs", "12/12 fresh samples",
+                "bee5d8c", "ab3ce92", "4d1c47d", "bc639eb",
+                "33214257872", "33216669247"):
             self.assertIn(required, release)
         for image in (
                 "vibepulse-codex-week.png",
