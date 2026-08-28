@@ -21,6 +21,40 @@ point at the backlog item.
 
 ---
 
+## 2026-08-28 · A healthy scheduled Codex source failed in the interactive shell
+
+**What happened:** a direct Windows probe failed while the scheduled API
+returned a fresh numeric Codex observation. **Root cause:** the task prepended
+the verified standalone Codex bin directory, while the interactive shell did
+not; login and `CODEX_HOME` alone did not make the environments equivalent.
+**The rule:** diagnose a background source in the exact service environment
+before calling it stale. **Guards:** the installer pins the verified Codex bin
+and optional `CODEX_HOME`; the Windows runbook checks the scheduled API.
+**Watch for:** using `Get-Command` or an unpinned shell probe as task evidence.
+
+## 2026-08-28 · Real Windows startup outlived the optimistic Codex deadline
+
+**What happened:** the background Codex week could remain stale even though
+the standalone CLI and its task environment were valid. **Root cause:** a real
+Windows `codex app-server` startup could take longer than the original bounded
+probe allowance. **The rule:** keep the read bounded, but choose its deadline
+from the slow real-host boundary and verify the production refresh path uses
+that value. **Guards:** PR #37 raises the local allowance to 15 seconds and a
+regression test exercises the production caller. **Watch for:** shortening a
+provider deadline from fast unit-process timings or interactive warm starts.
+
+## 2026-08-28 · A disconnected validation host is NOT TESTED, not green
+
+**What happened:** the real-PC run stopped after useful host evidence but
+before the final merged commit, lifecycle transitions, and physical question.
+**Root cause:** remote-host reachability is independent of tokenserver health,
+and an in-progress task cannot leave new evidence after its PC disconnects.
+**The rule:** pin every PASS to its exact commit, persist only sanitized
+checkpoints, and keep every unfinished row FAIL or NOT TESTED. **Guards:** the
+current-main Windows checkpoint and support matrix link each claim to its
+evidence boundary. **Watch for:** treating repeated retries, old PASS results,
+or an active remote task as proof that the current candidate passed.
+
 ## 2026-08-27 · Codex CLI provenance changed shape without changing owner
 
 **What happened:** Windows setup registered the exact release checkout with

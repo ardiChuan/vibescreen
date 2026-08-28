@@ -24,6 +24,9 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 - A security policy, contribution guide, and pull-request evidence checklist
   document private reporting, secret handling, platform-claim discipline, and
   the difference between CI, real-host, and physical-panel validation.
+- A sanitized post-v0.7.1 Windows checkpoint pins every real-host observation
+  to its exact commit and keeps firewall, lifecycle, recent-panel, and physical
+  rows explicitly failed or not tested instead of inheriting an older pass.
 
 ### Fixed
 
