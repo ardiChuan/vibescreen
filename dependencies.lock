@@ -274,6 +274,16 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.6.58~1
+  espressif/mdns:
+    component_hash: e81ca7a7f53ea34e78274df054da692c272e1315572876b237b1748e267c013b
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.11.3
   espressif/tinyusb:
     component_hash: a40b7f67df6ac254a4afd96c6401cc56f2059ae747d6d7e66b568bca53ad0edc
     dependencies:
@@ -403,11 +413,12 @@ dependencies:
     version: 2.0.0
 direct_dependencies:
 - espressif/esp-tflite-micro
+- espressif/mdns
 - espressif/usb_device_uac
 - idf
 - lvgl/lvgl
 - waveshare/esp32_s3_touch_amoled_2_16
 - waveshare/qmi8658
-manifest_hash: 130297078a6dff12a09f4fa306e440a310ff443c5672636e7fc6eed2271ed8dd
+manifest_hash: 7c8e739b247b6f6ffabbe5c5fd6538a7bfe816e61652c1f47cedca4b4f2e388b
 target: esp32s3
 version: 2.0.0
