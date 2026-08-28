@@ -2,6 +2,7 @@
 #define APP_TOKENS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "torget_app.h"
@@ -56,6 +57,9 @@ void tokens_apply_github(const tk_github_status *status);
 /* Targetets 1 Hz-hämtning. Utan TK_AGENT_STATUS_URL loggas avstängt läge
  * och ingen task eller HTTP-klient skapas. */
 void tokens_agent_net_start(void);
+/* Exact LAN origin that produced the latest accepted agent snapshot. Needs
+ * You uses it so a verdict returns to the same Mac/PC in a multi-host LAN. */
+bool tokens_agent_direct_origin(char *origin, size_t cap);
 void tokens_github_net_start(void);
 
 /* Hoppa till en VibePulse-vy utan animation — bänkens och BMP-dumparnas

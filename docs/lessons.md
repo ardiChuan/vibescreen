@@ -21,6 +21,17 @@ point at the backlog item.
 
 ---
 
+## 2026-08-28 · USB-värden var inte panelens datavärd
+
+**What happened:** panelen flyttades från Macens USB-port till Windows och
+fortsatte visa Macens gamla kvot. **Root cause:** USB gav bara ström; firmware
+pollade fortfarande en ensam kompilerad tokenserveradress. **The rule:** lokal
+värdidentitet ska upptäckas som en tjänst, hållas sticky medan den är frisk och
+falla tillbaka till den explicita URL:en när multicast saknas. **Guards:**
+valfri innehållsfri DNS-SD-annons, strikt IPv4/port-policy, bounded mDNS-query,
+NVS last-known-good och Mac/Windows-failoverprov. **Watch for:** att kalla en
+strömförflyttning för ett källbyte eller att blanda endpoints från två värdar.
+
 ## 2026-08-28 · A healthy scheduled Codex source failed in the interactive shell
 
 **What happened:** a direct Windows probe failed while the scheduled API

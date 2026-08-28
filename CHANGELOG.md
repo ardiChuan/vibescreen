@@ -7,6 +7,10 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ### Added
 
+- Optional `_vibepulse._tcp.local` discovery lets one panel stay pinned to a
+  healthy tokenserver and move between advertising macOS/Windows hosts after
+  a bounded failure. The compiled URL remains the multicast-blocked fallback,
+  and the host advert carries only protocol version and port.
 - A versioned host-platform support matrix and reproducible Windows release
   gate now separate CI portability, real-host service evidence, and the
   physical panel loop. Linux remains explicitly unsupported until its XDG,

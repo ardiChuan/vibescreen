@@ -154,10 +154,12 @@ same LAN, verify the PC's real address rather than localhost:
 Test-NetConnection -ComputerName <PC-LAN-IP> -Port 8737
 ```
 
-The panel's direct-LAN URL must use that reachable address. Reserve it in the
-router or use the optional relays; Windows does not currently provide the
-stable `.local` discovery tracked in
-[#7](https://github.com/niclasvestlund-YT/vibepulse/issues/7).
+Install `requirements-discovery.txt` in the scheduled task's exact Python
+environment. Require `GET /` → `discovery.status: ready`, then prove a real
+panel poll. The firmware caches one healthy `_vibepulse._tcp.local` origin and
+may select another advertising Mac/PC after failure. Keep a DHCP-reserved
+compiled URL as the multicast-blocked fallback; discovery is additive, never
+a reason to accept an unstable fallback.
 
 ## 7. Verify the real service lifecycle
 
@@ -167,7 +169,7 @@ Only after the release checkout and installer validation pass:
 .\tools\tokenserver\install-windows-task.ps1
 Get-ScheduledTaskInfo -TaskName "VibePulse tokenserver"
 Invoke-RestMethod http://127.0.0.1:8737/ |
-  Select-Object service, rev, srcFingerprint, claudeProbe, claudeCredential,
+  Select-Object service, rev, srcFingerprint, discovery, claudeProbe, claudeCredential,
     @{Name='panel'; Expression={$_.interactions.panel}}
 ```
 

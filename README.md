@@ -378,12 +378,14 @@ host address, firewall, Task Scheduler, startup health, and recovery steps.
    ```
 
    **Don't miss this:** in `secrets.h`, point the `TK_VIBEPULSE_BASE_URL`
-   block at your Mac by replacing the `DIN-MAC` placeholder. Those URLs ship
+   fallback at a reachable host by replacing the `DIN-MAC` placeholder. Those URLs ship
    active on purpose — a wrong hostname is visible in the log, whereas an
    undefined URL compiles the fetch out entirely and the screen boots fine
    and shows dashes forever. Use your Mac's Bonjour name
    (`scutil --get LocalHostName`) rather than an IP, so the same firmware
-   works on your home network and on a phone hotspot.
+   works on your home network and on a phone hotspot. Current firmware also
+   discovers `_vibepulse._tcp.local`, so several Mac/Windows tokenservers can
+   be available without compiling their addresses into the panel.
 
    Board not showing up under `/dev/cu.usbmodem*`? Hold **BOOT**, tap
    **RESET**, release **BOOT** and it re-enumerates in download mode.
@@ -393,12 +395,16 @@ host address, firewall, Task Scheduler, startup health, and recovery steps.
    panel's draw makes the board bounce off the bus or hang, which looks
    like a flaky cable. After flashing, run the screen from its own USB
    power supply, not your computer.
-3. Start the core service on your computer. Pure Python stdlib, nothing to
-   install for local mode:
+3. Start the core service on your computer. Its core remains pure Python
+   stdlib. Install the small optional discovery dependency when the panel
+   should find this Mac/PC automatically:
 
    ```
+   python3 -m pip install -r requirements-discovery.txt
    python3 tools/tokenserver/tokenserver.py
    ```
+
+   Without that package the configured URL path works exactly as before.
 
    Autostart on login: see [tools/tokenserver/README.md](tools/tokenserver/README.md).
 

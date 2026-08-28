@@ -73,10 +73,11 @@ Then edit `secrets.h`. Two separate things must be right:
   the only network it knows before it has ever been anywhere. Every network
   *after* the first is taught to the panel at the place itself, with no
   rebuild — see [wifi.md](wifi.md).
-- **Replace `DIN-MAC` in `TK_VIBEPULSE_BASE_URL`** with an address the panel
-  can reach. On macOS, use the Mac's Bonjour name. On Windows, use the active
-  LAN IPv4 address and reserve that address in the router; the tokenserver does
-  not advertise an mDNS name on Windows.
+- **Replace `DIN-MAC` in `TK_VIBEPULSE_BASE_URL`** with a reachable fallback.
+  On macOS, use the Mac's Bonjour name. On Windows, use an active LAN IPv4
+  address and reserve it in the router. Current firmware first discovers
+  `_vibepulse._tcp.local`; the compiled URL remains the fail-closed path when
+  multicast or the optional host advertiser is unavailable.
 
 Those `#define`s ship active on purpose, with an obvious placeholder. Do not
 comment them out or delete them: `components/app_tokens/net.c` guards every
@@ -92,10 +93,17 @@ home and on a phone hotspot:
 scutil --get LocalHostName     # e.g. "Niclas-MacBook" -> Niclas-MacBook.local
 ```
 
-On Windows, use `ipconfig` to find the IPv4 address of the active adapter. A
-DHCP reservation matters: if that address changes, direct-LAN mode shows
-dashes until the URL is rebuilt. The optional relays remove the same-LAN
-requirement but do not make a stale local URL correct.
+Install the optional discovery advertiser in the tokenserver's exact Python
+environment on every Mac/PC that may serve the panel:
+
+```sh
+python3 -m pip install -r requirements-discovery.txt
+```
+
+Without it, the tokenserver remains stdlib-only and the compiled URL behaves
+exactly as before. With it, several computers may advertise simultaneously;
+the panel pins one healthy origin and changes only after failure. On Windows,
+`ipconfig` plus a DHCP reservation still makes the compiled fallback durable.
 
 **Verify:** `secrets.h` has a non-empty SSID and no `DIN-MAC` placeholder:
 
@@ -104,11 +112,11 @@ grep -q 'DIN-MAC' secrets.h && echo "PLACEHOLDER STILL THERE" || echo "host set"
 ```
 
 It must print `host set`. If the placeholder is still there,
-the board will look for a host that does not exist and every page will stay
-on dashes. On macOS, a raw IP is a snapshot of a DHCP lease and should be
-replaced with the Bonjour name. On Windows, document the DHCP reservation
-that keeps the chosen IPv4 stable. A stale compiled address cost an entire
-evening of network debugging before anyone read the URL
+the board's fallback will name a host that does not exist. Discovery may still
+find an advertising service, but a release must not depend on hiding a broken
+fallback. On macOS, replace a raw IP with the Bonjour name. On Windows,
+document the DHCP reservation that keeps the fallback IPv4 stable. A stale
+compiled address cost an entire evening of network debugging before anyone read the URL
 (`docs/lessons.md` 2026-08-17).
 
 Ask the user for the WiFi password. Do not guess it, and do not commit
