@@ -257,6 +257,14 @@ limit cannot stall the Claude/Codex endpoints. Configure it with:
 python3 tools/tokenserver/tokenserver.py --github-repo owner/repository
 ```
 
+On Windows, persist the same source in Task Scheduler instead of relying on a
+foreground shell:
+
+```powershell
+.\tools\tokenserver\install-windows-task.ps1 `
+  -GithubRepo "owner/repository"
+```
+
 Then opt into `TK_GITHUB_SCREEN_ENABLED` and/or
 `TK_GITHUB_NOTIFICATIONS_ENABLED` in your gitignored `secrets.h`. Both are
 off by default. No GitHub token is required for a public repository.
@@ -304,6 +312,15 @@ swipeable strip, alongside GitHub — neither replaces the other.
 
 ```
 python3 tools/tokenserver/tokenserver.py --claude-plan max5x --plan claude=100
+```
+
+The equivalent persistent Windows setup is explicit per provider and never
+guesses what you pay:
+
+```powershell
+.\tools\tokenserver\install-windows-task.ps1 `
+  -ClaudePlan max5x -ClaudePlanCostUsd "100" `
+  -CodexPlan pro -CodexPlanCostUsd "20"
 ```
 
 It counts cache tokens, which is the whole point — a real record here reads

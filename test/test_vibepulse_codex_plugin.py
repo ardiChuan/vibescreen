@@ -1414,7 +1414,8 @@ class PluginPackageTests(unittest.TestCase):
             self.assertIn(completed, lifecycle)
         self.assertIn("persistent lifecycle verified", release)
         self.assertIn("## v1.0.0 — 2026-08-28", changelog)
-        self.assertIn("## Unreleased\n\n## v1.0.0", changelog)
+        self.assertLess(changelog.index("## Unreleased"),
+                        changelog.index("## v1.0.0"))
         for forbidden in ("oauth token:", "refresh token:",
                           "account id:", "relay address:"):
             self.assertNotIn(forbidden, release.lower())

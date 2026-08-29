@@ -12,6 +12,11 @@ param(
     [string]$Server,
     [string]$CodexBinDir = "",
     [string]$CodexHome = "",
+    [string]$GithubRepo = "",
+    [string]$ClaudePlan = "",
+    [string]$CodexPlan = "",
+    [string]$ClaudePlanCostUsd = "",
+    [string]$CodexPlanCostUsd = "",
     [string]$PublishUrl = "",
     [string]$PublishName = ""
 )
@@ -94,6 +99,21 @@ function Write-VibePulseLogLine {
 Rotate-VibePulseLog
 
 $ServerArgs = @("-u", $Server)
+if ($GithubRepo) {
+    $ServerArgs += @("--github-repo", $GithubRepo)
+}
+if ($ClaudePlan) {
+    $ServerArgs += @("--claude-plan", $ClaudePlan)
+}
+if ($CodexPlan) {
+    $ServerArgs += @("--codex-plan", $CodexPlan)
+}
+if ($ClaudePlanCostUsd) {
+    $ServerArgs += @("--plan", "claude=$ClaudePlanCostUsd")
+}
+if ($CodexPlanCostUsd) {
+    $ServerArgs += @("--plan", "codex=$CodexPlanCostUsd")
+}
 if ($PublishUrl) {
     $ServerArgs += @("--publish", $PublishUrl)
     if ($PublishName) { $ServerArgs += @("--publish-name", $PublishName) }

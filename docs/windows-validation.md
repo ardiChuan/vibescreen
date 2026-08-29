@@ -74,7 +74,9 @@ foreach ($Script in @(
   $AllErrors += $Errors
 }
 $AllErrors
-.\tools\tokenserver\install-windows-task.ps1 -ValidateOnly
+.\tools\tokenserver\install-windows-task.ps1 -ValidateOnly `
+  -GithubRepo "owner/repository" -ClaudePlan max5x `
+  -ClaudePlanCostUsd "100" -CodexPlan pro -CodexPlanCostUsd "20"
 .\test\windows-task-runner.ps1
 ```
 
@@ -88,6 +90,9 @@ scheduled process must receive its verified bin directory without changing the
 user's global PATH. If the user already has a custom `CODEX_HOME`, the task
 must receive that verified directory process-locally without editing Codex
 settings or authentication.
+It must also prove exact forwarding of the optional GitHub repository, named
+plan labels, and per-provider subscription costs. A Windows support claim is
+not allowed to silently drop display inputs that work in a foreground launch.
 The installed VibePulse MCP row must report `tool_timeout_sec: 130`; a missing
 timeout lets Codex cancel the bridge before the panel's bounded 120-second
 answer window expires and is a failed interaction gate.
@@ -169,7 +174,9 @@ a reason to accept an unstable fallback.
 Only after the release checkout and installer validation pass:
 
 ```powershell
-.\tools\tokenserver\install-windows-task.ps1
+.\tools\tokenserver\install-windows-task.ps1 `
+  -GithubRepo "owner/repository" -ClaudePlan max5x `
+  -ClaudePlanCostUsd "100" -CodexPlan pro -CodexPlanCostUsd "20"
 Get-ScheduledTaskInfo -TaskName "VibePulse tokenserver"
 Invoke-RestMethod http://127.0.0.1:8737/ |
   Select-Object service, rev, srcFingerprint, discovery, claudeProbe, claudeCredential,
