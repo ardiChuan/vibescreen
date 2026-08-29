@@ -46,9 +46,19 @@ turn to refresh the saved fallback. VibePulse rereads local credentials every
 15 seconds, so do not prescribe a tokenserver restart first.
 
 If the local API and configured numbers relay are fresh while the glass is
-stale, inspect recent panel polling and passive device logs. Do not reset or
-flash the panel without explicit permission. Silence from serial is not proof
-that the firmware is healthy or unhealthy.
+stale, inspect `GET /` → `interactions.panel` for recent direct polling and
+read passive device logs. A `waiting` direct-poll state does not prove failure
+on a relay-only network, but fresh LAN plus fresh relay plus a stale glass
+localizes the fault to the device-side power/network/firmware hop. Test the
+numbers relay with a panel-compatible User-Agent; Cloudflare may reject
+Python's default User-Agent even when the ESP32 path is healthy. A running
+panel on a computer USB port can consume the full 500 mA budget yet still fail
+during Wi-Fi bursts; use a dedicated 5 V supply for runtime. Compare the
+registered installed firmware with current `main`: firmware older than the
+service-discovery change cannot move automatically between advertising Mac
+and Windows hosts. Do not reset or flash the panel without explicit
+permission. Silence from serial is not proof that the firmware is healthy or
+unhealthy.
 
 Explain when asked that this skill is versioned with the plugin; it does not
 learn or update itself. New lessons reach installed Codex sessions only after

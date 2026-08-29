@@ -6,7 +6,7 @@ around them (2026-08-13). How these get found and worked is described in
 [observability.md](observability.md); stories behind them live in
 [lessons.md](lessons.md).
 
-**Last combed: 2026-08-29 (Claude stale/source-readiness incident).**
+**Last combed: 2026-08-30 (fresh feed / stale glass transport incident).**
 
 Rules of the file:
 
@@ -214,6 +214,17 @@ Doctor also prescribed a server restart even though credentials are reread
 locally every 15 seconds. The tools and versioned plugin 0.1.2 skill now name
 all three dimensions—active probe, saved fallback, and served stale flags—and
 tests pin both the live-source and genuinely stale cases.
+
+### OBS-33 · Fresh server data hid an unproved device hop
+`host + firmware · S · done (2026-08-30)` — local and relay token payloads
+were fresh while the physical glass remained stale and `GET /` reported no
+confirmed direct panel poll. A generic Python relay probe also received a
+Cloudflare `403` that the panel-compatible User-Agent did not. Doctor now
+surfaces `ready`/`waiting`/`stale` direct-poll evidence without calling a
+relay-only network broken, and the versioned skill requires separate checks of
+source, LAN, real-client relay, power, and firmware generation. The installed
+unit still needs a separately authorized physical update and wall-powered
+runtime verification; silence from passive serial remains non-evidence.
 
 ---
 

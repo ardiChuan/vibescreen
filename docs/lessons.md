@@ -21,6 +21,22 @@ point at the backlog item.
 
 ---
 
+## 2026-08-30 · A fresh feed did not prove fresh glass
+
+**What happened:** the Mac API and the numbers relay both served fresh Claude,
+Fable, and Codex values while the physical panel still showed `STALE` and made
+no confirmed LAN poll. **Root cause class:** provider freshness had been proved,
+but the device-side hop had not; the installed firmware predated automatic
+Mac/Windows discovery and the running board consumed the computer USB port's
+full 500 mA budget, a known unreliable condition for Wi-Fi bursts. A Python
+relay probe added noise by receiving a User-Agent-specific Cloudflare `403`
+while the ESP32-compatible request was healthy. **The rule:** prove source,
+local API, relay with the real client shape, direct panel polling, firmware
+generation, and power separately. **Guards:** doctor now reports direct panel
+evidence without treating relay-only operation as failure; plugin 0.1.3 carries
+the decision tree. **Watch for:** calling fresh JSON a healthy screen or a
+generic HTTP client equivalent to the panel.
+
 ## 2026-08-29 · A dead saved credential and a live quota source coexisted
 
 **What happened:** Fable went stale after the saved Claude credential expired;
