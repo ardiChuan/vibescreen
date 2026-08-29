@@ -27,6 +27,9 @@ TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
+from codex_mcp_timeout import (  # noqa: E402
+    TOOL_TIMEOUT_SECONDS as CODEX_MCP_TOOL_TIMEOUT_SECONDS,
+)
 from tokenserver.vibepulse_config import (  # noqa: E402
     ConfigError,
     VibePulseConfig,
@@ -103,6 +106,7 @@ def plan_codex_install(
     marketplace_root = root / ".agents" / "plugins"
     mcp_server = (marketplace_root / "plugins" / "vibepulse" / "scripts" /
                   "mcp_server.py")
+    timeout_helper = root / "tools" / "codex_mcp_timeout.py"
     return [
         [codex_path, "plugin", "marketplace", "add",
          str(root)],
@@ -111,6 +115,7 @@ def plan_codex_install(
         [codex_path, "mcp", "remove", "vibepulse"],
         [codex_path, "mcp", "add", "vibepulse", "--", python_path,
          str(mcp_server)],
+        [python_path, str(timeout_helper)],
     ]
 
 
@@ -1171,7 +1176,8 @@ def _strict_json(text: str):
         raise ValueError("invalid strict JSON") from exc
 
 
-def _expected_mcp_item(repo_root: Path, python: Path) -> dict:
+def _expected_mcp_item(
+        repo_root: Path, python: Path, *, legacy_timeout: bool = False) -> dict:
     script = (Path(repo_root).resolve() / ".agents" / "plugins" / "plugins" /
               "vibepulse" / "scripts" / "mcp_server.py")
     return {
@@ -1187,7 +1193,8 @@ def _expected_mcp_item(repo_root: Path, python: Path) -> dict:
             "cwd": None,
         },
         "startup_timeout_sec": None,
-        "tool_timeout_sec": None,
+        "tool_timeout_sec": (None if legacy_timeout else
+                             CODEX_MCP_TOOL_TIMEOUT_SECONDS),
         "auth_status": "unsupported",
     }
 
@@ -1204,14 +1211,19 @@ def _mcp_listing(text: str) -> list[dict] | None:
 
 
 def _owned_mcp_state(
-        text: str, repo_root: Path, python: Path) -> bool | None:
+        text: str, repo_root: Path, python: Path, *,
+        allow_legacy_timeout: bool = False) -> bool | None:
     listing = _mcp_listing(text)
     if listing is None:
         return None
     named = [item for item in listing if item.get("name") == "vibepulse"]
     if not named:
         return False
-    if len(named) != 1 or named[0] != _expected_mcp_item(repo_root, python):
+    expected = _expected_mcp_item(repo_root, python)
+    legacy = _expected_mcp_item(repo_root, python, legacy_timeout=True)
+    if (len(named) != 1 or
+            (named[0] != expected and
+             not (allow_legacy_timeout and named[0] == legacy))):
         return None
     return True
 
@@ -1493,7 +1505,8 @@ def _doctor(
         if mcp_ok:
             print("PASS Codex MCP", file=stdout)
         else:
-            print("FIX Codex MCP: register the local bridge", file=stdout)
+            print("FIX Codex MCP: register the local bridge with its "
+                  "130-second tool timeout", file=stdout)
             fixes = True
 
     if config.codex_interactions:
@@ -1638,7 +1651,8 @@ def _setup_transaction_path(path: Path) -> Path:
 
 def _inspect_external(
         *, repo_root: Path, python: Path, codex: Path, run,
-        stdout, report_failure: bool = True) -> _ExternalState | None:
+        stdout, report_failure: bool = True,
+        allow_legacy_mcp_timeout: bool = False) -> _ExternalState | None:
     codex_text = str(Path(codex).resolve())
     commands = [
         [codex_text, "mcp", "list", "--json"],
@@ -1649,7 +1663,8 @@ def _inspect_external(
     states: list[bool | None] = [None, None, None]
     if results[0] is not None and results[0].returncode == 0:
         states[0] = _owned_mcp_state(
-            results[0].stdout, repo_root, python)
+            results[0].stdout, repo_root, python,
+            allow_legacy_timeout=allow_legacy_mcp_timeout)
     if results[1] is not None and results[1].returncode == 0:
         states[1] = _plugin_state(results[1].stdout, repo_root)
     if results[2] is not None and results[2].returncode == 0:
@@ -1689,7 +1704,7 @@ def _state_reconciliation_commands(
     if not current.plugin and target.plugin:
         commands.append(install[1])
     if not current.mcp and target.mcp:
-        commands.append(install[3])
+        commands.extend(install[3:5])
     return commands
 
 
@@ -1700,7 +1715,8 @@ def _reconcile_external(
     try:
         current = _inspect_external(
             repo_root=repo_root, python=python, codex=codex, run=run,
-            stdout=stdout, report_failure=False)
+            stdout=stdout, report_failure=False,
+            allow_legacy_mcp_timeout=True)
     except BaseException:
         return False
     if current is None:
@@ -1719,7 +1735,8 @@ def _reconcile_external(
         try:
             observed = _inspect_external(
                 repo_root=repo_root, python=python, codex=codex, run=run,
-                stdout=stdout, report_failure=False)
+                stdout=stdout, report_failure=False,
+                allow_legacy_mcp_timeout=True)
         except BaseException:
             return False
         if observed is None:
@@ -1809,7 +1826,7 @@ def _install_transaction(
             failed_step = "resource ownership preflight"
             before = _inspect_external(
                 repo_root=repo_root, python=python, codex=codex, run=run,
-                stdout=stdout)
+                stdout=stdout, allow_legacy_mcp_timeout=True)
             if before is None:
                 return False
 
@@ -1819,6 +1836,7 @@ def _install_transaction(
                 ("plugin add", install[1]),
                 ("MCP remove", install[2]),
                 ("MCP add", install[3]),
+                ("MCP timeout", install[4]),
             )
             for failed_step, argv in steps:
                 completed = _invoke(argv, run)
@@ -1868,7 +1886,7 @@ def _uninstall_transaction(
         try:
             before = _inspect_external(
                 repo_root=repo_root, python=python, codex=codex, run=run,
-                stdout=stdout)
+                stdout=stdout, allow_legacy_mcp_timeout=True)
             if before is None:
                 return False
             uninstall = plan_codex_uninstall(codex)

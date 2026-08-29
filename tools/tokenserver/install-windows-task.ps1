@@ -11,6 +11,11 @@ Körs i PowerShell från repots rot:
   # utan relä (bara LAN-servering):
   powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1
 
+  # valfria GitHub- och värdesidor (ange bara planer du faktiskt betalar):
+  powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1 `
+      -GithubRepo "owner/repository" -ClaudePlan max5x `
+      -ClaudePlanCostUsd "100" -CodexPlan pro -CodexPlanCostUsd "20"
+
   # avinstallera:
   powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1 -Uninstall
 
@@ -27,6 +32,9 @@ Designval, i linje med resten av repot:
   Keep those choices out of the scheduled command so setup changes cannot go
   stale here. The optional publish arguments below are numbers-relay settings,
   not interaction-provider choices.
+- GitHub monitoring and subscription costs are host-display inputs, not
+  interaction permissions. The installer carries those explicit, non-secret
+  choices to the background process so Windows matches a foreground launch.
 - Ingen hemlighet i den registrerade kommandoraden utom relä-URL:en, som
   användaren själv valt att ge — samma exponeringsnivå som secrets.h.
 - En logon-trigger startar tjänsten och en femminuters-watchdog startar den
@@ -36,6 +44,11 @@ Designval, i linje med resten av repot:
 param(
     [string]$PublishUrl = "",
     [string]$PublishName = "",
+    [string]$GithubRepo = "",
+    [string]$ClaudePlan = "",
+    [string]$CodexPlan = "",
+    [string]$ClaudePlanCostUsd = "",
+    [string]$CodexPlanCostUsd = "",
     [switch]$ValidateOnly,
     [switch]$Uninstall
 )
@@ -45,6 +58,26 @@ $TaskName = "VibePulse tokenserver"
 
 if ($ValidateOnly -and $Uninstall) {
     throw "-ValidateOnly and -Uninstall cannot be combined"
+}
+
+if ($GithubRepo -and
+        $GithubRepo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+    throw "-GithubRepo must use owner/repository"
+}
+if ($ClaudePlan -and $ClaudePlan -notin @("pro", "max5x", "max20x")) {
+    throw "-ClaudePlan must be pro, max5x, or max20x"
+}
+if ($CodexPlan -and $CodexPlan -notin @("plus", "pro")) {
+    throw "-CodexPlan must be plus or pro"
+}
+foreach ($Cost in @($ClaudePlanCostUsd, $CodexPlanCostUsd)) {
+    if ($Cost -and $Cost -notmatch '^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?$') {
+        throw "Plan costs must be positive USD values with at most two decimals"
+    }
+    if ($Cost -and [decimal]::Parse(
+            $Cost, [Globalization.CultureInfo]::InvariantCulture) -le 0) {
+        throw "Plan costs must be greater than zero"
+    }
 }
 
 function Resolve-VibePulsePython {
@@ -175,6 +208,21 @@ if ($CodexBinDir) {
 if ($CodexHome) {
     $RunnerArgs += " -CodexHome `"$CodexHome`""
 }
+if ($GithubRepo) {
+    $RunnerArgs += " -GithubRepo `"$GithubRepo`""
+}
+if ($ClaudePlan) {
+    $RunnerArgs += " -ClaudePlan `"$ClaudePlan`""
+}
+if ($CodexPlan) {
+    $RunnerArgs += " -CodexPlan `"$CodexPlan`""
+}
+if ($ClaudePlanCostUsd) {
+    $RunnerArgs += " -ClaudePlanCostUsd `"$ClaudePlanCostUsd`""
+}
+if ($CodexPlanCostUsd) {
+    $RunnerArgs += " -CodexPlanCostUsd `"$CodexPlanCostUsd`""
+}
 if ($PublishUrl) {
     $RunnerArgs += " -PublishUrl `"$PublishUrl`""
     if ($PublishName) { $RunnerArgs += " -PublishName `"$PublishName`"" }
@@ -196,6 +244,8 @@ if ($ValidateOnly) {
     Write-Host "  runner:  $Runner"
     Write-Host "  python:  $PythonConsole ($Version)"
     Write-Host "  task objects: runtime construction passed"
+    Write-Host "  GitHub page source: $([bool]$GithubRepo)"
+    Write-Host "  subscription costs: $([bool]($ClaudePlanCostUsd -or $CodexPlanCostUsd))"
     Write-Host "  action:  no Task Scheduler changes were made"
     exit 0
 }
@@ -221,6 +271,10 @@ Start-ScheduledTask -TaskName $TaskName
 Write-Host "Uppgiften '$TaskName' registrerad och startad."
 Write-Host "  server:  $Server"
 if ($PublishUrl) { Write-Host "  relä:    $PublishUrl" }
+if ($GithubRepo) { Write-Host "  GitHub:  configured" }
+if ($ClaudePlanCostUsd -or $CodexPlanCostUsd) {
+    Write-Host "  plans:   configured"
+}
 Write-Host "  state:   $env:LOCALAPPDATA\VibePulse\"
 Write-Host "  logg:    $env:LOCALAPPDATA\VibePulse\Logs\torget-tokenserver.log"
 Write-Host "Verifiera:  curl http://localhost:8737/  (claudeProbe ska visa ok)"

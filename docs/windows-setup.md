@@ -100,17 +100,38 @@ after setup changes.
 
 ## 3. Validate and install autostart
 
+Choose any optional host-display inputs once and reuse the exact same values
+for validation and installation. Omit providers you do not pay for; VibePulse
+never guesses a subscription cost:
+
+```powershell
+$VibePulseHost = @{
+  GithubRepo = "owner/repository"
+  ClaudePlan = "max5x"
+  ClaudePlanCostUsd = "100"
+  CodexPlan = "pro"
+  CodexPlanCostUsd = "20"
+}
+```
+
+`GithubRepo` enables the public repository source. The panel firmware must
+also be built with `TK_GITHUB_SCREEN_ENABLED=1` for the GitHub page and/or
+`TK_GITHUB_NOTIFICATIONS_ENABLED=1` for star notifications. Those device-side
+choices are independent of Windows and remain off in a clean default build.
+
 First verify the exact interpreter, checkout, and runtime construction of the
 ScheduledTasks action, trigger, and settings without changing Windows:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1 -ValidateOnly
+powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1 `
+  -ValidateOnly @VibePulseHost
 ```
 
 Then install the signed-in user's scheduled task:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1
+powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1 `
+  @VibePulseHost
 Get-ScheduledTask -TaskName "VibePulse tokenserver" |
   Select-Object TaskName, State
 Get-ScheduledTaskInfo -TaskName "VibePulse tokenserver"
@@ -161,10 +182,18 @@ Get-NetConnectionProfile | Select-Object Name, NetworkCategory
 ipconfig
 ```
 
-Reserve that IPv4 address in the router. Windows does not yet provide the
-stable `.local` discovery tracked in
-[#7](https://github.com/niclasvestlund-YT/vibepulse/issues/7), so firmware
-compiled with an old DHCP address eventually shows dashes.
+Install the optional advertiser in the exact Python environment used by the
+scheduled task, then restart the task through the normal installer flow:
+
+```powershell
+py -3 -m pip install -r requirements-discovery.txt
+```
+
+`GET /` must then report `discovery.status: ready`. Current firmware browses
+`_vibepulse._tcp.local`, caches the last healthy origin in NVS, and can choose
+another advertising Mac/PC after a bounded failure. Reserve the fallback IPv4
+in the router anyway: multicast can be blocked and discovery must never make
+direct LAN less reliable than the configured path.
 
 Inspect before changing the firewall:
 

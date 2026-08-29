@@ -144,7 +144,10 @@ jobs:
             $allErrors | ForEach-Object { Write-Error $_.Message }
             exit 1
           }
-          .\tools\tokenserver\install-windows-task.ps1 -ValidateOnly
+          .\tools\tokenserver\install-windows-task.ps1 -ValidateOnly `
+            -GithubRepo "owner/repository" -ClaudePlan max5x `
+            -CodexPlan pro -ClaudePlanCostUsd "100" `
+            -CodexPlanCostUsd "20"
           .\test\windows-task-runner.ps1
 
   firmware:

@@ -23,6 +23,15 @@ print("codex-path-ok" if os.environ["PATH"].split(os.pathsep)[0] ==
       os.environ["VIBEPULSE_TEST_CODEX_DIR"] else "codex-path-bad")
 print("codex-home-ok" if os.environ.get("CODEX_HOME") ==
       os.environ["VIBEPULSE_TEST_CODEX_HOME"] else "codex-home-bad")
+expected = [
+    "--github-repo", "owner/repository",
+    "--claude-plan", "max5x",
+    "--codex-plan", "pro",
+    "--plan", "claude=100",
+    "--plan", "codex=20",
+]
+print("optional-pages-ok" if sys.argv[1:] == expected else
+      "optional-pages-bad")
 '@ | Set-Content -LiteralPath $Fixture -Encoding UTF8
     $CodexDir = Join-Path $TempRoot "Codex bin å"
     New-Item -ItemType Directory -Path $CodexDir -Force | Out-Null
@@ -42,7 +51,9 @@ print("codex-home-ok" if os.environ.get("CODEX_HOME") ==
     [System.IO.File]::AppendAllText($LogPath, "rotation-sentinel")
 
     & $Runner -Python $Python -Server $Fixture -CodexBinDir $CodexDir `
-        -CodexHome $CodexHome
+        -CodexHome $CodexHome -GithubRepo "owner/repository" `
+        -ClaudePlan max5x -CodexPlan pro `
+        -ClaudePlanCostUsd "100" -CodexPlanCostUsd "20"
     if ($LASTEXITCODE -ne 0) {
         throw "runner returned $LASTEXITCODE"
     }
@@ -69,6 +80,9 @@ print("codex-home-ok" if os.environ.get("CODEX_HOME") ==
     }
     if (-not $CurrentText.Contains("codex-home-ok")) {
         throw "Codex home was not passed to the child process"
+    }
+    if (-not $CurrentText.Contains("optional-pages-ok")) {
+        throw "GitHub and subscription display inputs were not forwarded"
     }
 
     $FailingFixture = Join-Path $TempRoot "fixture failure å.py"

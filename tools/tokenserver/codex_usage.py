@@ -36,6 +36,7 @@ the Codex source rather than assumed:
 from __future__ import annotations
 
 import json
+import os
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -52,8 +53,27 @@ else:  # direct execution
                                codex_rollout_turn_model)
     import value_meter
 
+DEFAULT_SESSIONS_DIR: Optional[Path] = None
 
-DEFAULT_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+
+def _default_sessions_dir() -> Path:
+    """Resolve the sessions directory the same way the Codex CLI does.
+
+    ``CODEX_HOME`` is commonly set by the desktop app and by managed Windows
+    installations.  Falling back unconditionally to ``~/.codex`` makes quota
+    reads work while the month-value scan silently reads a different profile.
+    Resolve at call time so a long-lived tokenserver also follows the
+    environment it was started with, without capturing an import-time test or
+    launcher override.
+    """
+    # Kept as an override for the existing integration-test seam. Production
+    # leaves it at None and follows the process environment.
+    if DEFAULT_SESSIONS_DIR is not None:
+        return Path(DEFAULT_SESSIONS_DIR)
+    configured = os.environ.get("CODEX_HOME")
+    codex_home = Path(configured).expanduser() if configured else (
+        Path.home() / ".codex")
+    return codex_home / "sessions"
 
 _lock = threading.Lock()
 # path -> {"stat", "identity", "offset", "month", "model", "session_id",
@@ -161,7 +181,8 @@ def month_value(sessions_dir: Optional[Path] = None,
     returns zeros -- not an error, and not an unpriced tally, because there is
     genuinely nothing there to price.
     """
-    root = Path(sessions_dir) if sessions_dir else DEFAULT_SESSIONS_DIR
+    root = (Path(sessions_dir) if sessions_dir is not None
+            else _default_sessions_dir())
     if not root.is_dir():
         return 0.0, 0, 0
 

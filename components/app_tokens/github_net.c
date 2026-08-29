@@ -33,8 +33,9 @@ static void github_net_task(void *arg) {
 
   for (;;) {
     tk_github_status status;
-    if (torget_http_get_failover(TK_GITHUB_URL, TK_GITHUB_RELAY_URL,
-                                 body, sizeof body, &len) &&
+    if (torget_http_get_service("/api/github", TK_GITHUB_URL,
+                                TK_GITHUB_RELAY_URL,
+                                body, sizeof body, &len) &&
         tk_github_status_parse(body, len, &status)) {
       torget_ui_lock();
       tokens_apply_github(&status);

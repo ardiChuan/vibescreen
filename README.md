@@ -34,22 +34,46 @@ Both answers already exist, buried in a terminal you're not looking at.
 VibePulse moves them onto a screen you can't miss: one glance from across
 the room, no window to switch to, no menu bar to squint at.
 
-> **Status:** work in progress. This is an ongoing project for me and plenty
-> of tweaks are still on the list, but enough people asked about it that I'm
-> opening it up now rather than when it feels "done". Expect rough edges and
-> frequent commits.
+> **Status:** v1.0.0. The core shelf-screen loop is real and physically
+> exercised on macOS and Windows: see quota, see an agent waiting, and answer
+> a supported prompt on the glass. Windows core, physical answer loop, and
+> persistent sign-in/sleep/reboot lifecycle are verified. The project is still
+> active, optional integrations remain opt-in, and every platform claim stays
+> tied to its recorded evidence.
 
-## Latest release: v0.7.1
+## Latest release: v1.0.0
 
-The 27 August reliability release warns before the Claude credential readable
-by VibePulse expires, proves whether the physical panel is actually polling,
-keeps startup responsive while relay history is scanned, fixes mixed-case and
-localized project-name glyphs, and standardizes one strict Codex panel smoke
-test. Silence and computer fallback are never treated as approval.
+The first major release makes Windows a first-class VibePulse host and records
+the real physical proof: clean source, full tests, Task Scheduler plus
+watchdog, bounded logs, real Claude/Codex sources, Private-LAN reachability,
+recent panel polling, and a human **NEEDS YOU → APPROVE → Ja** round trip.
+The same panel can discover and fail over between advertising Mac and Windows
+hosts. The real Windows host also passed sign-out/sign-in, sleep/resume, and a
+full reboot without losing the scheduled service or leaving the panel stale.
+Silence and computer fallback are still never approval.
 
-[Read the v0.7.1 notes](docs/releases/2026-08-27-health-and-panel-reliability.md)
+### Windows v1 verification
+
+| Gate | Result |
+|---|---|
+| Clean host, complete tokenserver suite | **PASS** — 788 tests, 11 named skips, 0 failures/errors |
+| Task Scheduler, immediate start, exact-PID watchdog, bounded logs | **PASS** |
+| Real Claude/Codex sources, Private-only firewall, LAN and discovery | **PASS** |
+| Recent panel polling and **NEEDS YOU → APPROVE → Ja** | **PASS** |
+| Sign-out/sign-in, sleep/resume, full reboot | **PASS** |
+| Post-transition freshness | **PASS** — bounded convergence, then 12/12 fresh samples after sign-in and reboot |
+| Release/lifecycle PR CI and merged-main CI | **PASS** — 14/14 and 7/7 jobs |
+
+The tested host runtime was exact revision `bee5d8c`; tag `v1.0.0` resolves to
+`ab3ce92`, with documentation/tests only between them. The lifecycle evidence
+was merged to `main` at `4d1c47d`. This is exact-revision evidence: a future
+runtime change must pass the gate again.
+
+[Read the v1.0.0 notes](docs/releases/2026-08-28-windows-joins-the-shelf.md)
+· [Full Windows evidence](docs/superpowers/reviews/2026-08-28-windows-v1-full-lifecycle.md)
+· [Verified merged-main CI](https://github.com/niclasvestlund-YT/vibepulse/actions/runs/33214257872)
 · [Full changelog](CHANGELOG.md)
-· [Compare v0.7.0...v0.7.1](https://github.com/niclasvestlund-YT/vibepulse/compare/v0.7.0...v0.7.1)
+· [Compare v0.7.1...v1.0.0](https://github.com/niclasvestlund-YT/vibepulse/compare/v0.7.1...v1.0.0)
 
 Contributing or validating another host? Read
 [CONTRIBUTING.md](CONTRIBUTING.md), the
@@ -233,6 +257,14 @@ limit cannot stall the Claude/Codex endpoints. Configure it with:
 python3 tools/tokenserver/tokenserver.py --github-repo owner/repository
 ```
 
+On Windows, persist the same source in Task Scheduler instead of relying on a
+foreground shell:
+
+```powershell
+.\tools\tokenserver\install-windows-task.ps1 `
+  -GithubRepo "owner/repository"
+```
+
 Then opt into `TK_GITHUB_SCREEN_ENABLED` and/or
 `TK_GITHUB_NOTIFICATIONS_ENABLED` in your gitignored `secrets.h`. Both are
 off by default. No GitHub token is required for a public repository.
@@ -280,6 +312,15 @@ swipeable strip, alongside GitHub — neither replaces the other.
 
 ```
 python3 tools/tokenserver/tokenserver.py --claude-plan max5x --plan claude=100
+```
+
+The equivalent persistent Windows setup is explicit per provider and never
+guesses what you pay:
+
+```powershell
+.\tools\tokenserver\install-windows-task.ps1 `
+  -ClaudePlan max5x -ClaudePlanCostUsd "100" `
+  -CodexPlan pro -CodexPlanCostUsd "20"
 ```
 
 It counts cache tokens, which is the whole point — a real record here reads
@@ -339,8 +380,10 @@ is a future recovery risk, not a reason to restart the tokenserver.
   use the reproducible
   **[Windows validation gate](docs/windows-validation.md)**. “Host supported”
   does not mean every later candidate has passed the physical Windows loop;
-  the latest sanitized checkpoint is explicitly
-  **[PARTIAL](docs/superpowers/reviews/2026-08-28-windows-current-main-partial.md)**.
+  the v1 runtime's latest sanitized checkpoint is a
+  **[FULL PASS](docs/superpowers/reviews/2026-08-28-windows-v1-full-lifecycle.md)**,
+  while future runtime revisions require a fresh run rather than inheriting
+  that result.
 - **Claude Code and/or Codex.** Either alone is fine.
 - **2.4 GHz WiFi.** The ESP32-S3 can't see 5 GHz networks.
 
@@ -381,12 +424,14 @@ host address, firewall, Task Scheduler, startup health, and recovery steps.
    ```
 
    **Don't miss this:** in `secrets.h`, point the `TK_VIBEPULSE_BASE_URL`
-   block at your Mac by replacing the `DIN-MAC` placeholder. Those URLs ship
+   fallback at a reachable host by replacing the `DIN-MAC` placeholder. Those URLs ship
    active on purpose — a wrong hostname is visible in the log, whereas an
    undefined URL compiles the fetch out entirely and the screen boots fine
    and shows dashes forever. Use your Mac's Bonjour name
    (`scutil --get LocalHostName`) rather than an IP, so the same firmware
-   works on your home network and on a phone hotspot.
+   works on your home network and on a phone hotspot. Current firmware also
+   discovers `_vibepulse._tcp.local`, so several Mac/Windows tokenservers can
+   be available without compiling their addresses into the panel.
 
    Board not showing up under `/dev/cu.usbmodem*`? Hold **BOOT**, tap
    **RESET**, release **BOOT** and it re-enumerates in download mode.
@@ -396,12 +441,16 @@ host address, firewall, Task Scheduler, startup health, and recovery steps.
    panel's draw makes the board bounce off the bus or hang, which looks
    like a flaky cable. After flashing, run the screen from its own USB
    power supply, not your computer.
-3. Start the core service on your computer. Pure Python stdlib, nothing to
-   install for local mode:
+3. Start the core service on your computer. Its core remains pure Python
+   stdlib. Install the small optional discovery dependency when the panel
+   should find this Mac/PC automatically:
 
    ```
+   python3 -m pip install -r requirements-discovery.txt
    python3 tools/tokenserver/tokenserver.py
    ```
+
+   Without that package the configured URL path works exactly as before.
 
    Autostart on login: see [tools/tokenserver/README.md](tools/tokenserver/README.md).
 
@@ -664,9 +713,12 @@ by default; set `PYTHON_BIN` to point at a different 3.11+ interpreter.
   checkout and Python 3.11+ interpreter without changing Task Scheduler. The
   complete install, hook-review, firewall, startup-health, physical-test, and
   recovery procedure is the [Windows host runbook](docs/windows-setup.md).
-  The host implementation is supported, while a release-level physical claim
-  still requires every row in the [Windows validation gate](docs/windows-validation.md)
-  to pass on the same exact candidate.
+  The v1.0 core service, physical answer loop, sign-out/sign-in,
+  sleep/resume, and reboot all passed on a real Windows PC; see the
+  [full sanitized evidence](docs/superpowers/reviews/2026-08-28-windows-v1-full-lifecycle.md).
+  A later runtime revision still requires a fresh pass through the complete
+  [Windows validation gate](docs/windows-validation.md); release evidence is
+  never inherited across untested code.
 - **Linux for the tokenserver?** Not yet —
   [#2](https://github.com/niclasvestlund-YT/vibepulse/issues/2). The Ubuntu
   tokenserver CI lane is portability evidence, not a support claim: current

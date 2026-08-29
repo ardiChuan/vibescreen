@@ -45,9 +45,9 @@ for name in ("TK_TOKENS_RELAY_URL", "TK_MAX_TRACKER_RELAY_URL",
 assert "#else" in config and "TK_TOKENS_RELAY_URL      NULL" in config, (
     "without TK_VIBEPULSE_RELAY_URL every relay address must be NULL"
 )
-assert "torget_http_get_failover(TK_TOKENS_URL, TK_TOKENS_RELAY_URL" in net
-assert "torget_http_get_failover(TK_MAX_TRACKER_URL" in net
-assert "torget_http_get_failover(TK_GITHUB_URL" in github
+assert 'torget_http_get_service("/api/tokens", TK_TOKENS_URL' in net
+assert 'torget_http_get_service("/api/max-tracker", TK_MAX_TRACKER_URL' in net
+assert 'torget_http_get_service("/api/github", TK_GITHUB_URL' in github
 
 # --- What may not cross the numbers transport: anything naming your work --
 assert "RELAY" not in agent.upper()
@@ -63,8 +63,8 @@ assert "tk_interaction_relay_queue_verdict" in needs_you, (
 
 # The direct verdict route stays on LAN; remote delivery belongs only to the
 # separate encrypted client and must not enter the numbers failover helper.
-assert "TK_VIBEPULSE_BASE_URL" in needs_you, (
-    "the Needs You verdict must post to the LAN base URL"
+assert "tokens_agent_direct_origin" in needs_you, (
+    "the Needs You verdict must return to the LAN host that supplied it"
 )
 
 # --- The failover helper itself -----------------------------------------
@@ -234,6 +234,14 @@ assert "stderr was not captured" in windows_runner_test
 assert "negative child exit was not normalized to 1" in windows_runner_test
 assert "Codex bin directory was not prepended to PATH" in windows_runner_test
 assert "Codex home was not passed to the child process" in windows_runner_test
+assert "GitHub and subscription display inputs were not forwarded" in \
+    windows_runner_test
+for required in (
+        "GithubRepo", "ClaudePlan", "CodexPlan", "ClaudePlanCostUsd",
+        "CodexPlanCostUsd"):
+    assert required in windows_service
+    assert required in windows_runner
+    assert required in tokenserver_readme
 assert "Resolve-VibePulseCodexBinDir" in windows_service
 assert "Resolve-VibePulseCodexHome" in windows_service
 assert "Ubuntu" in readme and "not a support claim" in readme

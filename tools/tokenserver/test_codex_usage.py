@@ -20,10 +20,12 @@ or message leaves the box -- holds for fixtures too.
 """
 
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from tools.tokenserver import codex_usage
 
@@ -148,6 +150,20 @@ class CodexUsageScanTest(unittest.TestCase):
     def test_missing_sessions_dir_is_zero_not_an_error(self):
         self.assertEqual(
             codex_usage.month_value(self.root / "nope"), (0.0, 0, 0))
+
+    def test_default_sessions_dir_honors_codex_home(self):
+        sessions = self.root / "custom-codex-home" / "sessions"
+        sessions.mkdir(parents=True)
+        (sessions / "rollout-a.jsonl").write_text(
+            turn_context() + token_count(ONE_MILLION_FRESH))
+
+        with mock.patch.dict(
+                os.environ, {"CODEX_HOME": str(sessions.parent)}):
+            usd, priced, unpriced = codex_usage.month_value()
+
+        self.assertAlmostEqual(usd, 5.00)
+        self.assertEqual(priced, 1_000_000)
+        self.assertEqual(unpriced, 0)
 
     def test_prices_a_turn_against_the_preceding_turn_context(self):
         self.write("rollout-a.jsonl",

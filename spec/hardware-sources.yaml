@@ -108,3 +108,12 @@ sources:
     locator: https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/peripherals/usb_device.html
     revision: ESP-IDF-v5.5
     accessed: "2026-08-10"
+
+  - id: espressif-mdns-1.11.3
+    kind: source-code
+    rank: 3
+    title: espressif/mdns
+    publisher: Espressif Systems
+    locator: https://components.espressif.com/components/espressif/mdns
+    revision: 1.11.3
+    accessed: "2026-08-28"

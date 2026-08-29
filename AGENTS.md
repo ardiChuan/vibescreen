@@ -24,7 +24,7 @@ Designsystemet: **spec/ui-spec.md**. Hårdvarusanningen routas under
 `Hardware-aware work` nedan; läs den kanoniska femfilslistan där före
 hårdvaruarbete.
 
-## Status (2026-08-27, v0.7.1)
+## Status (2026-08-28, v1.0.0)
 
 Plattformen bröts ut ur underhållarens tidigare solcells-firmware (den
 historiken ligger i ett privat repo och är inget du behöver) och stöptes om
@@ -39,6 +39,15 @@ Valfria och oberoende Cloudflare-reläer kan bära siffror respektive
 end-to-end-krypterade interaktioner/live-status över separata nät; allt är
 default-off. Appen ligger först i registret, så en färsk klon utifrån bygger
 en binär som startar i VibePulse och ingenting annat.
+
+Windows-kärnan, den fysiska svarsslingan och den beständiga livscykeln
+passerade på en riktig PC mot exakt hostrevision `bee5d8c`: ren checkout, full
+tokenserversvit, Task Scheduler-start/watchdog, begränsad logg, friska källor,
+Private-LAN, panelpollning, `NEEDS YOU` → `APPROVE` → returnerat `Ja`, samt
+verklig sign-out/sign-in, sleep/resume och reboot. Release-taggen `v1.0.0`
+pekar på `ab3ce92`; de åtta filerna mellan hostrevisionen och taggen är endast
+dokumentation/test, inte runtime. Se den fullständiga sanerade rapporten och
+ärv aldrig denna PASS till en senare runtime-revision utan en ny körning.
 
 Solelkollen och Vibbe/Buddy är egna produkter i egna repon och dras in som
 companion-inputs när de finns utcheckade — `TORGET_SOLELKOLLEN_DIR`

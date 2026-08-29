@@ -1028,7 +1028,7 @@ class RepositoryRegistryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             result.stdout,
-            "OK: 30 capabilities, 10 sources, 1 units\n",
+            "OK: 30 capabilities, 11 sources, 1 units\n",
         )
 
     def test_repository_registry_loads(self):
@@ -1112,6 +1112,7 @@ class RepositoryRegistryTests(unittest.TestCase):
             "waveshare-cst9217-driver-1.0.0": (
                 "source-code", 3, "2.0.0",
             ),
+            "espressif-mdns-1.11.3": ("source-code", 3, "1.11.3"),
             "torget-main-1fad449": ("source-code", 3, "1fad449"),
             "waveshare-board-docs-2026-08-10": (
                 "vendor-doc", 4, "accessed-2026-08-10",

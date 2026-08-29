@@ -47,7 +47,8 @@ static void net_task(void *arg) {
 
   for (;;) {
     tk_tokens t;
-    if (torget_http_get_failover(TK_TOKENS_URL, TK_TOKENS_RELAY_URL,
+    if (torget_http_get_service("/api/tokens", TK_TOKENS_URL,
+                                TK_TOKENS_RELAY_URL,
                                 body, sizeof body, &len)
         && tk_tokens_parse(body, len, &t)) {
       torget_ui_lock();
@@ -102,7 +103,8 @@ static void max_tracker_task(void *arg) {
 
   for (;;) {
     tk_max_tracker t;
-    if (torget_http_get_failover(TK_MAX_TRACKER_URL, TK_MAX_TRACKER_RELAY_URL,
+    if (torget_http_get_service("/api/max-tracker", TK_MAX_TRACKER_URL,
+                                TK_MAX_TRACKER_RELAY_URL,
                                 body, sizeof body, &len)
         && tk_max_tracker_parse(body, len, &t)) {
       torget_ui_lock();

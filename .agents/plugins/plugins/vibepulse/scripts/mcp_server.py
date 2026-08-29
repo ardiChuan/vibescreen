@@ -265,17 +265,30 @@ def _initialize(params):
     }
 
 
+def _empty_or_metadata_only(params):
+    if params in (_MISSING, None, {}):
+        return True
+    return (isinstance(params, dict) and set(params) == {"_meta"} and
+            isinstance(params["_meta"], dict) and
+            _bounded_tree(params["_meta"]))
+
+
 def _dispatch(method, params):
     if method == "initialize":
         result = _initialize(params)
         return result if result is not None else _MISSING
     if method in {"ping", "tools/list", "notifications/initialized"}:
-        if params not in (_MISSING, None, {}):
+        if not _empty_or_metadata_only(params):
             return _MISSING
         if method == "tools/list":
             return {"tools": [TOOL]}
         return {}
-    if not isinstance(params, dict) or set(params) != {"name", "arguments"}:
+    if (not isinstance(params, dict) or
+            not {"name", "arguments"}.issubset(params) or
+            not set(params).issubset({"name", "arguments", "_meta"}) or
+            ("_meta" in params and
+             (not isinstance(params["_meta"], dict) or
+              not _bounded_tree(params["_meta"])))):
         return _tool_error("Invalid ask parameters")
     if params["name"] != TOOL_NAME or not _bounded_tree(params["arguments"]) or \
             not _valid_arguments(params["arguments"]):

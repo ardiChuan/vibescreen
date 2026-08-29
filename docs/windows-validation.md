@@ -33,12 +33,12 @@ redder than the release:
 ```powershell
 $ValidationRoot = Join-Path $env:TEMP ("vibepulse-validation-" + [guid]::NewGuid())
 git clone https://github.com/niclasvestlund-YT/vibepulse.git $ValidationRoot
-git -C $ValidationRoot checkout --detach v0.7.1
+git -C $ValidationRoot checkout --detach v1.0.0
 git -C $ValidationRoot describe --tags --always --dirty
 git -C $ValidationRoot status --short
 ```
 
-The description must be `v0.7.1` and status output must be empty. For a future
+The description must be `v1.0.0` and status output must be empty. For a future
 release, substitute the exact candidate tag or commit everywhere in this
 document.
 
@@ -74,7 +74,9 @@ foreach ($Script in @(
   $AllErrors += $Errors
 }
 $AllErrors
-.\tools\tokenserver\install-windows-task.ps1 -ValidateOnly
+.\tools\tokenserver\install-windows-task.ps1 -ValidateOnly `
+  -GithubRepo "owner/repository" -ClaudePlan max5x `
+  -ClaudePlanCostUsd "100" -CodexPlan pro -CodexPlanCostUsd "20"
 .\test\windows-task-runner.ps1
 ```
 
@@ -88,6 +90,12 @@ scheduled process must receive its verified bin directory without changing the
 user's global PATH. If the user already has a custom `CODEX_HOME`, the task
 must receive that verified directory process-locally without editing Codex
 settings or authentication.
+It must also prove exact forwarding of the optional GitHub repository, named
+plan labels, and per-provider subscription costs. A Windows support claim is
+not allowed to silently drop display inputs that work in a foreground launch.
+The installed VibePulse MCP row must report `tool_timeout_sec: 130`; a missing
+timeout lets Codex cancel the bridge before the panel's bounded 120-second
+answer window expires and is a failed interaction gate.
 
 ## 5. Exercise the real local sources on a temporary port
 
@@ -154,20 +162,24 @@ same LAN, verify the PC's real address rather than localhost:
 Test-NetConnection -ComputerName <PC-LAN-IP> -Port 8737
 ```
 
-The panel's direct-LAN URL must use that reachable address. Reserve it in the
-router or use the optional relays; Windows does not currently provide the
-stable `.local` discovery tracked in
-[#7](https://github.com/niclasvestlund-YT/vibepulse/issues/7).
+Install `requirements-discovery.txt` in the scheduled task's exact Python
+environment. Require `GET /` → `discovery.status: ready`, then prove a real
+panel poll. The firmware caches one healthy `_vibepulse._tcp.local` origin and
+may select another advertising Mac/PC after failure. Keep a DHCP-reserved
+compiled URL as the multicast-blocked fallback; discovery is additive, never
+a reason to accept an unstable fallback.
 
 ## 7. Verify the real service lifecycle
 
 Only after the release checkout and installer validation pass:
 
 ```powershell
-.\tools\tokenserver\install-windows-task.ps1
+.\tools\tokenserver\install-windows-task.ps1 `
+  -GithubRepo "owner/repository" -ClaudePlan max5x `
+  -ClaudePlanCostUsd "100" -CodexPlan pro -CodexPlanCostUsd "20"
 Get-ScheduledTaskInfo -TaskName "VibePulse tokenserver"
 Invoke-RestMethod http://127.0.0.1:8737/ |
-  Select-Object service, rev, srcFingerprint, claudeProbe, claudeCredential,
+  Select-Object service, rev, srcFingerprint, discovery, claudeProbe, claudeCredential,
     @{Name='panel'; Expression={$_.interactions.panel}}
 ```
 
@@ -180,12 +192,11 @@ Verify all of these and record timestamps:
 4. it returns after sleep/resume;
 5. one full Windows reboot does not leave the panel stale.
 
-The tagged v0.7.1 scheduler task has no persistent stdout/stderr log.
-Post-v0.7.1 `main` adds
-`%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log`; keep
-[#28](https://github.com/niclasvestlund-YT/vibepulse/issues/28) open until the
-new wrapper, rotation, quoting, restart, and non-ASCII-profile path pass on a
-real scheduled task.
+The v1.0.0 scheduler wrapper writes bounded stdout/stderr to
+`%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log` and retains one bounded
+`.old` tail. The tagged v0.7.1 task predated that log. Allow a bounded source
+warm-up after a session or power transition, then require a continuous fresh
+window; a single transient success is not enough.
 
 ## 8. Close the physical loop
 
@@ -221,6 +232,15 @@ records post-v0.7.1 Task Scheduler, logging, provider, and Codex app-server
 evidence. It is also intentionally PARTIAL: an earlier commit's PASS does not
 automatically pass a later commit, and an unavailable PC turns unfinished rows
 into NOT TESTED rather than success.
+
+The subsequent
+[v1.0 core and physical checkpoint](superpowers/reviews/2026-08-28-windows-v1-core-physical.md)
+records the recovered real-host gates and the exact human panel answer on
+`bee5d8c`. The later
+[v1.0 full lifecycle continuation](superpowers/reviews/2026-08-28-windows-v1-full-lifecycle.md)
+records real sign-out/sign-in, sleep/resume, and reboot against that same
+installed runtime. Together they close every required Windows row for v1.0.0;
+neither report is evidence for a later untested runtime revision.
 
 Record each row as PASS, FAIL, or NOT TESTED:
 
