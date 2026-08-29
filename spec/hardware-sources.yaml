@@ -1,5 +1,20 @@
 schema_version: 1
 sources:
+  - id: torget-physical-2026-08-30-vibepulse-stale-recovery
+    kind: physical-test
+    rank: 1
+    title: VibePulse stale-recovery flash and transport findings for torget-home-01
+    publisher: Torget
+    locator: docs/superpowers/reviews/2026-08-30-vibepulse-stale-recovery-physical.md
+    revision: findings-2026-08-30; unit=torget-home-01; firmware=v1.0.0-18-g3a131a2
+    accessed: "2026-08-30"
+    board_revision: unknown
+    unit: torget-home-01
+    tests:
+      - discovery-firmware-flash-2026-08-30
+      - vibepulse-codex-approve-roundtrip-2026-08-30
+      - panel-lan-fresh-data-recovery-2026-08-30
+
   - id: torget-physical-2026-08-27-vibepulse
     kind: physical-test
     rank: 1
