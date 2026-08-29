@@ -1028,7 +1028,7 @@ class RepositoryRegistryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             result.stdout,
-            "OK: 30 capabilities, 11 sources, 1 units\n",
+            "OK: 30 capabilities, 12 sources, 1 units\n",
         )
 
     def test_repository_registry_loads(self):
@@ -1096,6 +1096,11 @@ class RepositoryRegistryTests(unittest.TestCase):
                 self.assertTrue(expected_fields.issubset(evidenced_fields))
 
         expected_sources = {
+            "torget-physical-2026-08-30-vibepulse-stale-recovery": (
+                "physical-test", 1,
+                "findings-2026-08-30; unit=torget-home-01; "
+                "firmware=v1.0.0-18-g3a131a2",
+            ),
             "torget-physical-2026-08-27-vibepulse": (
                 "physical-test", 1,
                 "findings-2026-08-27; unit=torget-home-01; "
@@ -1192,7 +1197,7 @@ class RepositoryRegistryTests(unittest.TestCase):
             "battery": "not_fitted",
             "microsd": "unknown",
             "antenna": "onboard",
-            "installed_firmware": "v0.7.0-5-ge6feb29-dirty",
-            "last_physical_verification": "2026-08-27",
+            "installed_firmware": "v1.0.0-18-g3a131a2",
+            "last_physical_verification": "2026-08-30",
             "secrets": False,
         })
