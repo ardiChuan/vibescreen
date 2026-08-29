@@ -5,6 +5,13 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ## Unreleased
 
+### Fixed
+
+- Windows Task Scheduler installations can now persist the optional public
+  GitHub source, named Claude/Codex plan labels, and explicit per-provider
+  subscription costs. The background service no longer drops the GitHub Stars
+  or API-versus-subscription inputs that work in a foreground launch.
+
 ## v1.0.0 — 2026-08-28
 
 Release notes:

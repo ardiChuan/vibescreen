@@ -366,6 +366,20 @@ Autostart ingår via Task Scheduler. Kör från repots rot i PowerShell:
 powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1
 ```
 
+Valfria visningskällor måste anges till den schemalagda tjänsten precis som
+vid en manuell start. Repo-värdet är publikt; abonnemangskostnader gissas
+aldrig:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\tokenserver\install-windows-task.ps1 `
+  -GithubRepo "owner/repository" `
+  -ClaudePlan max5x -ClaudePlanCostUsd "100" `
+  -CodexPlan pro -CodexPlanCostUsd "20"
+```
+
+GitHub-sidan och stjärnnotiserna behöver dessutom sina separata
+`TK_GITHUB_*_ENABLED`-flaggor i panelens gitignorerade `secrets.h`.
+
 Skriptet registrerar tjänsten för den inloggade användaren, startar den
 direkt och startar om den vid fel. Det bakar inte in Claude/Codex- eller
 detaljval i kommandoraden; samma sparade tokenserver-konfiguration används

@@ -234,6 +234,14 @@ assert "stderr was not captured" in windows_runner_test
 assert "negative child exit was not normalized to 1" in windows_runner_test
 assert "Codex bin directory was not prepended to PATH" in windows_runner_test
 assert "Codex home was not passed to the child process" in windows_runner_test
+assert "GitHub and subscription display inputs were not forwarded" in \
+    windows_runner_test
+for required in (
+        "GithubRepo", "ClaudePlan", "CodexPlan", "ClaudePlanCostUsd",
+        "CodexPlanCostUsd"):
+    assert required in windows_service
+    assert required in windows_runner
+    assert required in tokenserver_readme
 assert "Resolve-VibePulseCodexBinDir" in windows_service
 assert "Resolve-VibePulseCodexHome" in windows_service
 assert "Ubuntu" in readme and "not a support claim" in readme
