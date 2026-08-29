@@ -30,6 +30,11 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ### Fixed
 
+- The VibePulse Codex plugin advances to `0.1.2`. Its skill, setup doctor,
+  and host smoke check now distinguish a currently live Claude process source
+  from an expired saved fallback credential. Recovery is re-read locally
+  within 15 seconds and no longer prescribes an unnecessary tokenserver
+  restart.
 - Windows Task Scheduler installation now uses the Windows 10-compatible
   `IgnoreNew` instance policy and explicitly stops only its own running task
   during an idempotent update; the previous `StopExisting` enum value parsed

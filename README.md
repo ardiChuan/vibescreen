@@ -319,7 +319,10 @@ The startup/doctor health check also guards Claude's saved usage credential.
 never an access or refresh token—and warns 30 minutes before expiry. This
 matters because Claude Desktop can remain logged in after the separate
 credential readable by VibePulse has aged out; stale Fable data is never
-reported as current.
+reported as current. Read that guard together with `claudeProbe` and the
+`/api/tokens` stale flags: a successful probe plus a fresh model-week flag
+means the current source is live even if the saved fallback is expired. That
+is a future recovery risk, not a reason to restart the tokenserver.
 
 ## What you need
 

@@ -6,7 +6,7 @@ around them (2026-08-13). How these get found and worked is described in
 [observability.md](observability.md); stories behind them live in
 [lessons.md](lessons.md).
 
-**Last combed: 2026-08-13 (initial audit — this document is its result).**
+**Last combed: 2026-08-29 (Claude stale/source-readiness incident).**
 
 Rules of the file:
 
@@ -202,6 +202,18 @@ false on client-init failure with no log at all — the only silent path in
 an otherwise well-logged function.
 **Fix:** log the real enum + URL; retry instead of task suicide; add the
 missing log line.
+
+### OBS-32 · Saved-credential expiry impersonated the active quota source
+`host · S · done (2026-08-29)`
+The root endpoint intentionally reported saved Claude credential readiness
+separately from `claudeProbe`, but doctor, smoke, and the Codex skill read an
+expired saved fallback as if it proved the current process source was dead.
+That contradiction appeared in production when `claudeProbe` was
+`usage_http_200 + ok`, Fable was fresh, and `claudeCredential` was expired.
+Doctor also prescribed a server restart even though credentials are reread
+locally every 15 seconds. The tools and versioned plugin 0.1.2 skill now name
+all three dimensions—active probe, saved fallback, and served stale flags—and
+tests pin both the live-source and genuinely stale cases.
 
 ---
 

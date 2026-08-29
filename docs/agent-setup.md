@@ -198,9 +198,12 @@ safe status and whole minutes remaining—never either OAuth token. `expiring`
 starts 30 minutes before failure; `expired` is actionable even when
 `claude auth status` still says logged in. `python3 tools/vibepulse_setup.py
 doctor`, Codex `SessionStart`, and `python3 tools/tokenserver/smoke.py` all
-consume this guard. After Claude's supported client refreshes the credential,
-the service notices locally within 15 seconds; it does not call an
-undocumented refresh endpoint or mutate the refresh token itself.
+consume this guard. Do not confuse it with the active source outcome: if
+`claudeProbe` is `usage_http_200 + ok` and the relevant `/api/tokens` stale
+flag is false, current quota is live while the expired saved credential is a
+future recovery risk. Start a new Claude Code CLI turn to refresh that saved
+fallback. The service notices locally within 15 seconds; it does not need a
+restart, call an undocumented refresh endpoint, or mutate the refresh token.
 
 Then check the endpoints the screen polls:
 
@@ -440,7 +443,7 @@ workflow, consent model and troubleshooting live in [ota.md](ota.md).
 | A test question shows only **LEAVE IT** | The request has no single explicit recommendation | Use 2–3 short options and mark exactly one genuinely recommended option |
 | **SOMETHING IS WAITING** appears with no answer buttons | The question failed the physical fit/privacy gate | Finish on the computer. For a diagnostic only, use the canonical short smoke test above |
 | Letters become boxes in project/status text | The UI selected an uppercase-only font | Use `plex_ui_21` for mixed-case/localized text and verify with `RÄKSMÖRGÅS` |
-| Panel shows stale quota / empty Fable weekly in the morning | The readable OAuth copy expired/rejected, or an upstream 429 penalty is active | The general week can recover from Claude Desktops bounded local plan history; the named Fable/Opus pool still requires OAuth. Check both `claudeProbe` and `claudeLocalUsage` on `curl localhost:8737/` |
+| Panel shows stale quota / empty Fable weekly in the morning | The readable OAuth copy expired/rejected, or an upstream 429 penalty is active | Check `claudeProbe`, `claudeCredential`, `claudeLocalUsage`, and `/api/tokens` together. The named Fable/Opus pool requires a live OAuth source. Start a new Claude Code CLI turn, then allow the automatic 15-second local recheck; restart is not the first recovery step |
 | Panel shows stale while powered from the computer USB port | The Mac port cannot feed WiFi TX bursts — fetches time out | Expected on Mac USB; run from wall power. Logs stay valid on Mac USB, data does not |
 | OTA boots always show state 0xffffffff and the health gate always rests | `sdkconfig` generated before the rollback line landed in `sdkconfig.defaults` (defaults only apply on fresh generation) | `grep BOOTLOADER_APP_ROLLBACK sdkconfig` — set `=y`, rebuild, and USB-flash ONCE (the bootloader carries the logic; OTA never writes it) |
 | No `/dev/cu.usbmodem*` or Windows `COM` port | Not in download mode | Hold BOOT, tap RESET, release BOOT |

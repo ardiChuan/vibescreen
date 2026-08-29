@@ -21,6 +21,19 @@ point at the backlog item.
 
 ---
 
+## 2026-08-29 · A dead saved credential and a live quota source coexisted
+
+**What happened:** Fable went stale after the saved Claude credential expired;
+later the usage probe recovered through a newly started Claude client, but
+doctor still described the saved credential as if the current source were
+dead. **Root cause:** active process candidates have no readable expiry, while
+the content-free guard correctly retained the expired saved-Keychain state;
+the diagnostics then collapsed those two truths and prescribed a needless
+server restart. **The rule:** diagnose active source outcome, saved recovery
+readiness, and served stale flags separately. **Guards:** plugin 0.1.2 skill,
+doctor/smoke regression tests, and the 15-second local reread. **Watch for:**
+calling an expired fallback the current outage when `claudeProbe` is healthy.
+
 ## 2026-08-28 · A healthy scheduled Codex source failed in the interactive shell
 
 **What happened:** a direct Windows probe failed while the scheduled API

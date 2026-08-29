@@ -1570,8 +1570,9 @@ def _doctor_claude_quota(payload: dict, stdout) -> bool:
 
     status = credential.get("status")
     remaining = credential.get("expiresInMin")
+    source_live = probe == "usage_http_200 + ok"
     if status == "ready" and isinstance(remaining, int) and remaining >= 0:
-        if probe == "usage_http_200 + ok":
+        if source_live:
             print(f"PASS Claude quota credential: ready ({remaining} min "
                   "remaining)", file=stdout)
             return True
@@ -1584,23 +1585,35 @@ def _doctor_claude_quota(payload: dict, stdout) -> bool:
         return False
 
     if status == "expiring" and isinstance(remaining, int) and remaining >= 0:
-        print(f"FIX Claude quota credential: expires in {remaining} min; "
-              "start a new Claude Code CLI turn before then so its supported "
-              "client refreshes Keychain", file=stdout)
+        live = ("; the current quota source is live, but "
+                if source_live else "; ")
+        print(f"FIX Saved Claude quota credential: expires in {remaining} "
+              f"min{live}start a new Claude Code CLI turn before then so its "
+              "supported client refreshes Keychain", file=stdout)
         return False
     if status == "expired":
-        print("FIX Claude quota credential: expired; login status alone is "
-              "not enough—start a new Claude Code CLI turn, then restart "
-              "the VibePulse tokenserver", file=stdout)
+        if source_live:
+            print("FIX Saved Claude quota credential: expired; the current "
+                  "quota source is live via a current Claude client, but the "
+                  "next client gap can make Fable stale—start a new Claude "
+                  "Code CLI turn; VibePulse rechecks automatically and does "
+                  "not need a restart", file=stdout)
+        else:
+            print("FIX Saved Claude quota credential: expired; login status "
+                  "alone is not enough—start a new Claude Code CLI turn; "
+                  "VibePulse rechecks automatically and does not need a "
+                  "restart", file=stdout)
         return False
     if status == "unavailable":
         print("FIX Claude quota credential: no supported Claude credential "
               "was found on this computer", file=stdout)
         return False
     if status == "unknown":
-        print("FIX Claude quota credential: a process token exists but its "
-              "expiry cannot be guarded; sign in with Claude Code so the "
-              "supported credential store is populated", file=stdout)
+        live = (" The current quota source is live, but its" if source_live
+                else " Its")
+        print("FIX Claude quota credential:" + live + " process-token expiry "
+              "cannot be guarded; sign in with Claude Code so the supported "
+              "credential store is populated", file=stdout)
         return False
 
     print("FIX Claude quota credential: invalid diagnostics", file=stdout)

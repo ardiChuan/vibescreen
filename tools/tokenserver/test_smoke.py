@@ -109,6 +109,30 @@ class ServerCheckTests(unittest.TestCase):
         self.assertIn("19 min", warnings[0])
         self.assertIn("ny Claude Code CLI-turn", warnings[0])
 
+    def test_expired_saved_credential_does_not_hide_live_process_source(self):
+        root = dict(HEALTHY_ROOT, claudeCredential={
+            "status": "expired", "expiresInMin": 0})
+        with canned_server({"/": root}) as base:
+            results = smoke.check_server(base, checkout_rev="abc1234")
+        warnings = [text for level, text in results if level == smoke.VARN]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("nuvarande kvotkälla är live", warnings[0])
+        self.assertIn("nästa klientglapp", warnings[0])
+        self.assertIn("ingen serveromstart behövs", warnings[0])
+
+    def test_expired_saved_credential_with_dead_probe_is_not_called_live(self):
+        root = dict(HEALTHY_ROOT, claudeProbe="token_expired_15:34",
+                    claudeCredential={"status": "expired",
+                                      "expiresInMin": 0})
+        with canned_server({"/": root}) as base:
+            results = smoke.check_server(base, checkout_rev="abc1234")
+        warnings = [text for level, text in results if level == smoke.VARN]
+        self.assertEqual(len(warnings), 2)
+        self.assertFalse(any("kvotkälla är live" in text
+                             for text in warnings))
+        self.assertTrue(any("läser om den automatiskt" in text
+                            for text in warnings))
+
     def test_unknown_buckets_warn(self):
         root = dict(HEALTHY_ROOT, unknownRateLimitBuckets=["7d_haiku"])
         with canned_server({"/": root}) as base:
