@@ -7,6 +7,11 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ### Fixed
 
+- The VibePulse Codex plugin advances to `0.1.3`. Doctor now surfaces recent
+  direct panel polling without misclassifying a healthy relay-only setup, and
+  the skill distinguishes fresh provider data from the device-side
+  power/network/firmware hop, including computer-USB power limits and
+  panel-compatible relay probes.
 - The local VibePulse MCP bridge now accepts the bounded `_meta` request field
   emitted by current Codex clients during tool discovery and invocation, so
   the physical `APPROVE` question remains available instead of failing MCP

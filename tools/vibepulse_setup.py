@@ -1566,10 +1566,36 @@ def _doctor(
             fixes = True
         else:
             print("PASS Tokenserver", file=stdout)
+            _doctor_panel_lan_contact(interactions, stdout)
             if config.claude_interactions and not _doctor_claude_quota(
                     payload, stdout):
                 fixes = True
     return not fixes
+
+
+def _doctor_panel_lan_contact(interactions: dict, stdout) -> None:
+    """Describe direct panel evidence without misclassifying relay-only use."""
+    panel = interactions.get("panel")
+    if not isinstance(panel, dict):
+        return
+    status = panel.get("status")
+    if status == "ready":
+        route = panel.get("route")
+        suffix = f" via {route}" if isinstance(route, str) else ""
+        print(f"PASS Panel LAN contact: recent confirmed poll{suffix}",
+              file=stdout)
+        return
+    if status == "stale":
+        print("WAIT Panel LAN contact: the last confirmed direct poll is "
+              "stale; relay-only use may still be healthy. If the glass "
+              "shows STALE, use a dedicated power supply and verify current "
+              "discovery-capable firmware", file=stdout)
+        return
+    if status == "waiting":
+        print("WAIT Panel LAN contact: no confirmed direct poll since service "
+              "start; relay-only use may still be healthy. If the glass "
+              "shows STALE, use a dedicated power supply and verify current "
+              "discovery-capable firmware", file=stdout)
 
 
 def _doctor_claude_quota(payload: dict, stdout) -> bool:

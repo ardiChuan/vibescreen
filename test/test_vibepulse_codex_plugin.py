@@ -397,6 +397,12 @@ def healthy_diagnostics():
     }).encode()
 
 
+def panel_diagnostics(status, **extra):
+    payload = json.loads(healthy_diagnostics())
+    payload["interactions"]["panel"] = {"status": status, **extra}
+    return json.dumps(payload).encode()
+
+
 class StatefulCodexRunner:
     """Small exact Codex model for transaction and reconciliation tests."""
 
@@ -793,7 +799,7 @@ class McpServerTests(unittest.TestCase):
         initialized = responses[0]["result"]
         self.assertEqual(initialized["protocolVersion"], "2025-06-18")
         self.assertEqual(initialized["serverInfo"]["name"], "vibepulse")
-        self.assertEqual(initialized["serverInfo"]["version"], "0.1.2")
+        self.assertEqual(initialized["serverInfo"]["version"], "0.1.3")
         self.assertEqual(initialized["capabilities"], {"tools": {"listChanged": False}})
         self.assertEqual(responses[1]["result"], {})
         tools = responses[2]["result"]["tools"]
@@ -1285,7 +1291,7 @@ class PluginPackageTests(unittest.TestCase):
         self.assertRegex(
             manifest["version"], r"^(0|[1-9][0-9]*)\."
             r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
-        self.assertEqual(manifest["version"], "0.1.2")
+        self.assertEqual(manifest["version"], "0.1.3")
         self.assertEqual(manifest["author"]["name"], "Niclas Vestlund")
         self.assertNotIn("email", manifest["author"])
         self.assertEqual(manifest["license"], "MIT")
@@ -2399,6 +2405,43 @@ class RelaySetupTests(unittest.TestCase):
             self.assertIn("--no-legacy-claude-panel-v1",
                           output.getvalue())
             self.assertIn("PASS Tokenserver", output.getvalue())
+
+    def test_doctor_reports_panel_lan_contact_without_failing_relay_only_use(self):
+        setup = load_setup()
+        cases = (
+            ("ready", {"route": "/api/tokens"},
+             "PASS Panel LAN contact: recent confirmed poll via /api/tokens"),
+            ("waiting", {},
+             "WAIT Panel LAN contact: no confirmed direct poll"),
+            ("stale", {"ageS": 90, "route": "/api/agent-status"},
+             "WAIT Panel LAN contact: the last confirmed direct poll is stale"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            setup.save_config(path, setup.VibePulseConfig(
+                codex_interactions=True))
+            for status, extra, expected in cases:
+                with self.subTest(status=status):
+                    output = io.StringIO()
+                    body = panel_diagnostics(status, **extra)
+                    code = setup.main(
+                        ["doctor"], config_path=path,
+                        python=Path(sys.executable), codex=Path("/codex"),
+                        run=FakeRunner([
+                            python_probe_ok(), codex_probe_ok(),
+                            json_result(plugin_listing()),
+                            json_result([owned_mcp()]),
+                        ]),
+                        urlopen=lambda *_args, _body=body, **_kwargs:
+                            BytesResponse(_body),
+                        stdout=output)
+                    # Hook trust is deliberately not machine-readable, but a
+                    # waiting relay-only panel must not add another failure.
+                    self.assertEqual(code, 1)
+                    self.assertIn(expected, output.getvalue())
+                    if status != "ready":
+                        self.assertIn("relay-only use may still be healthy",
+                                      output.getvalue())
 
     def test_disable_and_uninstall_preserve_non_target_state(self):
         setup = load_setup()
