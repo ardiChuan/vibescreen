@@ -265,12 +265,20 @@ def _initialize(params):
     }
 
 
+def _empty_or_metadata_only(params):
+    if params in (_MISSING, None, {}):
+        return True
+    return (isinstance(params, dict) and set(params) == {"_meta"} and
+            isinstance(params["_meta"], dict) and
+            _bounded_tree(params["_meta"]))
+
+
 def _dispatch(method, params):
     if method == "initialize":
         result = _initialize(params)
         return result if result is not None else _MISSING
     if method in {"ping", "tools/list", "notifications/initialized"}:
-        if params not in (_MISSING, None, {}):
+        if not _empty_or_metadata_only(params):
             return _MISSING
         if method == "tools/list":
             return {"tools": [TOOL]}
