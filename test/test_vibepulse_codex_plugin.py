@@ -793,7 +793,7 @@ class McpServerTests(unittest.TestCase):
         initialized = responses[0]["result"]
         self.assertEqual(initialized["protocolVersion"], "2025-06-18")
         self.assertEqual(initialized["serverInfo"]["name"], "vibepulse")
-        self.assertEqual(initialized["serverInfo"]["version"], "0.1.1")
+        self.assertEqual(initialized["serverInfo"]["version"], "0.1.2")
         self.assertEqual(initialized["capabilities"], {"tools": {"listChanged": False}})
         self.assertEqual(responses[1]["result"], {})
         tools = responses[2]["result"]["tools"]
@@ -1285,7 +1285,7 @@ class PluginPackageTests(unittest.TestCase):
         self.assertRegex(
             manifest["version"], r"^(0|[1-9][0-9]*)\."
             r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
-        self.assertEqual(manifest["version"], "0.1.1")
+        self.assertEqual(manifest["version"], "0.1.2")
         self.assertEqual(manifest["author"]["name"], "Niclas Vestlund")
         self.assertNotIn("email", manifest["author"])
         self.assertEqual(manifest["license"], "MIT")
@@ -1354,6 +1354,12 @@ class PluginPackageTests(unittest.TestCase):
             self.assertIn(safety, body.lower())
         self.assertIn("python3 tools/vibepulse_setup.py status", body)
         self.assertIn("python3 tools/vibepulse_setup.py doctor", body)
+        for stale_guard in (
+                "claudeProbe", "claudeCredential", "/api/tokens",
+                "usage_http_200 + ok", "15 seconds",
+                "do not prescribe a tokenserver restart first",
+                "learn or update itself"):
+            self.assertIn(stale_guard, body)
         self.assertRegex(body.lower(), r"relay (?:is|remains) not enabled")
         for physical_guard in (
                 "Ser du APPROVE?", "SOMETHING IS WAITING",
@@ -1559,6 +1565,36 @@ class CodexMcpTimeoutConfigTests(unittest.TestCase):
 
 
 class SetupPlanTests(unittest.TestCase):
+    def test_doctor_separates_live_source_from_expired_saved_fallback(self):
+        setup = load_setup()
+        output = io.StringIO()
+
+        healthy = setup._doctor_claude_quota({
+            "claudeProbe": "usage_http_200 + ok",
+            "claudeCredential": {"status": "expired", "expiresInMin": 0},
+        }, output)
+
+        self.assertFalse(healthy)
+        text = output.getvalue()
+        self.assertIn("current quota source is live", text)
+        self.assertIn("next client gap can make Fable stale", text)
+        self.assertIn("does not need a restart", text)
+
+    def test_doctor_never_calls_failed_probe_live_or_requires_restart(self):
+        setup = load_setup()
+        output = io.StringIO()
+
+        healthy = setup._doctor_claude_quota({
+            "claudeProbe": "token_expired_15:34",
+            "claudeCredential": {"status": "expired", "expiresInMin": 0},
+        }, output)
+
+        self.assertFalse(healthy)
+        text = output.getvalue()
+        self.assertNotIn("source is live", text)
+        self.assertIn("rechecks automatically", text)
+        self.assertIn("does not need a restart", text)
+
     def test_legacy_missing_timeout_is_migratable_but_not_doctor_pass(self):
         setup = load_setup()
         legacy = compact([owned_mcp(tool_timeout=None)])

@@ -211,12 +211,22 @@ def check_server(base_url, checkout_rev=None, checkout_src=None):
         if credential_status == "ready" and isinstance(remaining, int):
             results.append((OK, f"claude-credential: {remaining} min kvar"))
         elif credential_status == "expiring" and isinstance(remaining, int):
-            results.append((VARN, f"claude-credential går ut om {remaining} "
-                                  "min — starta en ny Claude Code CLI-turn "
-                                  "innan dess"))
+            current = ("; nuvarande kvotkälla är live" if probe == PROBE_OK
+                       else "")
+            results.append((VARN, f"sparad claude-credential går ut om "
+                                  f"{remaining} min{current} — starta en ny "
+                                  "Claude Code CLI-turn innan dess"))
         elif credential_status == "expired":
-            results.append((VARN, "claude-credential har gått ut — en ny "
-                                  "Claude Code CLI-turn måste förnya den"))
+            if probe == PROBE_OK:
+                results.append((VARN, "sparad claude-credential har gått "
+                                      "ut; nuvarande kvotkälla är live, "
+                                      "men nästa klientglapp kan göra Fable "
+                                      "stale — starta en ny Claude Code "
+                                      "CLI-turn; ingen serveromstart behövs"))
+            else:
+                results.append((VARN, "sparad claude-credential har gått "
+                                      "ut — starta en ny Claude Code CLI-turn; "
+                                      "VibePulse läser om den automatiskt"))
         else:
             results.append((VARN, "claude-credential kan inte "
                                   "utgångsbevakas — kör setup doctor"))

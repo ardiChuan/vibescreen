@@ -46,9 +46,12 @@ The same doctor path reads a content-free Claude credential guard from
 `GET /`: `ready`, `expiring`, `expired`, `unavailable`, or `unknown`, plus
 whole minutes remaining when known. It warns 30 minutes before expiry and
 never returns or logs an access token, refresh token, account id, or Keychain
-body. A new Claude Code CLI turn is the supported refresh path; the service
-then detects the new local credential within 15 seconds without retrying a
-dead token upstream.
+body. Read it together with `claudeProbe` and `/api/tokens`: when the probe is
+`usage_http_200 + ok` and the relevant stale flag is false, a current Claude
+client is feeding live quota even if the saved fallback says `expired`. A new
+Claude Code CLI turn is the supported way to refresh that fallback; the
+service detects it within 15 seconds without retrying a dead token upstream or
+needing a restart.
 
 The Codex safe-command tier only offers **ALLOW ONCE** for recognized
 read-only, test, and build commands. Unknown, mutating, secret-bearing, or
