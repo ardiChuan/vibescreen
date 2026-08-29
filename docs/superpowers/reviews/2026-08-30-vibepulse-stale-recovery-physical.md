@@ -2,18 +2,19 @@
 
 ## Outcome
 
-**Transport and interaction PASS; final stale-label visual check NOT TESTED.**
+**FULL STALE-RECOVERY PASS.**
 The physical unit `torget-home-01` now runs
 `v1.0.0-18-g3a131a2`. The build tree was byte-identical to merged `main`
 `f672a14`, which contains the stale-glass diagnostic and runbook changes from
 PR #57. No newer OTA version was advertised at the verification checkpoint.
 
 The firmware flash, wall-powered network recovery, local service discovery,
-direct panel polling, fresh Claude/Fable/Codex payloads, touch input, and the
-canonical physical APPROVE round trip all passed. A separate final question
-asking whether the literal `STALE` label was gone returned computer fallback
-with reason `leave_it`; it is therefore recorded as **NOT TESTED**, never as a
-visual pass.
+direct panel polling, fresh Claude/Fable/Codex payloads, touch input, the
+canonical physical APPROVE round trip, and absence of the literal `STALE`
+label on the main view all passed. The first dedicated visual question
+returned computer fallback with reason `leave_it` and was not counted; the
+user then inspected the main view directly and confirmed that `STALE` was
+gone.
 
 No credential, account identifier, quota value, private address, relay route,
 device key, or private URL is recorded here.
@@ -40,7 +41,7 @@ device key, or private URL is recorded here.
 | Direct panel contact | PASS | Root health changed from `waiting` to `ready` after two confirmed panel polls |
 | Provider freshness | PASS | Claude weekly, Fable/model-week, and Codex weekly stale flags were all false |
 | Physical APPROVE | PASS | Exact question `Ser du APPROVE?`; visible-state instruction required APPROVE; human tapped `Ja`; returned `answered`, option index 0, answer `Ja` |
-| Literal `STALE` absent on glass | NOT TESTED | The dedicated visual follow-up returned computer fallback `leave_it`, not a panel answer |
+| Literal `STALE` absent on glass | PASS | Computer fallback was discarded; the user then directly inspected the main view and confirmed that `STALE` was gone |
 
 ## Lessons locked in
 
@@ -54,4 +55,3 @@ device key, or private URL is recorded here.
    acceptance setup for AMOLED plus Wi-Fi.
 5. Interaction success and a fresh data payload are separate gates from the
    literal stale-label visual check.
-
