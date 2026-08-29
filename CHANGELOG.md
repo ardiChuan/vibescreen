@@ -8,8 +8,9 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 ### Fixed
 
 - The local VibePulse MCP bridge now accepts the bounded `_meta` request field
-  emitted by current Codex clients during tool discovery, so the physical
-  `APPROVE` question remains available instead of failing MCP startup.
+  emitted by current Codex clients during tool discovery and invocation, so
+  the physical `APPROVE` question remains available instead of failing MCP
+  startup or rejecting an otherwise valid call.
 - Windows Task Scheduler installations can now persist the optional public
   GitHub source, named Claude/Codex plan labels, and explicit per-provider
   subscription costs. The background service no longer drops the GitHub Stars

@@ -283,7 +283,12 @@ def _dispatch(method, params):
         if method == "tools/list":
             return {"tools": [TOOL]}
         return {}
-    if not isinstance(params, dict) or set(params) != {"name", "arguments"}:
+    if (not isinstance(params, dict) or
+            not {"name", "arguments"}.issubset(params) or
+            not set(params).issubset({"name", "arguments", "_meta"}) or
+            ("_meta" in params and
+             (not isinstance(params["_meta"], dict) or
+              not _bounded_tree(params["_meta"])))):
         return _tool_error("Invalid ask parameters")
     if params["name"] != TOOL_NAME or not _bounded_tree(params["arguments"]) or \
             not _valid_arguments(params["arguments"]):

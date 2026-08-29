@@ -866,7 +866,10 @@ class McpServerTests(unittest.TestCase):
                     "answer": "Use the trusted hook"}
         with LocalServer(body=compact(answered).encode()) as server:
             completed, responses = run_mcp([
-                rpc("tools/call", 7, {"name": "ask", "arguments": QUESTION})
+                rpc("tools/call", 7, {
+                    "name": "ask", "arguments": QUESTION,
+                    "_meta": {"progressToken": "ask-7"},
+                })
             ], port=server.port, env={
                 "VIBEPULSE_CWD": "/tmp/project",
                 "VIBEPULSE_SESSION_ID": "session-123",
@@ -1128,6 +1131,24 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(len(server.requests), 0)
         self.assertEqual(len(responses), len(bad_calls))
         self.assertTrue(all(response["result"]["isError"] for response in responses))
+
+    def test_tool_call_rejects_invalid_or_unbounded_metadata(self):
+        deep = {"value": True}
+        for _ in range(20):
+            deep = {"nested": deep}
+        bad_calls = (
+            {"name": "ask", "arguments": QUESTION, "_meta": "bad"},
+            {"name": "ask", "arguments": QUESTION, "_meta": deep},
+            {"name": "ask", "arguments": QUESTION, "unknown": {}},
+        )
+        with LocalServer(body=b'{}') as server:
+            _, responses = run_mcp([
+                rpc("tools/call", index, params)
+                for index, params in enumerate(bad_calls)
+            ], port=server.port)
+        self.assertEqual(server.requests, [])
+        self.assertTrue(all(response["result"]["isError"]
+                            for response in responses))
 
     def test_bad_params_unknown_methods_and_notifications_handle_ids_exactly(self):
         messages = [
