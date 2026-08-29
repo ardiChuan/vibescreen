@@ -836,7 +836,7 @@ class McpServerTests(unittest.TestCase):
                 },
             }),
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
-            rpc("tools/list", 2),
+            rpc("tools/list", 2, {"_meta": {}}),
         ])
         self.assertEqual(completed.returncode, 0)
         self.assertEqual([response["id"] for response in responses], [1, 2])
@@ -844,6 +844,22 @@ class McpServerTests(unittest.TestCase):
                          "2025-06-18")
         self.assertEqual([tool["name"] for tool in
                           responses[1]["result"]["tools"]], ["ask"])
+
+    def test_list_and_ping_allow_only_bounded_request_metadata(self):
+        completed, responses = run_mcp([
+            rpc("tools/list", 1, {"_meta": {"progressToken": "list-1"}}),
+            rpc("ping", 2, {"_meta": {}}),
+            rpc("tools/list", 3, {"_meta": "not-an-object"}),
+            rpc("tools/list", 4, {"_meta": {}, "cursor": None}),
+        ])
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual([response["id"] for response in responses],
+                         [1, 2, 3, 4])
+        self.assertEqual([tool["name"] for tool in
+                          responses[0]["result"]["tools"]], ["ask"])
+        self.assertEqual(responses[1]["result"], {})
+        self.assertEqual(responses[2]["error"]["code"], -32602)
+        self.assertEqual(responses[3]["error"]["code"], -32602)
 
     def test_answered_call_returns_identical_text_and_structured_content(self):
         answered = {"status": "answered", "option_index": 0,
