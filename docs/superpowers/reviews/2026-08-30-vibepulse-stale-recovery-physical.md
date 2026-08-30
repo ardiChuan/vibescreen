@@ -2,11 +2,12 @@
 
 ## Outcome
 
-**SUSTAINED-RUNTIME FAIL; TRANSIENT RECOVERY ONLY.**
+**REMEDIATION PARTIAL PASS; END-TO-END STILL FAIL.**
 The physical unit `torget-home-01` now runs
-`v1.0.0-18-g3a131a2`. The build tree was byte-identical to merged `main`
-`f672a14`, which contains the stale-glass diagnostic and runbook changes from
-PR #57. No newer OTA version was advertised at the verification checkpoint.
+`v1.0.0-24-ga16512a`, built from the stale-recovery branch for PR #58. The
+previous `v1.0.0-18-g3a131a2` checkpoint was byte-identical to merged `main`
+`f672a14` and contained the stale-glass diagnostic and runbook changes from
+PR #57.
 
 The firmware flash, initial wall-powered network recovery, local service
 discovery, fresh Claude/Fable/Codex payloads, touch input, and one canonical
@@ -18,6 +19,18 @@ data, the ESP32 still answered ICMP, but direct application polling was more
 than five minutes old and a new panel interaction timed out. The evidence
 therefore proves a live network interface with stalled device-side HTTP work;
 it does not prove a reliable stale recovery.
+
+The new watchdog image was then written with NVS preserved and booted with the
+expected version. Under bounded serial observation its quota fetch succeeded
+repeatedly through approximately 6 minutes 19 seconds of uptime, including
+successes after the old roughly 5-minute failure point, with stable internal
+heap. That is a physical PASS for the candidate's computer-USB diagnostic
+window, but not yet the dedicated-power acceptance gate. The immediate
+canonical interaction still timed out. Simultaneous DNS-SD browsing found two
+different VibePulse hosts on the LAN; the flashed image had the encrypted
+interaction relay disabled, so a healthy first DNS-SD result could bind the
+direct question path to the wrong computer. Numbers recovery and question
+delivery are therefore recorded as two distinct issues.
 
 No credential, account identifier, quota value, private address, relay route,
 device key, or private URL is recorded here.
@@ -33,6 +46,7 @@ device key, or private URL is recorded here.
 | Safe write scope | PASS | Bootloader, partition table, OTA initial data, and app were written; NVS was not included |
 | Image verification | PASS | Esptool verified the hash of every written image and exited successfully |
 | Recovery behavior | PASS | Automatic reset could not enter the ROM loader; the documented BOOT + RESET sequence did, before any write occurred |
+| Watchdog image flash | PASS | `v1.0.0-24-ga16512a` booted after a hash-verified write of bootloader, partition table, OTA initial data, and app; NVS remained outside the write ranges |
 
 ## Runtime evidence
 
@@ -49,6 +63,9 @@ device key, or private URL is recorded here.
 | Initial literal `STALE` absence | PASS, transient | Computer fallback was discarded; the user then directly inspected the main view and confirmed that `STALE` was gone |
 | Repeated physical interaction | **FAIL** | The follow-up panel request timed out; silence and computer fallback were not counted as approval |
 | Sustained literal `STALE` absence | **FAIL** | The user later confirmed that `STALE` had returned |
+| New watchdog diagnostic runtime | PASS, bounded | Quota HTTP completed repeatedly beyond the former failure point, through approximately 6 minutes 19 seconds, without a heap collapse |
+| New watchdog dedicated-power runtime | **NOT TESTED** | The new image has not yet completed the same window on the dedicated 5 V supply |
+| Multi-host question routing | **FAIL** | Two VibePulse DNS-SD services were present; the relay-disabled image could select a different healthy host, and the canonical question timed out |
 
 ## Lessons locked in
 
@@ -68,8 +85,11 @@ device key, or private URL is recorded here.
 7. ICMP reachability does not prove that application HTTP tasks are making
    progress. Record both network-interface liveness and last successful panel
    request.
+8. Fresh numbers do not prove correct question routing. On a LAN with several
+   VibePulse hosts, first-result DNS-SD selection is not user intent; use the
+   encrypted interaction relay for a shared panel.
 
-## Candidate remediation — not yet a physical pass
+## Candidate remediation — partially verified
 
 The follow-up firmware change disables ESP-IDF's default modem sleep for this
 wall-powered live display, closes the encrypted relay client on every failure
@@ -81,7 +101,10 @@ prevents a real upstream outage from becoming a reconnect loop. Cold start,
 LAN-only, disassociated, clock-regression, threshold, and cooldown decisions
 pass host tests, and the ESP32-S3 image builds successfully.
 
-This remediation remains **NOT PHYSICALLY VERIFIED**. It must not change the
-failure verdict above until the new image stays fresh beyond the stale window,
-reports recent direct panel polls, and completes a second canonical physical
+The HTTP part is **PHYSICALLY VERIFIED ONLY IN A BOUNDED COMPUTER-USB
+DIAGNOSTIC WINDOW**. It must not change the end-to-end failure verdict above
+until the image passes the same window on dedicated power and completes a
+second canonical physical question. Because two VibePulse hosts are advertised
+on this LAN, the next image must also enable the already deployed encrypted
+interaction relay; direct LAN discovery alone cannot prove which host owns the
 question.

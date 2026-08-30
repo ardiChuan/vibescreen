@@ -799,7 +799,7 @@ class McpServerTests(unittest.TestCase):
         initialized = responses[0]["result"]
         self.assertEqual(initialized["protocolVersion"], "2025-06-18")
         self.assertEqual(initialized["serverInfo"]["name"], "vibepulse")
-        self.assertEqual(initialized["serverInfo"]["version"], "0.1.4")
+        self.assertEqual(initialized["serverInfo"]["version"], "0.1.5")
         self.assertEqual(initialized["capabilities"], {"tools": {"listChanged": False}})
         self.assertEqual(responses[1]["result"], {})
         tools = responses[2]["result"]["tools"]
@@ -1291,7 +1291,7 @@ class PluginPackageTests(unittest.TestCase):
         self.assertRegex(
             manifest["version"], r"^(0|[1-9][0-9]*)\."
             r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
-        self.assertEqual(manifest["version"], "0.1.4")
+        self.assertEqual(manifest["version"], "0.1.5")
         self.assertEqual(manifest["author"]["name"], "Niclas Vestlund")
         self.assertNotIn("email", manifest["author"])
         self.assertEqual(manifest["license"], "MIT")
@@ -1364,7 +1364,8 @@ class PluginPackageTests(unittest.TestCase):
                 "claudeProbe", "claudeCredential", "/api/tokens",
                 "usage_http_200 + ok", "15 seconds",
                 "do not prescribe a tokenserver restart first",
-                "learn or update itself"):
+                "learn or update itself", "_vibepulse._tcp",
+                "which computer owns the current question"):
             self.assertIn(stale_guard, body)
         self.assertRegex(body.lower(), r"relay (?:is|remains) not enabled")
         for physical_guard in (

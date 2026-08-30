@@ -73,12 +73,14 @@ typedef struct {
   char request_id[TK_IR_REQUEST_ID_CAP];
 } relay_next_item;
 
+#if CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY
 typedef struct {
   const uint8_t *envelope;
   size_t envelope_len;
   uint64_t expires_at_ms;
   uint64_t stored_at_ms;
 } relay_status_item;
+#endif
 
 static StaticQueue_t s_queue_control;
 static uint8_t s_queue_storage[
@@ -94,9 +96,11 @@ static tk_ir_retry verdict_retry;
 static tk_ir_backoff verdict_backoff;
 static tk_ir_keys_t relay_keys;
 static tk_ir_verdict_binding_t retry_binding;
+#if CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY
 static tk_ir_status_t decoded_status;
 static tk_agent_snapshot decoded_snapshot;
 static uint64_t last_status_publication_id;
+#endif
 static _Atomic uint32_t s_polls_ok;
 static _Atomic uint32_t s_requests_applied;
 static _Atomic uint32_t s_verdicts_acked;
@@ -145,6 +149,7 @@ static bool make_url(char *out, size_t cap, const char *suffix_format,
   return written > 0 && (size_t)written < cap;
 }
 
+#if CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY
 static bool make_status_url(char *out, size_t cap) {
   size_t origin_len = strlen(TK_VIBEPULSE_INTERACTION_RELAY_URL);
   if (origin_len > INT_MAX) return false;
@@ -158,6 +163,7 @@ static bool make_status_url(char *out, size_t cap) {
                          TK_VIBEPULSE_INTERACTION_MAILBOX);
   return written > 0 && (size_t)written < cap;
 }
+#endif
 
 static esp_err_t relay_http_event(esp_http_client_event_t *evt) {
   if (evt == NULL || evt->event_id != HTTP_EVENT_ON_HEADER) return ESP_OK;
@@ -321,6 +327,7 @@ static bool parse_next_wrapper(const char *body, size_t len,
   return true;
 }
 
+#if CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY
 static bool parse_status_wrapper(const char *body, size_t len,
                                  relay_status_item *out) {
   static const char prefix[] = "{\"envelope\":";
@@ -356,6 +363,7 @@ static bool parse_status_wrapper(const char *body, size_t len,
   }
   return true;
 }
+#endif
 
 static void bytes_hex(char out[TK_PENDING_VIEW_SHA256_CAP],
                       const uint8_t bytes[32]) {
@@ -551,6 +559,7 @@ static bool poll_request(relay_http_client *poll_client) {
   return true;
 }
 
+#if CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY
 static bool decode_status_snapshot(const relay_status_item *item,
                                    uint64_t *publication_id) {
   if (item == NULL || publication_id == NULL) return false;
@@ -622,6 +631,7 @@ static void clear_stale_status(void) {
   torget_ui_unlock();
   if (cleared) atomic_fetch_add(&s_status_cleared, 1u);
 }
+#endif
 
 static bool create_client(relay_http_client *out) {
   if (out == NULL) return false;
@@ -644,10 +654,14 @@ static bool create_client(relay_http_client *out) {
 
 static void relay_task(void *argument) {
   (void)argument;
+#if CONFIG_TK_VIBEPULSE_INTERACTION_RELAY
   tk_ir_backoff request_backoff;
-  tk_ir_backoff status_backoff;
   tk_ir_backoff_init(&request_backoff);
+#endif
+#if CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY
+  tk_ir_backoff status_backoff;
   tk_ir_backoff_init(&status_backoff);
+#endif
   torget_net_wait();
   relay_http_client poll_client;
   bool poll_created = create_client(&poll_client);
@@ -670,9 +684,13 @@ static void relay_task(void *argument) {
     return;
   }
 
+#if CONFIG_TK_VIBEPULSE_INTERACTION_RELAY
   uint64_t next_request_poll_ms = monotonic_ms();
+#endif
+#if CONFIG_TK_VIBEPULSE_AGENT_STATUS_RELAY
   uint64_t next_status_poll_ms = monotonic_ms();
   uint64_t next_status_clear_ms = monotonic_ms();
+#endif
   atomic_store(&s_running, true);
   ESP_LOGI(TAG, "krypterad reläkanal startad");
   for (;;) {

@@ -261,7 +261,7 @@ def _initialize(params):
     return {
         "protocolVersion": selected,
         "capabilities": {"tools": {"listChanged": False}},
-        "serverInfo": {"name": "vibepulse", "version": "0.1.4"},
+        "serverInfo": {"name": "vibepulse", "version": "0.1.5"},
     }
 
 

@@ -21,6 +21,20 @@ point at the backlog item.
 
 ---
 
+## 2026-08-30 · First DNS-SD result was not the user's active computer
+
+**What happened:** after the HTTP watchdog image kept quota data fresh beyond
+the old failure point, the canonical panel question still timed out. Two
+healthy `_vibepulse._tcp` services—Mac and Windows—were advertised on the same
+LAN, while the flashed image's encrypted interaction relay was disabled.
+**Root cause:** sticky DNS-SD discovery is suitable for choosing a data host,
+but result order cannot express which computer owns a new interactive prompt.
+**The rule:** diagnose numbers and questions as separate transports; a shared
+panel must use the end-to-end encrypted interaction relay for questions.
+**Guards:** agent setup and plugin 0.1.5 now name the multi-host signature and
+require fresh flash consent. **Watch for:** interpreting a healthy poll against
+the wrong tokenserver as proof that the current computer reached the glass.
+
 ## 2026-08-30 · A boot-time PASS hid a five-minute HTTP stall
 
 **What happened:** after the discovery-capable firmware was flashed and moved
