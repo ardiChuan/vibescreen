@@ -14,11 +14,13 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   prevents reconnect loops during real upstream outages. Reusable encrypted
   relay clients are reset on every failure exit instead of retaining a
   half-open transport.
-- The VibePulse Codex plugin advances to `0.1.3`. Doctor now surfaces recent
+- The VibePulse Codex plugin advances to `0.1.4`. Doctor now surfaces recent
   direct panel polling without misclassifying a healthy relay-only setup, and
   the skill distinguishes fresh provider data from the device-side
   power/network/firmware hop, including computer-USB power limits and
-  panel-compatible relay probes.
+  panel-compatible relay probes. It now also requires a repeated physical
+  question beyond the stale window and recognizes the ping-alive/HTTP-stalled
+  failure boundary instead of treating one post-boot success as durable.
 - The local VibePulse MCP bridge now accepts the bounded `_meta` request field
   emitted by current Codex clients during tool discovery and invocation, so
   the physical `APPROVE` question remains available instead of failing MCP

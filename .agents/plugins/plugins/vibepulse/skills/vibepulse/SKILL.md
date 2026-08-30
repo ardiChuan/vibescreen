@@ -60,6 +60,18 @@ and Windows hosts. Do not reset or flash the panel without explicit
 permission. Silence from serial is not proof that the firmware is healthy or
 unhealthy.
 
+Never call one successful post-boot request a sustained stale-recovery pass.
+Keep the panel on dedicated power beyond its 120-second stale window, require
+recent direct polling again, and repeat the canonical physical question. If
+the board still answers ping while direct panel polling ages out, the local and
+numbers-relay payloads remain fresh, and the repeated question times out,
+record a device-side application-HTTP stall rather than blaming provider data.
+Current relay-configured firmware has a bounded self-recovery guard: after an
+initial quota success, 150 seconds without progress while Wi-Fi still reports
+association recycles the station transport; a ten-minute cooldown prevents
+loops. The guard firing is recovery evidence, not a PASS by itself. LAN-only
+firmware deliberately does not recycle Wi-Fi merely because its host sleeps.
+
 Explain when asked that this skill is versioned with the plugin; it does not
 learn or update itself. New lessons reach installed Codex sessions only after
 the repository skill is changed, the plugin version is released/updated, and a

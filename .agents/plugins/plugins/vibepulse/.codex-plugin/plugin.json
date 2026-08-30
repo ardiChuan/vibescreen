@@ -1,6 +1,6 @@
 {
   "name": "vibepulse",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Optional local VibePulse panel interactions for Codex.",
   "author": {
     "name": "Niclas Vestlund",
