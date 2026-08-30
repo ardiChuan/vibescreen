@@ -40,10 +40,17 @@ void tokens_apply(const tk_tokens *tokens) {
   int64_t now_us = torget_now_us();
   usage_screen_apply_tokens(tokens);
 
+  /* A successful parse is the authority for transport freshness. Clear the
+   * screen synchronously instead of depending on the next 100 ms LVGL tick:
+   * a delayed/starved timer must not leave old STALE copy over fresh values.
+   * Do this unconditionally so app/ui bookkeeping can self-heal if they ever
+   * drift apart. Source-level stale flags remain owned by each parsed quota. */
   double rate = tokens->day_tokens_per_hour / 1e6;
 
   app.has_data = true;
   app.last_success_us = now_us;
+  app.stale = false;
+  usage_screen_set_stale(false);
   if (rate > 0.0) torget_keep_awake();
 }
 

@@ -121,8 +121,12 @@ static void net_task(void *arg) {
       torget_update_available(
           t.has_ota_available_version ? t.ota_available_version : NULL);
       note_tokens_success();
-      ESP_LOGI(TAG, "hämtning ok (%.2f Mtok idag, %d sessioner)",
-               t.day_tokens / 1e6, t.day_sessions);
+      ESP_LOGI(TAG,
+               "hämtning ok (%.2f Mtok idag, %d sessioner; "
+               "stale claude=%d fable=%d codex=%d)",
+               t.day_tokens / 1e6, t.day_sessions,
+               t.claude_week.stale, t.claude_model_week.stale,
+               t.codex_week.stale);
     } else {
       ESP_LOGW(TAG, "hämtningen avvisad, värden står kvar");
     }
@@ -176,8 +180,8 @@ static void max_tracker_task(void *arg) {
       torget_ui_lock();
       tokens_apply_max_tracker(&t);
       torget_ui_unlock();
-      ESP_LOGI(TAG, "max tracker-hämtning ok (streak %d dagar)",
-               t.coding_streak_days);
+      ESP_LOGI(TAG, "max tracker-hämtning ok (stale=%d, streak %d dagar)",
+               t.stale, t.coding_streak_days);
     } else {
       ESP_LOGW(TAG, "max tracker-hämtningen avvisad, värden står kvar");
     }

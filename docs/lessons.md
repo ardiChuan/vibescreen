@@ -21,6 +21,33 @@ point at the backlog item.
 
 ---
 
+## 2026-08-30 · Local activity was rendered as no active agent
+
+**What happened:** the local `/api/agent-status` reported the current Codex
+task as working, while the panel said `No active agent`. **Root cause:** the
+panel's direct application polling had stalled or selected another advertised
+host, and the separately opt-in live-status relay was disabled on both the
+computer and the flashed firmware. The numbers relay deliberately cannot carry
+agent activity. **The rule:** prove source detection and panel transport
+separately; an empty remote route is not evidence that the agent is idle.
+**Guards:** the setup table and plugin skill now map this exact signature to
+both live-status switches without weakening the default-off privacy boundary.
+
+## 2026-08-30 · Fresh values and stale copy could coexist
+
+**What happened:** the local API, numbers relay, and the exact firmware LAN
+target all returned fresh Claude/Fable/Codex flags; passive serial repeatedly
+reported accepted quota payloads beyond two hours of uptime, while the glass
+still showed `STALE`. A LAN timeout also recovered through the relay and
+accepted current token totals, proving that transport recovery alone did not
+make the rendered status authoritative. **Root cause boundary:** successful
+parsing updated the cards and timestamp, but transport `STALE` was cleared only
+by a later LVGL timer tick. **The rule:** the event that proves freshness must
+synchronously clear transport stale, and logs must expose the accepted
+source-stale bits. **Guards:** `tokens_apply` now unconditionally reconciles
+app/UI freshness; wiring tests pin the order; serial logs print only bounded
+booleans. **Watch for:** calling `hämtning ok` proof that the glass says LIVE.
+
 ## 2026-08-30 · One STALE label hid three different broken links
 
 **What happened:** repeated incidents were troubleshot from scratch because
