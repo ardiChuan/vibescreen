@@ -2,9 +2,9 @@
 
 ## Outcome
 
-**REMEDIATION PARTIAL PASS; END-TO-END STILL FAIL.**
+**REMEDIATION PARTIAL PASS; DEDICATED-POWER ACCEPTANCE STILL PENDING.**
 The physical unit `torget-home-01` now runs
-`v1.0.0-24-ga16512a`, built from the stale-recovery branch for PR #58. The
+`v1.0.0-25-g054db68`, built from the stale-recovery branch for PR #58. The
 previous `v1.0.0-18-g3a131a2` checkpoint was byte-identical to merged `main`
 `f672a14` and contained the stale-glass diagnostic and runbook changes from
 PR #57.
@@ -32,6 +32,15 @@ interaction relay disabled, so a healthy first DNS-SD result could bind the
 direct question path to the wrong computer. Numbers recovery and question
 delivery are therefore recorded as two distinct issues.
 
+The follow-up app-only flash preserved NVS and installed the same watchdog
+candidate with the encrypted interaction relay enabled. The device booted the
+expected version, joined Wi-Fi, fetched fresh data, and logged that the
+encrypted interaction relay had started. The immediate canonical question
+then passed: the panel visibly showed APPROVE, a human tapped `Ja`, and the
+tool returned `answered`, option index 0, answer `Ja`. This closes the observed
+multi-host question-routing failure for the relay-enabled candidate. It does
+not yet close the separate sustained dedicated-5-V stale-recovery gate.
+
 No credential, account identifier, quota value, private address, relay route,
 device key, or private URL is recorded here.
 
@@ -47,6 +56,7 @@ device key, or private URL is recorded here.
 | Image verification | PASS | Esptool verified the hash of every written image and exited successfully |
 | Recovery behavior | PASS | Automatic reset could not enter the ROM loader; the documented BOOT + RESET sequence did, before any write occurred |
 | Watchdog image flash | PASS | `v1.0.0-24-ga16512a` booted after a hash-verified write of bootloader, partition table, OTA initial data, and app; NVS remained outside the write ranges |
+| Relay-enabled app flash | PASS | `v1.0.0-25-g054db68` booted after a hash-verified app-only write; NVS, partition table, and other data partitions remained outside the write range |
 
 ## Runtime evidence
 
@@ -65,7 +75,8 @@ device key, or private URL is recorded here.
 | Sustained literal `STALE` absence | **FAIL** | The user later confirmed that `STALE` had returned |
 | New watchdog diagnostic runtime | PASS, bounded | Quota HTTP completed repeatedly beyond the former failure point, through approximately 6 minutes 19 seconds, without a heap collapse |
 | New watchdog dedicated-power runtime | **NOT TESTED** | The new image has not yet completed the same window on the dedicated 5 V supply |
-| Multi-host question routing | **FAIL** | Two VibePulse DNS-SD services were present; the relay-disabled image could select a different healthy host, and the canonical question timed out |
+| Relay-disabled multi-host question routing | **FAIL, superseded** | Two VibePulse DNS-SD services were present; the relay-disabled image could select a different healthy host, and the canonical question timed out |
+| Relay-enabled multi-host question routing | **PASS, immediate** | The canonical question showed APPROVE and returned the human's `Ja` response as `answered`, option index 0 |
 
 ## Lessons locked in
 
@@ -102,9 +113,9 @@ LAN-only, disassociated, clock-regression, threshold, and cooldown decisions
 pass host tests, and the ESP32-S3 image builds successfully.
 
 The HTTP part is **PHYSICALLY VERIFIED ONLY IN A BOUNDED COMPUTER-USB
-DIAGNOSTIC WINDOW**. It must not change the end-to-end failure verdict above
-until the image passes the same window on dedicated power and completes a
-second canonical physical question. Because two VibePulse hosts are advertised
-on this LAN, the next image must also enable the already deployed encrypted
-interaction relay; direct LAN discovery alone cannot prove which host owns the
-question.
+DIAGNOSTIC WINDOW**. The relay-enabled image has also passed one immediate
+canonical physical question on the multi-host LAN. Full acceptance remains
+blocked until this exact image passes the stale window on dedicated power and
+completes a second canonical physical question. Direct LAN discovery alone
+still cannot prove which host owns a question on this LAN; the encrypted
+interaction relay is required for the shared-panel setup.
