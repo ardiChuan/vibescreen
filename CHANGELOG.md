@@ -9,12 +9,17 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 - The wall-powered ESP32 now disables Wi-Fi modem sleep and carries a bounded
   VibePulse transport watchdog. After at least one good quota response, a
-  still-associated panel with a configured numbers relay recycles Wi-Fi when
-  application HTTP makes no progress for 150 seconds; a ten-minute cooldown
-  prevents reconnect loops during real upstream outages. Reusable encrypted
-  relay clients are reset on every failure exit instead of retaining a
-  half-open transport.
-- The VibePulse Codex plugin advances to `0.1.5`. Doctor now surfaces recent
+  still-associated panel with a configured numbers relay now recycles Wi-Fi at
+  60 seconds, wakes the quota task, waits for a new IP before retrying, and
+  performs one controlled restart if no real success follows within another 45 seconds. Cold boot is
+  disarmed until a real success, preventing restart loops during upstream
+  outages. Reusable encrypted relay clients are reset on every failure exit
+  instead of retaining a half-open transport.
+- The VibePulse Codex plugin advances to `0.1.7`. Its bounded SessionStart
+  check now classifies the local server, plugin/server source drift, provider
+  freshness, saved Claude credential risk, and direct panel contact as
+  separate states. It injects only a content-free diagnosis into the task and
+  never treats startup silence as approval. Doctor now surfaces recent
   direct panel polling without misclassifying a healthy relay-only setup, and
   the skill distinguishes fresh provider data from the device-side
   power/network/firmware hop, including computer-USB power limits and
@@ -22,11 +27,19 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
   question beyond the stale window and recognizes the ping-alive/HTTP-stalled
   failure boundary instead of treating one post-boot success as durable. Its
   runbook also distinguishes multi-host DNS-SD ambiguity from stale data and
-  routes shared-panel questions through the encrypted interaction relay.
+  routes shared-panel questions through the encrypted interaction relay. The
+  troubleshooting flow now distinguishes the original credential incident
+  from a fresh-source/ping-alive panel HTTP stall and describes the staged
+  firmware recovery without claiming it has passed before physical proof.
 - The local VibePulse MCP bridge now accepts the bounded `_meta` request field
   emitted by current Codex clients during tool discovery and invocation, so
   the physical `APPROVE` question remains available instead of failing MCP
   startup or rejecting an otherwise valid call.
+- macOS now has a path-safe LaunchAgent installer/validator. It resolves the
+  requested durable checkout, atomically rewrites the plist, preserves
+  recognized private runtime configuration without printing it, and performs
+  a real `bootout` + `bootstrap` so launchd cannot retain an old worktree. A
+  failed bootstrap restores and reloads the previous service configuration.
 - Windows Task Scheduler installations can now persist the optional public
   GitHub source, named Claude/Codex plan labels, and explicit per-provider
   subscription costs. The background service no longer drops the GitHub Stars

@@ -225,12 +225,34 @@ succeeding, their pages keep reading as live (OBS-09). Until fixed, a
 
 Current relay-configured firmware has a separate recovery guard for this quota
 clock. It arms only after a real success and only while Wi-Fi still reports an
-association. At 150 seconds without another quota success it recycles the
-station transport, then waits at least ten minutes before another recovery.
-LAN-only builds deliberately do not arm the guard: a sleeping host is normal,
-not proof that the radio is wedged. A release PASS still requires recent
-direct polling and a repeated physical interaction after the stale window;
-the watchdog firing is recovery evidence, not health evidence by itself.
+association. At 60 seconds without another quota success it recycles the
+station transport and wakes the quota task, which waits for a new IP before
+retrying. If no real success follows within another 45 seconds, it restarts the device once to
+discard wedged HTTP/TLS task state. A reboot starts disarmed until a new real
+success, so a persistent upstream outage cannot become a reboot loop. LAN-only
+builds deliberately do not arm the guard: a sleeping host is normal, not proof
+that the radio is wedged. A release PASS still requires recent direct polling
+and a repeated physical interaction after the stale window; either recovery
+action firing is evidence of recovery work, not health evidence by itself.
+
+When the final escalation calls `esp_restart()`, a complemented RTC marker
+survives exactly that software reset. The next boot validates both words and
+the ESP reset reason, clears the marker, and adds only
+`X-VibePulse-Recovery-Boot: http-stall-v1` to local HTTP requests. The
+tokenserver accepts only that exact single header after the normal two-poll
+panel confirmation and reports the content-free boolean as
+`GET /` → `interactions.panel.httpStallRecoveryBoot`. Power-on, brownout,
+malformed/duplicate headers, loopback requests, and a lone LAN request cannot
+claim it. This closes the wall-power observability gap, but it is still
+self-reported recovery evidence—not proof that the glass stayed fresh or that
+an interaction completed.
+
+The trusted Codex plugin `SessionStart` hook consumes this same local health
+surface plus `/api/tokens` under a sub-second bounded deadline. It emits only a
+fixed fault class: server/API unavailable, plugin-server version drift,
+provider stale, panel LAN waiting/device path stale, healthy, or healthy after
+self-recovery. It does not copy dynamic paths, revisions, addresses, account
+data, quotas, or probe strings into the task.
 
 ### 6. CI logs
 
