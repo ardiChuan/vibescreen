@@ -53,19 +53,19 @@ routes to service diagnostics. It is read-only and never approves.
 
 If the local API and configured numbers relay are fresh while the glass is
 stale, inspect `GET /` → `interactions.panel` for recent direct polling and
-read passive device logs. A `waiting` direct-poll state does not prove failure
-on a relay-only network, but fresh LAN plus fresh relay plus a stale glass
-localizes the fault to the device-side power/network/firmware hop. Test the
-numbers relay with a panel-compatible User-Agent; Cloudflare may reject
-Python's default User-Agent even when the ESP32 path is healthy. A running
-panel on a computer USB port can consume the full 500 mA budget yet still fail
-during Wi-Fi bursts; use a dedicated 5 V supply for runtime. Compare the
-registered installed firmware with current `main`: firmware older than the
-service-discovery change cannot move automatically between advertising Mac
-and Windows hosts. Do not reset or flash the panel without explicit
-permission. Silence from serial is not proof that the firmware is healthy or
-unhealthy.
+read passive logs. `waiting` does not prove failure on a relay-only network,
+but fresh LAN and relay with stale glass localizes the device hop. Test relay
+with the panel User-Agent; generic Python may get a misleading Cloudflare 403.
+Computer USB can exhaust its 500 mA budget during Wi-Fi bursts, so use a
+dedicated 5 V supply. Compare installed firmware with current `main`; old
+firmware cannot discover another Mac/Windows host. Never reset or flash without
+explicit permission, and never infer health from serial silence.
 
+If passive serial repeatedly reports accepted token payloads while the glass
+still says `STALE`, compare its Claude/Fable/Codex/Max Tracker stale bits.
+Fresh bits localize stale bookkeeping/rendering; current firmware clears
+transport stale synchronously and logs only those booleans. Do not treat
+`hämtning ok` as UI proof or close the incident before the glass changes.
 Never call one successful post-boot request a sustained stale-recovery pass.
 Keep the panel on dedicated power beyond its 120-second stale window, require
 recent direct polling again, and repeat the canonical physical question. If
@@ -76,8 +76,8 @@ Current relay-configured firmware has a bounded self-recovery guard: after an
 initial quota success, 60 seconds without progress while Wi-Fi still reports
 association recycles the station transport and wakes the quota task, which
 waits for a new IP before retrying. If no real success follows within another
-45 seconds, the device performs one controlled restart. Cold boot stays disarmed until a new
-real success, preventing a persistent upstream outage from becoming a restart
+45 seconds, the device performs one controlled restart. Cold boot stays disarmed
+until a new real success, preventing a persistent upstream outage from becoming a restart
 loop. Either guard firing is recovery evidence, not a PASS by itself. LAN-only
 firmware deliberately does not recover merely because its host sleeps.
 After a guarded restart, `interactions.panel.httpStallRecoveryBoot` can prove
@@ -90,10 +90,10 @@ the panel may be polling a different healthy Mac or PC. Confirm the service
 count without publishing hostnames or private addresses. For a panel shared by
 several computers, use the existing end-to-end encrypted interaction relay on
 the hosts and enable `TK_VIBEPULSE_INTERACTION_RELAY` in that panel's firmware.
-Do not claim the stale watchdog fixed question delivery, and do not flash the
+If local `/api/agent-status` reports an active agent while the glass says no
+active agent, also check the separate host and firmware live-status switches.
+Do not claim a local active row proves the panel route, and do not flash a
 relay-enabled image without a fresh explicit authorization.
 
-Explain that this versioned skill does not learn or update itself. New lessons
-reach Codex only after the repository skill and plugin are released/updated
-and a new task loads that version.
+Explain that this versioned skill does not learn or update itself; new lessons reach Codex after a plugin release and new task.
 Do not run install, disable, or uninstall without the user's explicit request.

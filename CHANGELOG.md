@@ -7,6 +7,11 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ### Fixed
 
+- A successfully parsed ESP32 quota response now clears the transport-level
+  `STALE` state synchronously, rather than waiting for a later LVGL timer tick.
+  The refresh is deliberately unconditional so display and app bookkeeping
+  self-heal if they drift apart. Sanitized serial logs now include the Claude,
+  Fable, Codex, and Max Tracker stale bits carried by each accepted payload.
 - The wall-powered ESP32 now disables Wi-Fi modem sleep and carries a bounded
   VibePulse transport watchdog. After at least one good quota response, a
   still-associated panel with a configured numbers relay now recycles Wi-Fi at

@@ -2,6 +2,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 source = (root / "components/app_tokens/usage_screen.c").read_text()
+app_source = (root / "components/app_tokens/app.c").read_text()
 header = (root / "components/app_tokens/usage_screen.h").read_text()
 app_header = (root / "components/app_tokens/app_tokens.h").read_text()
 sim = (root / "sim/main.c").read_text()
@@ -68,6 +69,18 @@ assert "VIEW_CODEX_HERO" not in source
 assert "VIEW_VOLUME" not in source
 assert "create_volume_page" not in source
 assert "usage_screen_set_volume" not in source
+
+# A successful quota parse must clear transport STALE in the same UI-locked
+# call. Waiting for a later LVGL timer allowed fresh values and stale copy to
+# coexist on the physical panel during the 2026-08-30 recovery investigation.
+tokens_apply = app_source[app_source.index("void tokens_apply("):]
+tokens_apply = tokens_apply[:tokens_apply.index("void tokens_apply_agent_status")]
+assert tokens_apply.index("usage_screen_apply_tokens(tokens);") < \
+       tokens_apply.index("app.stale = false;")
+assert tokens_apply.index("app.stale = false;") < \
+       tokens_apply.index("usage_screen_set_stale(false);")
+assert "if (app.stale)" not in tokens_apply, \
+    "fresh data must heal app/ui drift even when app bookkeeping says LIVE"
 
 create = source[source.index("void usage_screen_create"):]
 create = create[:create.index("void usage_screen_apply_tokens")]
