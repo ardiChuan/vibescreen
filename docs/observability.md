@@ -223,6 +223,15 @@ the max-tracker or agent-status feed dies while `/api/tokens` keeps
 succeeding, their pages keep reading as live (OBS-09). Until fixed, a
 "LIVE" header is not proof for those two feeds.
 
+Current relay-configured firmware has a separate recovery guard for this quota
+clock. It arms only after a real success and only while Wi-Fi still reports an
+association. At 150 seconds without another quota success it recycles the
+station transport, then waits at least ten minutes before another recovery.
+LAN-only builds deliberately do not arm the guard: a sleeping host is normal,
+not proof that the radio is wedged. A release PASS still requires recent
+direct polling and a repeated physical interaction after the stale window;
+the watchdog firing is recovery evidence, not health evidence by itself.
+
 ### 6. CI logs
 
 GitHub Actions, four jobs: a `host-gate` job that runs the same

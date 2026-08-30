@@ -13,8 +13,9 @@ sources:
     tests:
       - discovery-firmware-flash-2026-08-30
       - vibepulse-codex-approve-roundtrip-2026-08-30
-      - panel-lan-fresh-data-recovery-2026-08-30
-      - stale-label-absent-2026-08-30
+      - panel-lan-transient-fresh-data-recovery-2026-08-30
+      - stale-label-transiently-absent-2026-08-30
+      - sustained-panel-http-regression-2026-08-30
 
   - id: torget-physical-2026-08-27-vibepulse
     kind: physical-test

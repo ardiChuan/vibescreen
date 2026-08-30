@@ -455,10 +455,11 @@ workflow, consent model and troubleshooting live in [ota.md](ota.md).
 | Letters become boxes in project/status text | The UI selected an uppercase-only font | Use `plex_ui_21` for mixed-case/localized text and verify with `RÄKSMÖRGÅS` |
 | Panel shows stale quota / empty Fable weekly in the morning | The readable OAuth copy expired/rejected, or an upstream 429 penalty is active | Check `claudeProbe`, `claudeCredential`, `claudeLocalUsage`, and `/api/tokens` together. The named Fable/Opus pool requires a live OAuth source. Start a new Claude Code CLI turn, then allow the automatic 15-second local recheck; restart is not the first recovery step |
 | Panel shows stale while powered from the computer USB port | The Mac port cannot feed WiFi TX bursts — fetches time out | Expected on Mac USB; run from wall power. Logs stay valid on Mac USB, data does not |
+| Panel becomes stale again after initially working; host and relay are fresh and the panel still answers ping | Wi-Fi association survived while device-side application HTTP stopped | Current relay-configured firmware recycles the Wi-Fi transport after 150 s without a quota success, with a ten-minute cooldown. Do not call the incident fixed until direct panel polling and a second physical question pass beyond that window |
 | OTA boots always show state 0xffffffff and the health gate always rests | `sdkconfig` generated before the rollback line landed in `sdkconfig.defaults` (defaults only apply on fresh generation) | `grep BOOTLOADER_APP_ROLLBACK sdkconfig` — set `=y`, rebuild, and USB-flash ONCE (the bootloader carries the logic; OTA never writes it) |
 | No `/dev/cu.usbmodem*` or Windows `COM` port | Not in download mode | Hold BOOT, tap RESET, release BOOT |
 | Flash starts then dies; board hangs | USB port cannot power the panel | Download mode to flash; own PSU to run |
-| Numbers freeze and go stale | Service or LAN dropped | Last good values are kept deliberately; restart the service |
+| Numbers freeze and go stale | Service, LAN, or the panel's application HTTP path dropped | Last good values are kept deliberately. Run `doctor`; compare source freshness, recent panel polling, and physical glass before restarting anything |
 | `./test/run.sh` refuses to start | Unpinned PyYAML/Pillow | See [Hardware knowledge](../README.md#hardware-knowledge) |
 
 ## Simulator only (no board)

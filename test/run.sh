@@ -193,6 +193,12 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 /tmp/torget-agent-net-policy-test
 
 cc -std=c11 -Wall -Wextra -Werror -O1 \
+  ../components/app_tokens/tokens_net_recovery_policy.c \
+  test_tokens_net_recovery_policy.c \
+  -o /tmp/torget-tokens-net-recovery-policy-test
+/tmp/torget-tokens-net-recovery-policy-test
+
+cc -std=c11 -Wall -Wextra -Werror -O1 \
   ../components/app_tokens/agent_status_source_policy.c \
   test_agent_status_source_policy.c \
   -o /tmp/torget-agent-status-source-policy-test

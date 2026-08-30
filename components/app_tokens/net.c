@@ -13,6 +13,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include <stdatomic.h>
+
 #include "esp_log.h"
 
 #include "app_tokens.h"
@@ -22,6 +24,7 @@
 #endif
 #include "max_tracker_parse.h"
 #include "tokens_parse.h"
+#include "tokens_net_recovery_policy.h"
 #include "torget.h"
 #include "torget_http.h"
 
@@ -29,8 +32,44 @@ static const char *TAG = "tokens";
 
 #define FETCH_EVERY_MS 30000
 #define BODY_MAX 2048
+#define RECOVERY_CHECK_MS 5000
 
 #ifdef TK_TOKENS_URL
+
+static _Atomic bool s_tokens_has_success;
+static _Atomic int64_t s_tokens_last_success_us;
+static _Atomic int64_t s_tokens_last_recovery_us;
+static const char *const s_tokens_relay_url = TK_TOKENS_RELAY_URL;
+
+static void note_tokens_success(void) {
+  atomic_store(&s_tokens_last_success_us, torget_now_us());
+  atomic_store(&s_tokens_has_success, true);
+}
+
+static void recovery_task(void *arg) {
+  (void)arg;
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(RECOVERY_CHECK_MS));
+    tk_tokens_net_recovery_state state = {
+      .has_success = atomic_load(&s_tokens_has_success),
+      .last_success_us = atomic_load(&s_tokens_last_success_us),
+      .last_recovery_us = atomic_load(&s_tokens_last_recovery_us),
+    };
+    int64_t now_us = torget_now_us();
+    bool relay_configured =
+        s_tokens_relay_url != NULL && s_tokens_relay_url[0] != '\0';
+    if (!tk_tokens_net_recovery_should_recover(
+            &state, now_us, torget_wifi_signal_bars() > 0,
+            relay_configured)) {
+      continue;
+    }
+    ESP_LOGW(TAG, "inga färska VibePulse-svar över stale-fönstret; "
+                  "återställer WiFi-transporten");
+    if (torget_net_recover_http_stall()) {
+      atomic_store(&s_tokens_last_recovery_us, now_us);
+    }
+  }
+}
 
 static void net_task(void *arg) {
   (void)arg;
@@ -58,6 +97,7 @@ static void net_task(void *arg) {
        * själv utan bara tjänstens atomära annonsminne. */
       torget_update_available(
           t.has_ota_available_version ? t.ota_available_version : NULL);
+      note_tokens_success();
       ESP_LOGI(TAG, "hämtning ok (%.2f Mtok idag, %d sessioner)",
                t.day_tokens / 1e6, t.day_sessions);
     } else {
@@ -126,7 +166,17 @@ static void max_tracker_task(void *arg) {
 
 void tokens_net_start(void) {
 #ifdef TK_TOKENS_URL
-  xTaskCreate(net_task, "tokens", 6144, NULL, 5, NULL);
+  atomic_store(&s_tokens_has_success, false);
+  atomic_store(&s_tokens_last_success_us, 0);
+  atomic_store(&s_tokens_last_recovery_us, 0);
+  if (xTaskCreate(net_task, "tokens", 6144, NULL, 5, NULL) != pdPASS) {
+    ESP_LOGE(TAG, "VibePulse-hämttasken kunde inte starta");
+  }
+  if (s_tokens_relay_url != NULL && s_tokens_relay_url[0] != '\0' &&
+      xTaskCreate(recovery_task, "tokens-recovery", 3072, NULL, 3,
+                  NULL) != pdPASS) {
+    ESP_LOGE(TAG, "VibePulse HTTP-vakten kunde inte starta");
+  }
 #else
   ESP_LOGW(TAG, "TK_TOKENS_URL saknas i secrets.h — VibePulse visar streck");
 #endif

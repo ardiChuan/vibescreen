@@ -259,8 +259,11 @@ static bool relay_http(relay_http_client *client,
   ok = true;
 
 close:
-  (void)esp_http_client_close(client->handle);
 done:
+  /* open() failures used to skip close and leave the reusable handle in an
+   * implementation-defined transport state. Always reset it before the next
+   * bounded poll; close is explicitly safe when the handle is already INIT. */
+  (void)esp_http_client_close(client->handle);
   memset(authorization, 0, sizeof authorization);
   torget_cloud_io_release();
   return ok;

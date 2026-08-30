@@ -7,6 +7,13 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ### Fixed
 
+- The wall-powered ESP32 now disables Wi-Fi modem sleep and carries a bounded
+  VibePulse transport watchdog. After at least one good quota response, a
+  still-associated panel with a configured numbers relay recycles Wi-Fi when
+  application HTTP makes no progress for 150 seconds; a ten-minute cooldown
+  prevents reconnect loops during real upstream outages. Reusable encrypted
+  relay clients are reset on every failure exit instead of retaining a
+  half-open transport.
 - The VibePulse Codex plugin advances to `0.1.3`. Doctor now surfaces recent
   direct panel polling without misclassifying a healthy relay-only setup, and
   the skill distinguishes fresh provider data from the device-side

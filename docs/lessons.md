@@ -21,6 +21,28 @@ point at the backlog item.
 
 ---
 
+## 2026-08-30 · A boot-time PASS hid a five-minute HTTP stall
+
+**What happened:** after the discovery-capable firmware was flashed and moved
+to dedicated power, the panel cleared `STALE` and completed one physical
+local-LAN APPROVE round trip. Several minutes later `STALE` returned. The host and the
+ESP32-shaped numbers-relay request were still fresh and the board still
+answered ICMP, but direct application polls had stopped and a second
+interaction timed out. **Confirmed failure boundary:** network-interface
+liveness and one successful boot-time request had been mistaken for sustained
+application-HTTP progress. The exact lower-level trigger was not captured
+without serial on wall power; the always-powered panel also retained ESP-IDF's
+default modem-sleep policy and had no bounded transport recovery. **The rule:** a physical network
+PASS must outlive the stale window and repeat the interactive round trip.
+**Guards:** the quota transport now records last success and, only after an
+initial success, only while associated, and only when a redundant numbers
+relay is configured, recycles Wi-Fi after 150 seconds without progress. A
+ten-minute cooldown prevents loops during a real upstream outage. Target Wi-Fi
+disables modem sleep because this is a wall-powered live display. The policy
+is host-tested and fail-closed for cold start, LAN-only installs, disconnects,
+clock regression, and cooldown. **Watch for:** calling ping, fresh server JSON,
+or a single post-boot interaction proof that the panel will stay fresh.
+
 ## 2026-08-30 · A fresh feed did not prove fresh glass
 
 **What happened:** the Mac API and the numbers relay both served fresh Claude,

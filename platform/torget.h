@@ -37,6 +37,12 @@ int64_t torget_now_us(void);
  * fixtures behöver inget nät. */
 void torget_net_wait(void);
 
+/* Recycle a still-associated station whose application HTTP has stopped
+ * making progress. Target-only recovery is bounded by the caller's pure
+ * policy; false means setup owns the radio or no connection can be recycled.
+ * The simulator returns false. */
+bool torget_net_recover_http_stall(void);
+
 /* 0 disconnected, 1 weak, 2 medium, 3 strong. Never implies relay health. */
 uint8_t torget_wifi_signal_bars(void);
 
