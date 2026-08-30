@@ -85,6 +85,9 @@ static lv_indev_t *s_touch;
 static EventGroupHandle_t s_net_events;
 #define WIFI_GOT_IP BIT0
 #define NET_READY   BIT1 /* IP + SNTP: TLS kräver rimlig tid */
+/* Declared with the platform state because the public recovery hook reads it
+ * before the Wi-Fi implementation section below. */
+static atomic_bool s_sta_paused;
 
 /* Lock-free presentation input only. The network task owns radio sampling;
  * LVGL merely reads the last 0..3 value through torget_wifi_signal_bars(). */
@@ -111,6 +114,20 @@ int64_t torget_now_us(void) { return esp_timer_get_time(); }
 
 void torget_net_wait(void) {
   xEventGroupWaitBits(s_net_events, NET_READY, pdFALSE, pdTRUE, portMAX_DELAY);
+}
+
+bool torget_net_recover_http_stall(void) {
+  if (atomic_load(&s_sta_paused) ||
+      (xEventGroupGetBits(s_net_events) & WIFI_GOT_IP) == 0) {
+    return false;
+  }
+  esp_err_t err = esp_wifi_disconnect();
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "HTTP-vakten kunde inte återställa WiFi: %s",
+             esp_err_to_name(err));
+    return false;
+  }
+  return true;
 }
 
 uint8_t torget_wifi_signal_bars(void) {
@@ -183,7 +200,6 @@ static bool s_trial_active; /* skyddas av s_cand_lock */
 /* Medan setupfönstret äger radion (skanning + accesspunkt) ska
  * event-handlern INTE ropa esp_wifi_connect: en connect mitt i en skanning
  * ger bara ESP_ERR_WIFI_STATE och ett brus av misslyckanden i loggen. */
-static atomic_bool s_sta_paused;
 static atomic_bool s_trial_ignore_disconnect;
 static _Atomic int s_disconnect_reason;
 
@@ -461,6 +477,16 @@ static void wifi_start(void) {
   wifi_reload_candidates(NULL); /* NVS överst, secrets.h som botten */
   ESP_ERROR_CHECK(wifi_apply_current());
   ESP_ERROR_CHECK(esp_wifi_start());
+  /* Torget is a wall-powered live display, not a battery sensor. ESP-IDF's
+   * default MIN_MODEM sleep trades receive latency and radio continuity for
+   * power that this product does not need to save. Keep the station awake so
+   * the one-second agent path and five-second encrypted mailbox remain
+   * deterministic. A failure here is diagnosable but not a boot brick. */
+  esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_NONE);
+  if (ps_err != ESP_OK) {
+    ESP_LOGW(TAG, "kunde inte stänga av WiFi modem-sömn: %s",
+             esp_err_to_name(ps_err));
+  }
 }
 
 /* TLS kräver en rimlig klocka: utan tid är serverns certifikat "ännu inte

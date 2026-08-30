@@ -26,8 +26,9 @@ buttons is the fit/privacy fallback, not a pass. After a flash, compare
 `git describe --tags --always --dirty` from the build checkout with the service's
 `otaAvailableVersion` before testing.
 
-Explain that the encrypted relay is not enabled by this plugin. Activity and
-interaction content remain local in this phase.
+Explain that the encrypted relay remains not enabled by this plugin. When the
+owner separately enables it, opaque encrypted envelopes leave the LAN but the
+question and verdict stay end-to-end encrypted between host and panel.
 
 When setup state is relevant, run `python3 tools/vibepulse_setup.py status`.
 When troubleshooting is relevant, run `python3 tools/vibepulse_setup.py doctor`.
@@ -59,6 +60,28 @@ service-discovery change cannot move automatically between advertising Mac
 and Windows hosts. Do not reset or flash the panel without explicit
 permission. Silence from serial is not proof that the firmware is healthy or
 unhealthy.
+
+Never call one successful post-boot request a sustained stale-recovery pass.
+Keep the panel on dedicated power beyond its 120-second stale window, require
+recent direct polling again, and repeat the canonical physical question. If
+the board still answers ping while direct panel polling ages out, the local and
+numbers-relay payloads remain fresh, and the repeated question times out,
+record a device-side application-HTTP stall rather than blaming provider data.
+Current relay-configured firmware has a bounded self-recovery guard: after an
+initial quota success, 150 seconds without progress while Wi-Fi still reports
+association recycles the station transport; a ten-minute cooldown prevents
+loops. The guard firing is recovery evidence, not a PASS by itself. LAN-only
+firmware deliberately does not recycle Wi-Fi merely because its host sleeps.
+
+Treat fresh numbers plus timed-out questions as a separate transport check.
+When more than one `_vibepulse._tcp` service is advertised on the same LAN,
+DNS-SD result order cannot identify which computer owns the current question;
+the panel may be polling a different healthy Mac or PC. Confirm the service
+count without publishing hostnames or private addresses. For a panel shared by
+several computers, use the existing end-to-end encrypted interaction relay on
+the hosts and enable `TK_VIBEPULSE_INTERACTION_RELAY` in that panel's firmware.
+Do not claim the stale watchdog fixed question delivery, and do not flash the
+relay-enabled image without a fresh explicit authorization.
 
 Explain when asked that this skill is versioned with the plugin; it does not
 learn or update itself. New lessons reach installed Codex sessions only after

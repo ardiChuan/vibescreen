@@ -287,6 +287,14 @@ dashes — never a placeholder `0%` that you might believe. If the service
 goes away, the last good numbers stay on screen and get marked stale rather
 than silently drifting.
 
+On current firmware a wall-powered panel also protects itself against the
+specific failure where Wi-Fi still looks associated but application HTTP has
+stopped. Once the quota feed has worked at least once, and only when an
+independent numbers relay is configured, 150 seconds without a fresh response
+recycles the Wi-Fi transport. A ten-minute cooldown prevents a real internet
+outage from becoming a reconnect loop. LAN-only installations never perform
+this automatic recovery just because their computer is asleep.
+
 Run Claude only, or Codex only, and the other half simply shows dashes.
 
 </td>
@@ -441,6 +449,9 @@ host address, firewall, Task Scheduler, startup health, and recovery steps.
    panel's draw makes the board bounce off the bus or hang, which looks
    like a flaky cable. After flashing, run the screen from its own USB
    power supply, not your computer.
+   The firmware disables Wi-Fi modem sleep because the panel is an
+   always-powered live display; do not re-enable it without repeating a
+   sustained stale-window and interaction test on physical hardware.
 3. Start the core service on your computer. Its core remains pure Python
    stdlib. Install the small optional discovery dependency when the panel
    should find this Mac/PC automatically:

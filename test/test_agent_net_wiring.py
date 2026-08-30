@@ -29,6 +29,10 @@ usage_screen = (
 ).read_text(encoding="utf-8")
 kconfig = (root / "main/Kconfig.projbuild").read_text(encoding="utf-8")
 source_policy = root / "components/app_tokens/agent_status_source_policy.c"
+tokens_net = (root / "components/app_tokens/net.c").read_text(encoding="utf-8")
+platform_header = (root / "platform/torget.h").read_text(encoding="utf-8")
+target_main = (root / "main/main.c").read_text(encoding="utf-8")
+sim_main = (root / "sim/main.c").read_text(encoding="utf-8")
 
 assert '"agent_net.c"' in target_cmake, "target must compile agent_net.c"
 assert source_policy.exists(), "agent-status source policy must be portable C"
@@ -89,6 +93,20 @@ assert "if (client) esp_http_client_cleanup(client);" in source, (
 )
 assert "torget_service_note_result(client_source, client_url, host_ok);" in source
 assert "remember_direct_origin(client_url);" in source
+for recovery_guard in (
+    "tk_tokens_net_recovery_should_recover(",
+    "s_tokens_relay_url != NULL",
+    "torget_net_recover_http_stall()",
+    'xTaskCreate(recovery_task, "tokens-recovery"',
+):
+    assert recovery_guard in tokens_net, (
+        f"missing sustained VibePulse recovery guard: {recovery_guard}"
+    )
+assert "bool torget_net_recover_http_stall(void);" in platform_header
+assert "bool torget_net_recover_http_stall(void)" in target_main
+assert "esp_wifi_disconnect();" in target_main
+assert "esp_wifi_set_ps(WIFI_PS_NONE);" in target_main
+assert "bool torget_net_recover_http_stall(void) { return false; }" in sim_main
 assert re.search(
     r"tk_agent_source_note_lan\([^;]+;\s*"
     r"usage_screen_apply_agent\(snapshot, now_us\);", app, re.DOTALL
@@ -97,6 +115,15 @@ assert re.search(
 relay_net = (
     root / "components/app_tokens/interaction_relay_net.c"
 ).read_text(encoding="utf-8")
+relay_http = relay_net[
+    relay_net.index("static bool relay_http("):
+    relay_net.index("static bool decimal_u64(")
+]
+assert re.search(
+    r"done:\s*/\*.*?esp_http_client_close\(client->handle\);",
+    relay_http,
+    re.DOTALL,
+), "every encrypted-relay exit must reset its reusable HTTP transport"
 for required in (
     "tk_ir_decode_status(",
     "tk_agent_status_parse_relay(",
