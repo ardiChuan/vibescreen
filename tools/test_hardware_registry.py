@@ -1197,7 +1197,7 @@ class RepositoryRegistryTests(unittest.TestCase):
             "battery": "not_fitted",
             "microsd": "unknown",
             "antenna": "onboard",
-            "installed_firmware": "v1.0.0-18-g3a131a2",
+            "installed_firmware": "v1.0.0-25-g054db68",
             "last_physical_verification": "2026-08-30",
             "secrets": False,
         })
