@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- True black, because the panel is an always-on shelf display and the
+         F3's AMOLED simply does not light those pixels. Same background the
+         firmware uses (VP_COLOR_BACKGROUND). -->
+    <style name="Theme.VibePulse" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/vp_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

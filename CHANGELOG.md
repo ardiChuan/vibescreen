@@ -5,6 +5,20 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ## Unreleased
 
+### Added
+
+- **Phone panel.** An Android app (`android/`) that shows the panel's numbers on
+  an ordinary phone as a **read-only dashboard**. Five Claude-only views, the
+  live agent rows, a dancing Claude pet bound to real `working` state, and a
+  full-screen notice when an agent is waiting — informational only. The app
+  holds no device key, signs nothing, and issues no POST at all, so the
+  **tokenserver is unchanged**: no new routes, no second port, and no unsigned
+  answer path. USB via `adb reverse` is the primary transport and keeps the link
+  off every network; `tools/btbridge/bt_bridge.py` adds a Bluetooth RFCOMM
+  bridge that forwards GETs only. Parsing is verified against the real
+  `sim-fixtures/`. Exercised end to end on a Poco F3 (Android 13) over both
+  transports. See [docs/phone-panel.md](docs/phone-panel.md).
+
 ### Fixed
 
 - A successfully parsed ESP32 quota response now clears the transport-level

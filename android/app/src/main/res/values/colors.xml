@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Generated design tokens, mirrored from
+         components/app_tokens/vibepulse_layout.generated.h -->
+    <color name="vp_background">#FF000000</color>
+    <color name="vp_text">#FFFFFFFF</color>
+    <color name="vp_muted">#FF9298A2</color>
+    <color name="vp_track">#FF303238</color>
+    <color name="vp_hairline">#FF202328</color>
+    <color name="vp_claude">#FFD97757</color>
+</resources>

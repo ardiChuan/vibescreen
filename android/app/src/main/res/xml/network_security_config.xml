@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The tokenserver speaks plain HTTP by design: it is a LAN service, and over USB
+  it is reached through `adb reverse` on this phone's own loopback. Since
+  Android 9 a targetSdk>=28 app refuses cleartext outright, which fails every
+  poll with "Cleartext HTTP traffic to 127.0.0.1 not permitted".
+
+  Loopback is called out on its own because it is the primary path and the one
+  that carries no network exposure at all. Cleartext stays permitted generally
+  because the LAN fallback points at a user-supplied http:// address; narrowing
+  the base to loopback would silently break that mode instead of the app saying
+  why.
+
+  The app only ever contacts the tokenserver address the user configured.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

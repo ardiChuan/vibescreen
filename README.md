@@ -628,6 +628,36 @@ panel. Several machines can feed the numbers mailbox
 number. Numbers setup: [docs/relay.md](docs/relay.md). Encrypted decisions and
 live status: [docs/interaction-relay.md](docs/interaction-relay.md).
 
+## No panel yet? Use your old phone
+
+An Android app (`android/`) that puts the panel's numbers on a phone you
+already own. It is a **read-only dashboard**: it watches and never answers.
+
+```powershell
+.	ools\phone-panel.ps1        # build, install, connect over USB
+```
+
+Five Claude-only views, swiped horizontally — session quota, burn rate, Max
+Tracker, GitHub, and Value — with the live agent rows pinned under every page
+and a full-screen notice when an agent is waiting on you. The Claude pet sits
+beside the session percentage and dances while an agent is actually working, so
+"is anything happening?" is answerable from across a room without reading a
+word.
+
+**The tokenserver is unmodified**: no new routes, no second port. The app issues
+only the four panel GETs, holds no device key, and signs nothing — a decision
+still appears on the glass so you know one is waiting, but it is answered at the
+terminal.
+
+Two transports. USB is primary: `adb reverse` puts the tokenserver on the
+phone's own loopback, so nothing is exposed to any network and it works with
+WiFi switched off. Bluetooth RFCOMM via `tools/btbridge/bt_bridge.py` is the
+cable-free fallback; that bridge forwards GETs only.
+
+Verified on a Poco F3 (Android 13): both transports live, all five views, the
+waiting notice, and both orientations. Full setup and troubleshooting:
+[docs/phone-panel.md](docs/phone-panel.md).
+
 ## No hardware? Run the simulator
 
 ```

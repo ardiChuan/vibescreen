@@ -20,3 +20,10 @@ sdkconfig.old
 platform/fonts/src/
 # Enhetens LAN-IP for tools/ota-flash.sh — miljospecifik, aldrig delad.
 .ota-device
+
+# Phone panel (android/) build output and local toolchain
+android/build/
+android/.gradle/
+android/app/build/
+android/local.properties
+*.apk
