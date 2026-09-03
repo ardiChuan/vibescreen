@@ -1,6 +1,0 @@
-## Rollback-API:t (esp_ota_mark_*) och otadata-semantiken förutsätter 5.5,
-## samma golv som resten av plattformen. Overlayn ritar med samma
-## LVGL-serie som BSP:n löser till (9.5; sim pinnar exakt samma, P20).
-dependencies:
-  idf: ">=5.5"
-  lvgl/lvgl: "9.*"

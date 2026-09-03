@@ -40,6 +40,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -139,21 +140,47 @@ def serve_client(conn, addr, base):
         print(f"[bridge] phone disconnected: {addr}", flush=True)
 
 
-def bind_channel(preferred):
-    """Bind an RFCOMM channel, falling back when one is taken.
+def bind_channel(preferred, attempts=8, pause=1.0):
+    """Bind the preferred RFCOMM channel, waiting for it if it is busy.
 
-    Channel 1 is usually reserved and 2-3 are commonly occupied by the system's
-    own profiles, so a fixed constant is not dependable. The channel that was
-    actually bound is printed, because the phone must be told the number.
+    The channel number is configuration: it is typed into the phone once. So a
+    restart must come back on the SAME channel, or the panel silently stops
+    connecting with nothing on either side saying why.
+
+    That is not hypothetical -- restarting this service while the previous
+    process is still dying leaves the old socket held for a second or two, and
+    an eager fallback then lands on a different channel for good. The preferred
+    channel is therefore retried before anything else is considered.
+
+    Falling back at all is still better than refusing to start, because channel
+    1 is usually reserved and 2-3 are commonly taken by system profiles. But it
+    is a last resort, and it says loudly that the phone must be updated.
     """
-    candidates = [preferred] + [c for c in (5, 11, 17, 23, 30) if c != preferred]
     last_error = None
-    for channel in candidates:
+    for attempt in range(attempts):
+        sock = socket.socket(
+            socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+        try:
+            sock.bind((socket.BDADDR_ANY, preferred))
+            sock.listen(1)
+            return sock, preferred
+        except OSError as exc:
+            last_error = exc
+            sock.close()
+            if attempt < attempts - 1:
+                print(f"[bridge] channel {preferred} busy, retrying "
+                      f"({attempt + 1}/{attempts})...", flush=True)
+                time.sleep(pause)
+
+    for channel in (c for c in (11, 17, 23, 30) if c != preferred):
         sock = socket.socket(
             socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
         try:
             sock.bind((socket.BDADDR_ANY, channel))
             sock.listen(1)
+            print(f"[bridge] WARNING: channel {preferred} never freed; bound "
+                  f"{channel} instead. Update the channel in the phone app, or "
+                  f"restart this bridge once {preferred} is free.", flush=True)
             return sock, channel
         except OSError as exc:
             last_error = exc
